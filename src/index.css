@@ -1,0 +1,160 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Public Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  body {
+    font-family: var(--font-sans);
+    color: #0f172a;
+    /* Fondo suave azul-pizarra de descanso visual para resaltar paneles de carga y selección */
+    background-color: #dfe8f1;
+  }
+
+  h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    text-wrap: balance;
+  }
+
+  input[type="checkbox"],
+  input[type="radio"] {
+    accent-color: #0284c7;
+  }
+}
+
+/* Superficie claramente diferenciada para todos los campos de carga de datos y desplegables */
+main input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+main select,
+main textarea {
+  background-color: #eef4fa;
+  border-color: #94a3b8;
+  transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+
+main input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):hover,
+main select:hover,
+main textarea:hover {
+  background-color: #f8fbff;
+  border-color: #475569;
+}
+
+main input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus,
+main select:focus,
+main textarea:focus {
+  background-color: #ffffff;
+  border-color: #0284c7;
+  box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.18);
+  outline: none;
+}
+
+main input:disabled,
+main select:disabled,
+main textarea:disabled {
+  background-color: #e2e8f0;
+  border-color: #cbd5e1;
+  color: #64748b;
+}
+
+/* Destacar visualmente las casillas de selección de modificadores y condiciones */
+main label.inline-flex:has(input[type="checkbox"]) {
+  background-color: #f1f6fb;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.375rem;
+  padding: 0.375rem 0.65rem;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+main label.inline-flex:has(input[type="checkbox"]):hover {
+  background-color: #e6f0fa;
+  border-color: #0284c7;
+}
+
+main label.inline-flex:has(input[type="checkbox"]:checked) {
+  background-color: #e0f2fe;
+  border-color: #0284c7;
+  color: #0f172a;
+  font-weight: 500;
+}
+
+/* Temas de Fondo de Pantalla */
+.theme-pizarra {
+  background-color: #dfe8f1 !important;
+}
+.theme-blanco {
+  background-color: #f1f5f9 !important;
+}
+.theme-calido {
+  background-color: #f4eee3 !important;
+}
+.theme-gris {
+  background-color: #d8e2ec !important;
+}
+.theme-oscuro {
+  background-color: #0b1329 !important;
+  color: #f1f5f9 !important;
+}
+
+/* Modo Alto Contraste */
+.contrast-alto {
+  color: #000000 !important;
+}
+.contrast-alto p,
+.contrast-alto span,
+.contrast-alto label {
+  color: #000000 !important;
+  font-weight: 500;
+}
+.contrast-alto input,
+.contrast-alto select,
+.contrast-alto textarea {
+  color: #000000 !important;
+  border-color: #0f172a !important;
+  font-weight: 600 !important;
+}
+
+/* Tamaño de tipografía ampliado */
+.font-grande {
+  font-size: 1.075rem;
+}
+.font-grande h1 { font-size: 1.6rem !important; }
+.font-grande h2 { font-size: 1.4rem !important; }
+.font-grande h3 { font-size: 1.25rem !important; }
+.font-grande h4 { font-size: 1.15rem !important; }
+.font-grande p, .font-grande label { font-size: 0.95rem !important; }
+
+/* Resaltado especial de campos de carga y selección */
+.highlight-inputs main input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+.highlight-inputs main select,
+.highlight-inputs main textarea {
+  background-color: #e0f2fe !important;
+  border-color: #0284c7 !important;
+  box-shadow: 0 1px 2px 0 rgba(2, 132, 199, 0.15) !important;
+}
+.highlight-inputs main label.inline-flex:has(input[type="checkbox"]) {
+  background-color: #f0fdf4 !important;
+  border-color: #16a34a !important;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Smooth horizontal tab scrolling without bulky scrollbars */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+

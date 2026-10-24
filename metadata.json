@@ -1,0 +1,6 @@
+{
+  "name": "ErgoEval — Estudio Ergonómico de Puestos de Trabajo",
+  "description": "Plataforma técnica de evaluación ergonómica multipestaña basada en los métodos internacionales RULA, REBA, OWAS, NIOSH, Snook y Ciriello, OCRA, JSI, Fanger, WBGT, ISO 2631, ISO 5349 y Res. 295/03, con guías angulares interactivas, resumen automático de priorización y exportación detallada a PDF y Word.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
