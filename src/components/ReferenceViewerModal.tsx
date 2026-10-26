@@ -1,18 +1,18 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   BookOpen,
   Calculator,
-  ChevronRight,
-  ExternalLink,
   FileDown,
   Layers,
   Search,
+  Sliders,
   TableProperties,
   X,
 } from 'lucide-react';
 import { MethodId } from '../types/ergonomics';
-import { METHOD_REFERENCES, BOOK_METADATA } from '../utils/referenceData';
+import { getEffectiveMethodReference, BOOK_METADATA } from '../utils/referenceData';
 import { METHOD_CATALOG } from '../utils/defaults';
+import { isMethodFormulaModified } from '../utils/formulaConfig';
 
 interface ReferenceViewerModalProps {
   isOpen: boolean;
@@ -20,6 +20,7 @@ interface ReferenceViewerModalProps {
   initialMethodId?: MethodId;
   initialQuery?: string;
   onDownloadManualPdf: () => void;
+  onOpenFormulaEditor?: (methodId: MethodId) => void;
 }
 
 export function ReferenceViewerModal({
@@ -28,14 +29,23 @@ export function ReferenceViewerModal({
   initialMethodId = MethodId.RULA,
   initialQuery = '',
   onDownloadManualPdf,
+  onOpenFormulaEditor,
 }: ReferenceViewerModalProps) {
   const [selectedMethodId, setSelectedMethodId] = useState<MethodId>(initialMethodId);
   const [searchQuery, setSearchQuery] = useState(initialQuery);
   const [activeTab, setActiveTab] = useState<'formulas' | 'variables' | 'tablas' | 'ejemplo'>('formulas');
 
+  useEffect(() => {
+    if (isOpen) {
+      setSelectedMethodId(initialMethodId);
+      setSearchQuery(initialQuery);
+    }
+  }, [isOpen, initialMethodId, initialQuery]);
+
   if (!isOpen) return null;
 
-  const currentRef = METHOD_REFERENCES[selectedMethodId];
+  const currentRef = getEffectiveMethodReference(selectedMethodId);
+  const isCustomFormula = isMethodFormulaModified(selectedMethodId);
 
   // Filtro si hay búsqueda activa
   const filteredVariables = currentRef.variables.filter((v) =>
@@ -205,7 +215,27 @@ export function ReferenceViewerModal({
               </div>
 
               <div className="p-4 rounded-lg border border-slate-200 bg-white space-y-2">
-                <h4 className="font-semibold text-sm text-slate-900">Formulación Matemática Exacta</h4>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <h4 className="font-semibold text-sm text-slate-900">Formulación Matemática Activa</h4>
+                    {isCustomFormula && (
+                      <span className="text-xs font-semibold text-amber-700">· Personalizada</span>
+                    )}
+                  </div>
+                  {onOpenFormulaEditor && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        onOpenFormulaEditor(selectedMethodId);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded border border-sky-300 bg-sky-50 hover:bg-sky-100 text-xs font-semibold text-sky-900 whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                    >
+                      <Sliders className="w-3.5 h-3.5 text-sky-700" />
+                      Modificar Fórmulas de este Método
+                    </button>
+                  )}
+                </div>
                 <div className="p-3 rounded-md bg-slate-900 text-sky-200 font-mono text-xs whitespace-pre-line leading-relaxed">
                   {currentRef.formulaSummary}
                 </div>

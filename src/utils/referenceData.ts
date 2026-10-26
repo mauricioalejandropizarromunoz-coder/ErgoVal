@@ -1,4 +1,5 @@
 import { MethodId } from '../types/ergonomics';
+import { getMethodFormulaProfile } from './formulaConfig';
 
 export interface MethodTableRef {
   tableNumber: string;
@@ -253,7 +254,7 @@ export const METHOD_REFERENCES: Record<MethodId, MethodReferenceDoc> = {
       { level: 'Nivel 4', scoreRange: '11 a 15', risk: 'Muy Alto / Crítico', action: 'Actuación inmediata indispensable.', deadline: 'Inmediato' },
     ],
     workedExample: {
-      title: 'Ejemplo de Aplicación en Construcción / Zanja (Informe POSE S.A.)',
+      title: 'Ejemplo de Aplicación en Construcción / Zanja (Informe EmpresaX S.A.)',
       description: 'Zanjero perfilando fondo de zanja a 1,10 m arrojando tierra con pala hacia el borde superior.',
       inputs: 'Tronco 3 (20°–60°) con torsión (+1) = 4; Cuello 2 (>20°); Piernas 2 (base inestable) con flexión rodillas 30°–60° (+1) = 3; Carga 5–10 kg (1 pt); Brazo 3 (45°–90°) abducido (+1) = 4; Antebrazo 2 (<60°); Muñeca 2 (>15°) con torsión (+1) = 3; Agarre regular (+1); Actividad repetitiva (+1) e inestable (+1) = +2.',
       calculations: 'Grupo A: Tabla A[4][2][3] = 7; +1 carga = 8.\nGrupo B: Tabla B[4][2][3] = 6; +1 agarre = 7.\nTabla C[8][7] = 10; +2 actividad = 12.',
@@ -478,7 +479,7 @@ export const METHOD_REFERENCES: Record<MethodId, MethodReferenceDoc> = {
     fullName: 'Levantamiento Manual de Cargas — Resolución MTESS 295/03 (Anexo I)',
     chapter: 'Capítulo 9 · Apartado 9.2.3',
     chapterTitle: 'Marco Normativo Legal: Resolución 295/03',
-    authorReference: 'Libro-Proyecto Mauricio Pizarro · Capítulo 9.2.3 y Protocolo POSE S.A.',
+    authorReference: 'Libro-Proyecto Mauricio Pizarro · Capítulo 9.2.3 y Protocolo EmpresaX S.A.',
     normativeContext: 'Legislación argentina vigente obligatoria (Res. MTESS 295/03 y Res. SRT 886/15).',
     formulaSummary:
       'Selecciona Tabla 1, 2 o 3 según duración diaria (<2h ó >2h) y levantamientos/hora.\nUbica cuadrante de altura vertical (suelo a espinilla, espinilla a nudillo, nudillo a hombro, sobre hombro) y distancia horizontal (próximo ≤30, intermedio 30-60, alejado 60-80 cm).\nCompara Peso Real con el Valor Límite Umbral (VLU en kg).',
@@ -498,7 +499,7 @@ export const METHOD_REFERENCES: Record<MethodId, MethodReferenceDoc> = {
       { level: 'Excede VLU', scoreRange: 'Peso > VLU', risk: 'Incumplimiento legal', action: 'Inadmisible bajo la normativa. Reducir carga o aplicar ayuda mecánica.', deadline: 'Inmediato' },
     ],
     workedExample: {
-      title: 'Ejemplo de Informe POSE S.A. — Pisón Manual de 13,2 kg',
+      title: 'Ejemplo de Informe EmpresaX S.A. — Pisón Manual de 13,2 kg',
       description: 'Apisonado en fondo de canalización con pisón de hierro de 13,2 kg en jornada menor a 2 horas acumuladas.',
       inputs: 'Peso = 13,2 kg; Duración: ≤ 2 h/día; Frecuencia: 45 lev/h -> Tabla 1; Zona vertical: nudillos a hombro; Zona horizontal: próximo (≤ 30 cm).',
       calculations: 'VLU en Tabla 1 para franja nudillos a hombro y próximo = 28 kg.\nPeso real = 13,2 kg < 28 kg (Ratio = 0,47).',
@@ -641,7 +642,7 @@ export const METHOD_REFERENCES: Record<MethodId, MethodReferenceDoc> = {
     fullName: 'Nivel de Actividad Manual (NAM — ACGIH / Resolución MTESS 295/03)',
     chapter: 'Capítulo 9 · Apartado 9.2.3',
     chapterTitle: 'Valores Límite Umbral para la Actividad Manual en Trabajo Repetitivo',
-    authorReference: 'Libro-Proyecto Mauricio Pizarro · Capítulo 9.2.3 y Protocolo POSE S.A.',
+    authorReference: 'Libro-Proyecto Mauricio Pizarro · Capítulo 9.2.3 y Protocolo EmpresaX S.A.',
     normativeContext: 'Resolución MTESS 295/03 (Anexo I — Monotareas de 4 o más horas diarias).',
     formulaSummary:
       'NAM = Función(Frecuencia de esfuerzos, Ciclo de ocupación %).\nFuerza Pico Normalizada = Escala de Borg CR-10 (0 a 10).\nLímite de Acción = 0.56 · (10 - NAM) [para NAM entre 0.5 y 10].\nValor Límite Umbral (VLU) = 0.78 · (10 - NAM).',
@@ -661,7 +662,7 @@ export const METHOD_REFERENCES: Record<MethodId, MethodReferenceDoc> = {
       { level: 'Zona de Peligro TME', scoreRange: 'Sobre VLU', risk: 'Peligro Inadmisible', action: 'Incumplimiento legal. Reducción inmediata de fuerza y cadencia.', deadline: 'Inmediato' },
     ],
     workedExample: {
-      title: 'Ejemplo del Informe POSE S.A. — Uso de Herramientas de Mano',
+      title: 'Ejemplo del Informe EmpresaX S.A. — Uso de Herramientas de Mano',
       description: 'Operario usando alicates y llaves manuales en conexionado de tableros eléctricos.',
       inputs: 'Mano derecha: 62 esfuerzos en 120 s (NAM = 3.0), Fuerza Borg = 1.0; Mano izquierda: 7 esfuerzos en 120 s (NAM = 0.5), Fuerza Borg = 0.5.',
       calculations: 'Para NAM = 3.0: Límite de Acción = 0.56*(10-3) = 3.92; VLU = 0.78*(10-3) = 5.46.\nFuerza real = 1.0 < 3.92 (Bajo Límite de Acción).',
@@ -677,7 +678,7 @@ export const METHOD_REFERENCES: Record<MethodId, MethodReferenceDoc> = {
     fullName: 'Cuestionario Bipolar de Fatiga y Confort Subjetivo (IRAM 3753)',
     chapter: 'Protocolo Complementario · IRAM 3753',
     chapterTitle: 'Evaluación de la Percepción Psicofísica y Disconfort',
-    authorReference: 'Libro-Proyecto Mauricio Pizarro · Apartado Complementario y Protocolo POSE S.A.',
+    authorReference: 'Libro-Proyecto Mauricio Pizarro · Apartado Complementario y Protocolo EmpresaX S.A.',
     normativeContext: 'Norma IRAM 3753 e ISO 10075. Evaluación cualitativa de síntomas precoces.',
     formulaSummary: 'Puntuación Media = Suma(15 ítems) / 15. Valores por ítem de 0 (pleno confort) a 10 (máxima molestia/dolor).',
     conceptualBasis: 'Trata la respuesta del trabajador como dato empírico cualitativo de alerta temprana antes de la aparición de patología diagnosticable.',
@@ -689,7 +690,7 @@ export const METHOD_REFERENCES: Record<MethodId, MethodReferenceDoc> = {
       { level: 'Alto', scoreRange: '> 5.0', risk: 'Fatiga severa reportada', action: 'Intervención y evaluación médica laboral.', deadline: 'Corto plazo' },
     ],
     workedExample: {
-      title: 'Relevamiento en Obra POSE S.A.',
+      title: 'Relevamiento en Obra EmpresaX S.A.',
       description: 'Encuesta anónima a operarios de tendido tras completar la jornada.',
       inputs: 'Ítems 1 a 4 con valores 1 a 2 (cansancio físico leve al final del día), ítems 5 a 15 con valor 0 (ausencia de dolor osteomuscular).',
       calculations: 'Suma = 6 / 15 = Media 0.40.',
@@ -849,3 +850,14 @@ export const METHOD_REFERENCES: Record<MethodId, MethodReferenceDoc> = {
 export function getMethodReference(id: MethodId): MethodReferenceDoc {
   return METHOD_REFERENCES[id];
 }
+
+export function getEffectiveMethodReference(id: MethodId): MethodReferenceDoc {
+  const base = METHOD_REFERENCES[id];
+  const prof = getMethodFormulaProfile(id);
+  if (!prof) return base;
+  return {
+    ...base,
+    formulaSummary: prof.formulaSummary,
+  };
+}
+

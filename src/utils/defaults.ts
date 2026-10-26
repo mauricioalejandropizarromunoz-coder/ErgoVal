@@ -514,7 +514,7 @@ export function createInitialGeneralData(): GeneralStudyData {
   const today = new Date().toISOString().slice(0, 10);
   const nextYear = new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString().slice(0, 10);
   return {
-    companyName: 'POSE S.A. — Ingeniería e Infraestructura',
+    companyName: 'EmpresaX S.A. — Ingeniería e Infraestructura',
     companyTaxId: '30-71049281-9',
     companyActivity: 'Obras electromecánicas, montaje industrial y tendido de redes',
     companyAddress: 'Av. Industrial 1450, Parque Tecnológico',

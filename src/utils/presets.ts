@@ -9,7 +9,7 @@ export interface StudyPreset {
   tabs: StudyTab[];
 }
 
-export function buildPresetPoseSa(): { general: GeneralStudyData; tabs: StudyTab[] } {
+export function buildPresetEmpresaX(): { general: GeneralStudyData; tabs: StudyTab[] } {
   const general = createInitialGeneralData();
 
   const tab1 = createNewStudyTab(1, MethodId.OCRA_CHECKLIST, 'Extracción de tierra y apisonado manual en canalización');
@@ -215,3 +215,6 @@ export function buildBlankStudy(): { general: GeneralStudyData; tabs: StudyTab[]
   tab1.tabLabel = 'Estudio 1: RULA';
   return { general, tabs: [tab1] };
 }
+
+export const buildPresetPoseSa = buildPresetEmpresaX;
+

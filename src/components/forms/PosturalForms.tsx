@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Copy, Download, Plus, RotateCcw, Trash2, Upload } from 'lucide-react';
+import { Box, Copy, Download, Plus, RotateCcw, Trash2, Upload } from 'lucide-react';
 import {
   BipolarData,
   OwasData,
@@ -10,13 +10,17 @@ import {
   RulaSideInput,
 } from '../../types/ergonomics';
 import { BIPOLAR_ITEMS } from '../../utils/defaults';
+import { ASSIGNED_CHAPTER4_PHOTOS } from '../../utils/figurePlanCatalog';
 import {
   AngleOption,
   LOWER_ARM_OPTIONS,
+  ModifierPlateBanner,
   OWAS_ARMS_OPTIONS,
   OWAS_BACK_OPTIONS,
+  REBA_LOWER_ARM_OPTIONS,
   REBA_NECK_OPTIONS,
   REBA_TRUNK_OPTIONS,
+  REBA_UPPER_ARM_OPTIONS,
   REBA_WRIST_OPTIONS,
   RULA_NECK_OPTIONS,
   RULA_TRUNK_OPTIONS,
@@ -24,9 +28,10 @@ import {
   UPPER_ARM_OPTIONS,
   VisualAngleSelector,
 } from '../AngleGuides';
+import { Biomech3DControlPanel } from '../Biomech3DControlPanel';
 
 // ============================================================================
-// ESQUEMAS ADICIONALES PARA PIERNAS (RULA, REBA Y OWAS 1..7)
+// ESQUEMAS Y LÁMINAS ANATÓMICAS PARA PIERNAS (RULA, REBA Y OWAS 1..7)
 // ============================================================================
 const RULA_LEGS_OPTIONS: AngleOption<1 | 2>[] = [
   {
@@ -34,6 +39,7 @@ const RULA_LEGS_OPTIONS: AngleOption<1 | 2>[] = [
     angleText: 'Equilibradas',
     title: 'Piernas y pies bien apoyados',
     subtitle: 'Sentado o de pie con peso simétrico',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-17'], totalCols: 3, colIndex: 1, figCode: 'Fig. 4.17 (+1)' },
     renderSvg: (a) => (
       <svg viewBox="0 0 110 92" className="w-28 h-22">
         <line x1="25" y1="84" x2="85" y2="84" stroke="#64748b" strokeWidth="2" />
@@ -49,6 +55,7 @@ const RULA_LEGS_OPTIONS: AngleOption<1 | 2>[] = [
     angleText: 'Inestables',
     title: 'Sin apoyo bilateral equilibrado',
     subtitle: 'Apoyo en un solo pie o inestable',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-17'], totalCols: 3, colIndex: 2, figCode: 'Fig. 4.17 (+2)' },
     renderSvg: (a) => (
       <svg viewBox="0 0 110 92" className="w-28 h-22">
         <line x1="25" y1="84" x2="85" y2="84" stroke="#64748b" strokeWidth="2" />
@@ -61,12 +68,32 @@ const RULA_LEGS_OPTIONS: AngleOption<1 | 2>[] = [
   },
 ];
 
+const REBA_LEGS_BASE_OPTIONS: AngleOption<1 | 2>[] = [
+  {
+    value: 1,
+    angleText: 'Bilateral / Sentado',
+    title: 'Soporte bilateral o sentado',
+    subtitle: 'Caminando o de pie simétrico (+1)',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-21a'], totalCols: 3, colIndex: 1, figCode: 'Fig. 4.21a (+1)' },
+    renderSvg: RULA_LEGS_OPTIONS[0].renderSvg,
+  },
+  {
+    value: 2,
+    angleText: 'Unilateral / Inestable',
+    title: 'Soporte unilateral o inestable',
+    subtitle: 'Peso sobre una pierna (+2)',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-21a'], totalCols: 3, colIndex: 2, figCode: 'Fig. 4.21a (+2)' },
+    renderSvg: RULA_LEGS_OPTIONS[1].renderSvg,
+  },
+];
+
 const REBA_KNEE_OPTIONS: AngleOption<0 | 1 | 2>[] = [
   {
     value: 0,
     angleText: '0° a 30°',
     title: 'Rodillas casi extendidas',
     subtitle: 'Sin penalización adicional (+0)',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-21a'], totalCols: 3, colIndex: 1, figCode: 'Fig. 4.21a (0°–30°)' },
     renderSvg: (a) => (
       <svg viewBox="0 0 110 92" className="w-28 h-22">
         <line x1="25" y1="84" x2="85" y2="84" stroke="#64748b" strokeWidth="2" />
@@ -80,6 +107,7 @@ const REBA_KNEE_OPTIONS: AngleOption<0 | 1 | 2>[] = [
     angleText: '30° a 60°',
     title: 'Flexión media de rodillas',
     subtitle: 'Suma +1 punto a piernas',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-21b'], totalCols: 2, colIndex: 0, figCode: 'Fig. 4.21b (+1)' },
     renderSvg: (a) => (
       <svg viewBox="0 0 110 92" className="w-28 h-22">
         <line x1="25" y1="84" x2="85" y2="84" stroke="#64748b" strokeWidth="2" />
@@ -93,6 +121,7 @@ const REBA_KNEE_OPTIONS: AngleOption<0 | 1 | 2>[] = [
     angleText: '> 60° / Cuclillas',
     title: 'Flexión profunda (> 60°)',
     subtitle: 'Suma +2 puntos (no aplica sentado)',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-21b'], totalCols: 2, colIndex: 1, figCode: 'Fig. 4.21b (+2)' },
     renderSvg: (a) => (
       <svg viewBox="0 0 110 92" className="w-28 h-22">
         <line x1="25" y1="84" x2="85" y2="84" stroke="#64748b" strokeWidth="2" />
@@ -109,6 +138,7 @@ const OWAS_LEGS_OPTIONS: AngleOption<1 | 2 | 3 | 4 | 5 | 6 | 7>[] = [
     angleText: 'Cód. 1',
     title: 'Sentado',
     subtitle: 'Apoyado en asiento',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-29a'], totalCols: 1, colIndex: 0, figCode: 'Fig. 4.29a (1)' },
     renderSvg: (a) => (
       <svg viewBox="0 0 90 78" className="w-20 h-18">
         <path d="M 28 32 L 28 56 L 52 56" fill="none" stroke="#94a3b8" strokeWidth="2" />
@@ -121,6 +151,7 @@ const OWAS_LEGS_OPTIONS: AngleOption<1 | 2 | 3 | 4 | 5 | 6 | 7>[] = [
     angleText: 'Cód. 2',
     title: 'De pie 2 piernas',
     subtitle: 'Ambas rectas',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-29b'], totalCols: 1, colIndex: 0, figCode: 'Fig. 4.29b (2)' },
     renderSvg: (a) => (
       <svg viewBox="0 0 90 78" className="w-20 h-18">
         <line x1="45" y1="16" x2="45" y2="42" stroke="#64748b" strokeWidth="4" />
@@ -134,6 +165,7 @@ const OWAS_LEGS_OPTIONS: AngleOption<1 | 2 | 3 | 4 | 5 | 6 | 7>[] = [
     angleText: 'Cód. 3',
     title: 'De pie 1 pierna',
     subtitle: 'Peso en 1 pierna recta',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-29c'], totalCols: 1, colIndex: 0, figCode: 'Fig. 4.29c (3)' },
     renderSvg: (a) => (
       <svg viewBox="0 0 90 78" className="w-20 h-18">
         <line x1="45" y1="16" x2="45" y2="42" stroke="#64748b" strokeWidth="4" />
@@ -147,6 +179,7 @@ const OWAS_LEGS_OPTIONS: AngleOption<1 | 2 | 3 | 4 | 5 | 6 | 7>[] = [
     angleText: 'Cód. 4',
     title: '2 rodillas flex.',
     subtitle: 'Agachado / cuclillas',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-29d'], totalCols: 4, colIndex: 0, figCode: 'Fig. 4.29d (4)' },
     renderSvg: (a) => (
       <svg viewBox="0 0 90 78" className="w-20 h-18">
         <line x1="38" y1="20" x2="38" y2="44" stroke="#64748b" strokeWidth="4" />
@@ -159,6 +192,7 @@ const OWAS_LEGS_OPTIONS: AngleOption<1 | 2 | 3 | 4 | 5 | 6 | 7>[] = [
     angleText: 'Cód. 5',
     title: '1 rodilla flex.',
     subtitle: 'Apoyo asimétrico flex.',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-29d'], totalCols: 4, colIndex: 1, figCode: 'Fig. 4.29d (5)' },
     renderSvg: (a) => (
       <svg viewBox="0 0 90 78" className="w-20 h-18">
         <line x1="40" y1="20" x2="40" y2="44" stroke="#64748b" strokeWidth="4" />
@@ -172,6 +206,7 @@ const OWAS_LEGS_OPTIONS: AngleOption<1 | 2 | 3 | 4 | 5 | 6 | 7>[] = [
     angleText: 'Cód. 6',
     title: 'Arrodillado',
     subtitle: '1 o 2 rodillas en suelo',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-29d'], totalCols: 4, colIndex: 2, figCode: 'Fig. 4.29d (6)' },
     renderSvg: (a) => (
       <svg viewBox="0 0 90 78" className="w-20 h-18">
         <line x1="18" y1="72" x2="72" y2="72" stroke="#cbd5e1" strokeWidth="2" />
@@ -184,6 +219,7 @@ const OWAS_LEGS_OPTIONS: AngleOption<1 | 2 | 3 | 4 | 5 | 6 | 7>[] = [
     angleText: 'Cód. 7',
     title: 'Caminando',
     subtitle: 'Desplazamiento activo',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-29d'], totalCols: 4, colIndex: 3, figCode: 'Fig. 4.29d (7)' },
     renderSvg: (a) => (
       <svg viewBox="0 0 90 78" className="w-20 h-18">
         <line x1="45" y1="16" x2="45" y2="42" stroke="#64748b" strokeWidth="4" />
@@ -220,6 +256,14 @@ export function RulaForm({ data, onChange }: { data: RulaData; onChange: (next: 
 
   return (
     <div className="space-y-6">
+      {/* Control Biomecánico 3D Sincronizado con las 36 Láminas Enviadas */}
+      <Biomech3DControlPanel
+        method="RULA"
+        data={data}
+        activeSide={activeSideKey}
+        onChange={onChange}
+      />
+
       {/* Selector de lado y tiempos del ciclo */}
       <div className="p-4 rounded-lg border border-slate-200 bg-white grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
         <div className="md:col-span-6">
@@ -270,7 +314,7 @@ export function RulaForm({ data, onChange }: { data: RulaData; onChange: (next: 
             <h4 className="text-sm font-semibold text-slate-900">
               Grupo A — Miembro Superior ({activeSideKey === 'right' ? 'Lado Derecho' : 'Lado Izquierdo'})
             </h4>
-            <p className="text-xs text-slate-500">Seleccione el rango angular sobre las guías anatómicas y marque modificadores</p>
+            <p className="text-xs text-slate-500">Seleccione el rango angular sobre las láminas anatómicas Cap. 4 y marque modificadores</p>
           </div>
 
           {data.evaluatedSide === 'ambos' && (
@@ -310,51 +354,68 @@ export function RulaForm({ data, onChange }: { data: RulaData; onChange: (next: 
         {/* Brazo */}
         <VisualAngleSelector
           label="1. Posición del Brazo (Flexión / Extensión sagital)"
-          figureRef="Tabla 4.2 · Guía angular de hombro"
+          figureRef="Fig. 4.4a y Fig. 4.5 · Tabla 4.2"
           selectedValue={sideData.upperArmPos}
           onSelect={(val) => updateSide({ upperArmPos: val })}
           options={UPPER_ARM_OPTIONS}
           columns={4}
+          plateRefs={[
+            { code: 'Fig. 4.4a', label: 'Puntuaciones base del brazo (1 a 4)', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-04a'] },
+            { code: 'Fig. 4.5', label: 'Referencia del eje del tronco', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-05'] },
+          ]}
         />
-        <div className="flex flex-wrap gap-4 pt-1 text-xs text-slate-700">
-          <label className="inline-flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={sideData.shoulderRaised}
-              onChange={(e) => updateSide({ shoulderRaised: e.target.checked })}
-              className="rounded border-slate-300 text-sky-600"
-            />
-            Hombro elevado (+1)
-          </label>
-          <label className="inline-flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={sideData.armAbducted}
-              onChange={(e) => updateSide({ armAbducted: e.target.checked })}
-              className="rounded border-slate-300 text-sky-600"
-            />
-            Brazo abducido / separado (+1)
-          </label>
-          <label className="inline-flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={sideData.armSupported}
-              onChange={(e) => updateSide({ armSupported: e.target.checked })}
-              className="rounded border-slate-300 text-sky-600"
-            />
-            Brazo apoyado o cuerpo inclinado a favor (−1)
-          </label>
+        <div className="space-y-2 pt-1">
+          <div className="flex flex-wrap gap-4 text-xs text-slate-700">
+            <label className="inline-flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={sideData.shoulderRaised}
+                onChange={(e) => updateSide({ shoulderRaised: e.target.checked })}
+                className="rounded border-slate-300 text-sky-600"
+              />
+              Hombro elevado (+1)
+            </label>
+            <label className="inline-flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={sideData.armAbducted}
+                onChange={(e) => updateSide({ armAbducted: e.target.checked })}
+                className="rounded border-slate-300 text-sky-600"
+              />
+              Brazo abducido / separado (+1)
+            </label>
+            <label className="inline-flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={sideData.armSupported}
+                onChange={(e) => updateSide({ armSupported: e.target.checked })}
+                className="rounded border-slate-300 text-sky-600"
+              />
+              Brazo apoyado o cuerpo inclinado a favor (−1)
+            </label>
+          </div>
+          <ModifierPlateBanner
+            caption="Modificadores de hombro y brazo (Tabla 4.3)"
+            plates={[
+              { code: 'Fig. 4.4b', label: 'Abducción (+1) y apoyo (−1)', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-04b'] },
+              { code: 'Fig. 4.6a', label: 'Elevación (+1), rotación (+1) y apoyo (−1)', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-06a'] },
+            ]}
+          />
         </div>
 
         {/* Antebrazo */}
         <div className="pt-3 border-t border-slate-100 space-y-2.5">
           <VisualAngleSelector
             label="2. Posición del Antebrazo (Flexión de codo)"
-            figureRef="Tabla 4.4 · Guía angular de codo"
+            figureRef="Fig. 4.7 y Fig. 4.8 · Tabla 4.4"
             selectedValue={sideData.lowerArmPos}
             onSelect={(val) => updateSide({ lowerArmPos: val })}
             options={LOWER_ARM_OPTIONS}
             columns={2}
+            plateRefs={[
+              { code: 'Fig. 4.7', label: 'Puntuaciones de antebrazo (1 y 2)', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-07'] },
+              { code: 'Fig. 4.8', label: 'Referencia del eje para antebrazo', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-08'] },
+            ]}
           />
           <label className="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
             <input
@@ -365,17 +426,27 @@ export function RulaForm({ data, onChange }: { data: RulaData; onChange: (next: 
             />
             Cruza la línea media del cuerpo o trabaja hacia afuera del eje (+1)
           </label>
+          <ModifierPlateBanner
+            caption="Vista cenital de cruce de línea media y proyección externa (Tabla 4.5)"
+            plates={[
+              { code: 'Fig. 4.9', label: 'Cruce medial (+1) y trabajo externo (+1)', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-09'] },
+            ]}
+          />
         </div>
 
         {/* Muñeca y Giro */}
         <div className="pt-3 border-t border-slate-100 space-y-3">
           <VisualAngleSelector
             label="3. Posición de la Muñeca"
-            figureRef="Tabla 4.6 · Flexión / Extensión"
+            figureRef="Fig. 4.10a y Fig. 4.10b · Tabla 4.6"
             selectedValue={sideData.wristPos}
             onSelect={(val) => updateSide({ wristPos: val })}
             options={RULA_WRIST_OPTIONS}
             columns={3}
+            plateRefs={[
+              { code: 'Fig. 4.10a', label: 'Rangos de muñeca RULA (1, 2 y 3)', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-10a'] },
+              { code: 'Fig. 4.10b', label: 'Detalle flexo-extensión > 15° (3)', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-10b'] },
+            ]}
           />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
             <label className="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
@@ -400,6 +471,12 @@ export function RulaForm({ data, onChange }: { data: RulaData; onChange: (next: 
               </select>
             </div>
           </div>
+          <ModifierPlateBanner
+            caption="Giro pronosupinador del antebrazo y muñeca (Tabla 4.8)"
+            plates={[
+              { code: 'Fig. 4.12', label: 'Rango medio (+1) y extremo (+2)', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-12'] },
+            ]}
+          />
         </div>
 
         {/* Uso muscular y Fuerza Grupo A */}
@@ -440,41 +517,53 @@ export function RulaForm({ data, onChange }: { data: RulaData; onChange: (next: 
 
         <VisualAngleSelector
           label="5. Posición del Cuello"
-          figureRef="Tabla 4.9 · Ángulo cervical"
+          figureRef="Fig. 4.13a · Tabla 4.9"
           selectedValue={data.neckPos}
           onSelect={(val) => onChange({ ...data, neckPos: val })}
           options={RULA_NECK_OPTIONS}
           columns={4}
         />
-        <div className="flex flex-wrap gap-4 text-xs text-slate-700">
-          <label className="inline-flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={data.neckRotated}
-              onChange={(e) => onChange({ ...data, neckRotated: e.target.checked })}
-              className="rounded border-slate-300 text-sky-600"
-            />
-            Cuello rotado (+1)
-          </label>
-          <label className="inline-flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={data.neckSideBending}
-              onChange={(e) => onChange({ ...data, neckSideBending: e.target.checked })}
-              className="rounded border-slate-300 text-sky-600"
-            />
-            Inclinación lateral del cuello (+1)
-          </label>
+        <div className="space-y-2">
+          <div className="flex flex-wrap gap-4 text-xs text-slate-700">
+            <label className="inline-flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={data.neckRotated}
+                onChange={(e) => onChange({ ...data, neckRotated: e.target.checked })}
+                className="rounded border-slate-300 text-sky-600"
+              />
+              Cuello rotado (+1)
+            </label>
+            <label className="inline-flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={data.neckSideBending}
+                onChange={(e) => onChange({ ...data, neckSideBending: e.target.checked })}
+                className="rounded border-slate-300 text-sky-600"
+              />
+              Inclinación lateral del cuello (+1)
+            </label>
+          </div>
+          <ModifierPlateBanner
+            caption="Modificadores cervicales de rotación e inclinación lateral (Tabla 4.10)"
+            plates={[
+              { code: 'Fig. 4.13b', label: 'Rotación (+1) e inclinación lateral (+1)', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-13b'] },
+            ]}
+          />
         </div>
 
         <div className="pt-3 border-t border-slate-100 space-y-2.5">
           <VisualAngleSelector
             label="6. Posición del Tronco"
-            figureRef="Tabla 4.11 · Inclinación del eje vertebral"
+            figureRef="Fig. 4.15a y Fig. 4.15b · Tabla 4.11"
             selectedValue={data.trunkPos}
             onSelect={(val) => onChange({ ...data, trunkPos: val })}
             options={RULA_TRUNK_OPTIONS}
             columns={4}
+            plateRefs={[
+              { code: 'Fig. 4.15a', label: 'Puntuaciones del tronco RULA (1 a 4)', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-15a'] },
+              { code: 'Fig. 4.15b', label: 'Detalle flexión 20°–60° (3) y > 60° (4)', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-15b'] },
+            ]}
           />
           <div className="flex flex-wrap gap-4 text-xs text-slate-700">
             <label className="inline-flex items-center gap-2 cursor-pointer">
@@ -496,16 +585,25 @@ export function RulaForm({ data, onChange }: { data: RulaData; onChange: (next: 
               Inclinación lateral del tronco (+1)
             </label>
           </div>
+          <ModifierPlateBanner
+            caption="Modificadores de torsión e inclinación lateral del tronco (Tabla 4.12)"
+            plates={[
+              { code: 'Fig. 4.16', label: 'Torsión axial (+1) e inclinación lateral (+1)', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-16'] },
+            ]}
+          />
         </div>
 
         <div className="pt-3 border-t border-slate-100">
           <VisualAngleSelector
             label="7. Soporte de Piernas y Pies"
-            figureRef="Tabla 4.13"
+            figureRef="Fig. 4.17 · Tabla 4.13"
             selectedValue={data.legsPos}
             onSelect={(val) => onChange({ ...data, legsPos: val })}
             options={RULA_LEGS_OPTIONS}
             columns={2}
+            plateRefs={[
+              { code: 'Fig. 4.17', label: 'Sentado (+1), apoyo bilateral (+1) y unilateral (+2)', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-17'] },
+            ]}
           />
         </div>
 
@@ -559,6 +657,14 @@ export function RebaForm({ data, onChange }: { data: RebaData; onChange: (next: 
 
   return (
     <div className="space-y-6">
+      {/* Control Biomecánico 3D Sincronizado con las Láminas REBA Cap. 4 */}
+      <Biomech3DControlPanel
+        method="REBA"
+        data={data}
+        activeSide={activeSideKey}
+        onChange={onChange}
+      />
+
       <div className="p-4 rounded-lg border border-slate-200 bg-white flex flex-wrap items-center justify-between gap-4">
         <div>
           <label className="block text-xs font-medium text-slate-700 mb-1.5">Lado del Cuerpo Evaluado</label>
@@ -590,7 +696,7 @@ export function RebaForm({ data, onChange }: { data: RebaData; onChange: (next: 
 
         <VisualAngleSelector
           label="1. Posición del Tronco"
-          figureRef="Tabla 4.21 · Eje sagital"
+          figureRef="Fig. 4.19a · Tabla 4.21"
           selectedValue={data.trunkPos}
           onSelect={(val) => onChange({ ...data, trunkPos: val })}
           options={REBA_TRUNK_OPTIONS}
@@ -605,11 +711,17 @@ export function RebaForm({ data, onChange }: { data: RebaData; onChange: (next: 
           />
           Existe torsión axial o inclinación lateral del tronco (+1)
         </label>
+        <ModifierPlateBanner
+          caption="Modificadores REBA de torsión e inclinación lateral de tronco (Tabla 4.22)"
+          plates={[
+            { code: 'Fig. 4.19b', label: 'Torsión (+1) e inclinación lateral (+1)', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-19b'] },
+          ]}
+        />
 
         <div className="pt-3 border-t border-slate-100 space-y-2.5">
           <VisualAngleSelector
             label="2. Posición del Cuello"
-            figureRef="Tabla 4.23"
+            figureRef="Fig. 4.20 · Tabla 4.23"
             selectedValue={data.neckPos}
             onSelect={(val) => onChange({ ...data, neckPos: val })}
             options={REBA_NECK_OPTIONS}
@@ -629,19 +741,25 @@ export function RebaForm({ data, onChange }: { data: RebaData; onChange: (next: 
         <div className="pt-3 border-t border-slate-100 space-y-4">
           <VisualAngleSelector
             label="3. Soporte Base de Piernas"
-            figureRef="Tabla 4.25"
+            figureRef="Fig. 4.21a · Tabla 4.25"
             selectedValue={data.legsBase}
             onSelect={(val) => onChange({ ...data, legsBase: val })}
-            options={RULA_LEGS_OPTIONS}
+            options={REBA_LEGS_BASE_OPTIONS}
             columns={2}
+            plateRefs={[
+              { code: 'Fig. 4.21a', label: 'Sentado (+1), apoyo bilateral (+1) y unilateral (+2)', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-21a'] },
+            ]}
           />
           <VisualAngleSelector
             label="Flexión Adicional de Rodillas"
-            figureRef="Tabla 4.26 · Modificador de flexión"
+            figureRef="Fig. 4.21b · Tabla 4.26"
             selectedValue={data.legsKneeFlexion}
             onSelect={(val) => onChange({ ...data, legsKneeFlexion: val })}
             options={REBA_KNEE_OPTIONS}
             columns={3}
+            plateRefs={[
+              { code: 'Fig. 4.21b', label: 'Flexión de rodillas 30°–60° (+1) y > 60° (+2)', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-21b'] },
+            ]}
           />
         </div>
 
@@ -712,49 +830,57 @@ export function RebaForm({ data, onChange }: { data: RebaData; onChange: (next: 
 
         <VisualAngleSelector
           label="4. Posición del Brazo"
-          figureRef="Tabla 4.29"
+          figureRef="Fig. 4.22a · Tabla 4.29"
           selectedValue={sideData.upperArmPos}
           onSelect={(val) => updateSide({ upperArmPos: val })}
-          options={UPPER_ARM_OPTIONS}
+          options={REBA_UPPER_ARM_OPTIONS}
           columns={4}
         />
-        <div className="flex flex-wrap gap-4 text-xs text-slate-700">
-          <label className="inline-flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={sideData.shoulderRaised}
-              onChange={(e) => updateSide({ shoulderRaised: e.target.checked })}
-              className="rounded border-slate-300 text-sky-600"
-            />
-            Hombro elevado (+1)
-          </label>
-          <label className="inline-flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={sideData.armAbducted}
-              onChange={(e) => updateSide({ armAbducted: e.target.checked })}
-              className="rounded border-slate-300 text-sky-600"
-            />
-            Brazo abducido o rotado (+1)
-          </label>
-          <label className="inline-flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={sideData.armSupported}
-              onChange={(e) => updateSide({ armSupported: e.target.checked })}
-              className="rounded border-slate-300 text-sky-600"
-            />
-            Existe punto de apoyo del brazo (−1)
-          </label>
+        <div className="space-y-2">
+          <div className="flex flex-wrap gap-4 text-xs text-slate-700">
+            <label className="inline-flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={sideData.shoulderRaised}
+                onChange={(e) => updateSide({ shoulderRaised: e.target.checked })}
+                className="rounded border-slate-300 text-sky-600"
+              />
+              Hombro elevado (+1)
+            </label>
+            <label className="inline-flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={sideData.armAbducted}
+                onChange={(e) => updateSide({ armAbducted: e.target.checked })}
+                className="rounded border-slate-300 text-sky-600"
+              />
+              Brazo abducido o rotado (+1)
+            </label>
+            <label className="inline-flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={sideData.armSupported}
+                onChange={(e) => updateSide({ armSupported: e.target.checked })}
+                className="rounded border-slate-300 text-sky-600"
+              />
+              Existe punto de apoyo del brazo (−1)
+            </label>
+          </div>
+          <ModifierPlateBanner
+            caption="Modificadores REBA de hombro y brazo (Tabla 4.30)"
+            plates={[
+              { code: 'Fig. 4.22b', label: 'Elevación/abducción (+1), rotación (+1) y apoyo (−1)', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-22b'] },
+            ]}
+          />
         </div>
 
         <div className="pt-3 border-t border-slate-100">
           <VisualAngleSelector
             label="5. Posición del Antebrazo"
-            figureRef="Tabla 4.31"
+            figureRef="Fig. 4.23 · Tabla 4.31"
             selectedValue={sideData.lowerArmPos}
             onSelect={(val) => updateSide({ lowerArmPos: val })}
-            options={LOWER_ARM_OPTIONS}
+            options={REBA_LOWER_ARM_OPTIONS}
             columns={2}
           />
         </div>
@@ -762,7 +888,7 @@ export function RebaForm({ data, onChange }: { data: RebaData; onChange: (next: 
         <div className="pt-3 border-t border-slate-100 space-y-2.5">
           <VisualAngleSelector
             label="6. Posición de la Muñeca"
-            figureRef="Tabla 4.32"
+            figureRef="Fig. 4.24 · Tabla 4.32"
             selectedValue={sideData.wristPos}
             onSelect={(val) => updateSide({ wristPos: val })}
             options={REBA_WRIST_OPTIONS}
@@ -832,7 +958,7 @@ export function RebaForm({ data, onChange }: { data: RebaData; onChange: (next: 
 }
 
 // ============================================================================
-// 3. FORMULARIO OWAS (CON GUÍAS VISUALES + CARGA DE DATOS CSV / TABLA)
+// 3. FORMULARIO OWAS (CON CONTROL BIOMECÁNICO 3D + LÁMINAS + CARGA CSV)
 // ============================================================================
 export function OwasForm({ data, onChange }: { data: OwasData; onChange: (next: OwasData) => void }) {
   const csvInputRef = useRef<HTMLInputElement>(null);
@@ -926,6 +1052,21 @@ export function OwasForm({ data, onChange }: { data: OwasData; onChange: (next: 
 
   return (
     <div className="space-y-6">
+      {/* Control Biomecánico 3D Sincronizado con los Códigos OWAS y Láminas Cap. 4 */}
+      <Biomech3DControlPanel
+        method="OWAS"
+        back={draftBack}
+        arms={draftArms}
+        legs={draftLegs}
+        load={draftLoad}
+        onChangeCodes={(patch) => {
+          if (patch.back !== undefined) setDraftBack(patch.back);
+          if (patch.arms !== undefined) setDraftArms(patch.arms);
+          if (patch.legs !== undefined) setDraftLegs(patch.legs);
+          if (patch.load !== undefined) setDraftLoad(patch.load);
+        }}
+      />
+
       {/* Selector visual interactivo para construir código de 4 dígitos */}
       <div className="p-5 rounded-lg border border-slate-200 bg-white space-y-5">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
@@ -937,7 +1078,7 @@ export function OwasForm({ data, onChange }: { data: OwasData; onChange: (next: 
               {draftLoad})
             </h4>
             <p className="text-xs text-slate-500">
-              Seleccione las posturas de referencia para configurar el código de 4 dígitos y agregarlo a la serie muestreada
+              Seleccione las posturas sobre las láminas oficiales Cap. 4 para configurar el código de 4 dígitos y agregarlo a la serie muestreada
             </p>
           </div>
           <span className="font-mono text-sm font-semibold tabular-nums px-2.5 py-1 rounded bg-slate-100 text-slate-900">
@@ -947,29 +1088,43 @@ export function OwasForm({ data, onChange }: { data: OwasData; onChange: (next: 
 
         <VisualAngleSelector
           label="1° Dígito — Postura de Espalda (1 a 4)"
-          figureRef="Tabla 4.38"
+          figureRef="Fig. 4.27a y Fig. 4.27b · Tabla 4.38"
           selectedValue={draftBack}
           onSelect={setDraftBack}
           options={OWAS_BACK_OPTIONS}
           columns={4}
+          plateRefs={[
+            { code: 'Fig. 4.27a', label: 'Código 1 — Espalda recta', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-27a'] },
+            { code: 'Fig. 4.27b', label: 'Códigos 2, 3 y 4 — Flexión y/o torsión', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-27b'] },
+          ]}
         />
 
         <VisualAngleSelector
           label="2° Dígito — Postura de Brazos (1 a 3)"
-          figureRef="Tabla 4.39"
+          figureRef="Fig. 4.28a y Fig. 4.28b · Tabla 4.39"
           selectedValue={draftArms}
           onSelect={setDraftArms}
           options={OWAS_ARMS_OPTIONS}
           columns={3}
+          plateRefs={[
+            { code: 'Fig. 4.28a', label: 'Código 1 — Ambos brazos bajo hombros', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-28a'] },
+            { code: 'Fig. 4.28b', label: 'Códigos 2 y 3 — Uno o ambos brazos elevados', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-28b'] },
+          ]}
         />
 
         <VisualAngleSelector
           label="3° Dígito — Postura de Piernas (1 a 7)"
-          figureRef="Tabla 4.40"
+          figureRef="Fig. 4.29a a Fig. 4.29d · Tabla 4.40"
           selectedValue={draftLegs}
           onSelect={setDraftLegs}
           options={OWAS_LEGS_OPTIONS}
           columns={7}
+          plateRefs={[
+            { code: 'Fig. 4.29a', label: 'Cód. 1 Sentado', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-29a'] },
+            { code: 'Fig. 4.29b', label: 'Cód. 2 De pie 2 piernas rectas', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-29b'] },
+            { code: 'Fig. 4.29c', label: 'Cód. 3 De pie 1 pierna recta', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-29c'] },
+            { code: 'Fig. 4.29d', label: 'Cód. 4 a 7 Flexión, arrodillado y caminando', url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-29d'] },
+          ]}
         />
 
         <div className="grid grid-cols-1 md:grid-cols-12 gap-3 pt-3 border-t border-slate-100 items-end">
@@ -1023,7 +1178,7 @@ export function OwasForm({ data, onChange }: { data: OwasData; onChange: (next: 
           <div>
             <h4 className="text-sm font-semibold text-slate-900">Planilla de Muestreo Postural y Carga de Datos (CSV)</h4>
             <p className="text-xs text-slate-500">
-              Puede editar directamente cada registro muestreado o cargar una serie de datos en formato CSV
+              Puede editar directamente cada registro muestreado, enviarlo al visor 3D o cargar una serie de datos en formato CSV
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -1144,14 +1299,31 @@ export function OwasForm({ data, onChange }: { data: OwasData; onChange: (next: 
                     />
                   </td>
                   <td className="py-2 px-2 text-right">
-                    <button
-                      type="button"
-                      onClick={() => removeRow(obs.id)}
-                      disabled={data.observations.length <= 1}
-                      className="p-1 text-slate-400 hover:text-red-600 disabled:opacity-30 cursor-pointer"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="inline-flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDraftPhase(obs.taskPhase);
+                          setDraftBack(obs.back);
+                          setDraftArms(obs.arms);
+                          setDraftLegs(obs.legs);
+                          setDraftLoad(obs.load);
+                        }}
+                        className="inline-flex items-center gap-1 px-1.5 py-1 rounded border border-slate-200 bg-white hover:bg-sky-50 hover:border-sky-300 text-[11px] font-medium text-sky-800 whitespace-nowrap cursor-pointer"
+                        title="Cargar esta postura en el Control Biomecánico 3D"
+                      >
+                        <Box className="w-3 h-3" />
+                        3D
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => removeRow(obs.id)}
+                        disabled={data.observations.length <= 1}
+                        className="p-1 text-slate-400 hover:text-red-600 disabled:opacity-30 cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

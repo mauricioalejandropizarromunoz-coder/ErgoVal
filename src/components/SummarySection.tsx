@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  AlertOctagon,
   AlertTriangle,
   ArrowUpRight,
   CheckCircle2,
@@ -17,6 +18,7 @@ import {
 } from '../types/ergonomics';
 import { evaluateStudyTab } from '../utils/calculations';
 import { METHOD_CATALOG } from '../utils/defaults';
+import { TrafficLightColor, buildStudyTrafficLightMatrix } from '../utils/trafficLightAlerts';
 
 export interface PrioritizedTabEntry {
   tab: StudyTab;
@@ -46,7 +48,6 @@ export function buildPrioritizedStudies(general: GeneralStudyData, tabs: StudyTa
   const injuryBonus = general.previousInjuriesOrSymptoms ? 35 : 0;
 
   const scored = evaluated.map((item) => {
-    // Menor hierarchyOrder (1=MMC, 2=Repetitividad, 3=Postura, 4=Vibración, 5=Térmico) = mayor prioridad biomecánica
     const biomechWeight = (6 - item.result.hierarchyOrder) * 15;
     const priorityScore =
       SEVERITY_WEIGHT[item.result.severity] +
@@ -87,19 +88,19 @@ export function generateAutomaticExecutiveSynthesis(
       .map((p) => `${p.tab.tabLabel} (${p.result.primaryScoreText} — ${p.result.riskLabel})`)
       .join('; ');
     lines.push(
-      `Se identificaron ${highCount} estudio(s) en nivel de RIESGO ALTO / MUY ALTO que demandan intervención prioritaria de ingeniería y rediseño operativo: ${topCritical}.`,
+      `ATENCIÓN INMEDIATA (SEMÁFORO ROJO): Se identificaron ${highCount} estudio(s) en nivel de RIESGO ALTO / MUY ALTO que demandan intervención prioritaria de ingeniería y rediseño operativo: ${topCritical}.`,
     );
   }
 
   if (modCount > 0) {
     lines.push(
-      `Adicionalmente, ${modCount} estudio(s) arrojaron nivel de RIESGO MODERADO, recomendándose implementar mejoras organizativas, ajustes geométricos y seguimiento periódico a corto/mediano plazo.`,
+      `Adicionalmente, ${modCount} estudio(s) arrojaron nivel de RIESGO MODERADO (SEMÁFORO ÁMBAR), recomendándose implementar mejoras organizativas, ajustes geométricos y seguimiento periódico a corto/mediano plazo.`,
     );
   }
 
   if (highCount === 0 && modCount === 0 && lowCount > 0) {
     lines.push(
-      `La totalidad de las evaluaciones practicadas (${lowCount} de ${prioritized.length}) se sitúa en ZONA ACEPTABLE / RIESGO BAJO, verificándose condiciones ergonómicas compatibles con la preservación de la salud musculoesquelética bajo el régimen operativo relevado.`,
+      `La totalidad de las evaluaciones practicadas (${lowCount} de ${prioritized.length}) se sitúa en ZONA ACEPTABLE / RIESGO BAJO (SEMÁFORO VERDE), verificándose condiciones ergonómicas compatibles con la preservación de la salud musculoesquelética bajo el régimen operativo relevado.`,
     );
   }
 
@@ -110,6 +111,32 @@ export function generateAutomaticExecutiveSynthesis(
   }
 
   return lines.join('\n\n');
+}
+
+function getTrafficCellClasses(color: TrafficLightColor): {
+  cellBg: string;
+  dotBg: string;
+  textClass: string;
+} {
+  if (color === 'rojo') {
+    return {
+      cellBg: 'bg-red-50/90',
+      dotBg: 'bg-red-600',
+      textClass: 'text-red-900 font-bold',
+    };
+  }
+  if (color === 'ambar') {
+    return {
+      cellBg: 'bg-amber-50/90',
+      dotBg: 'bg-amber-500',
+      textClass: 'text-amber-900 font-bold',
+    };
+  }
+  return {
+    cellBg: 'bg-emerald-50/90',
+    dotBg: 'bg-emerald-600',
+    textClass: 'text-emerald-900 font-bold',
+  };
 }
 
 interface SummarySectionProps {
@@ -134,6 +161,7 @@ export function SummarySection({
   isExportingWord,
 }: SummarySectionProps) {
   const prioritized = buildPrioritizedStudies(general, tabs);
+  const trafficSummary = buildStudyTrafficLightMatrix(general, tabs);
   const autoSynthesis = generateAutomaticExecutiveSynthesis(general, prioritized);
 
   const criticalOrHighCount = prioritized.filter(
@@ -208,15 +236,17 @@ export function SummarySection({
             <span className="block text-xs text-slate-500 mt-0.5">{totalPhotos} registro(s) fotográfico(s)</span>
           </div>
           <div>
-            <span className="block text-xs text-slate-500">Estudios en Riesgo Alto / Muy Alto</span>
+            <span className="block text-xs text-slate-500">Alertas de Atención Inmediata</span>
             <span
               className={`text-2xl font-bold font-mono tabular-nums ${
-                criticalOrHighCount > 0 ? 'text-red-700' : 'text-emerald-700'
+                trafficSummary.redCount > 0 ? 'text-red-700' : 'text-emerald-700'
               }`}
             >
-              {criticalOrHighCount}
+              {trafficSummary.redCount}
             </span>
-            <span className="block text-xs text-slate-500 mt-0.5">{moderateCount} en nivel moderado</span>
+            <span className="block text-xs text-slate-500 mt-0.5">
+              {criticalOrHighCount} estudio(s) crítico(s) · {moderateCount} moderado(s)
+            </span>
           </div>
           <div>
             <span className="block text-xs text-slate-500">Trabajadores Expuestos</span>
@@ -234,6 +264,133 @@ export function SummarySection({
               {prioritized[0]?.result.primaryScoreText || ''}
             </span>
           </div>
+        </div>
+      </section>
+
+      {/* ALERTA DE RESULTADOS QUE REQUIEREN ATENCIÓN INMEDIATA */}
+      {trafficSummary.immediateAlerts.length > 0 ? (
+        <section className="rounded-lg border border-red-300 bg-red-50/85 p-5 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-red-200 pb-2.5">
+            <div className="flex items-center gap-2 text-red-900">
+              <AlertOctagon className="w-5 h-5 text-red-700 shrink-0" />
+              <h3 className="text-sm font-bold tracking-tight">
+                ALERTA ERGONÓMICA: RESULTADOS QUE REQUIEREN ATENCIÓN INMEDIATA ({trafficSummary.immediateAlerts.length})
+              </h3>
+            </div>
+            <span className="text-xs font-mono font-semibold text-red-800 tabular-nums">
+              Semáforo Rojo · Intervención prioritaria de ingeniería
+            </span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {trafficSummary.immediateAlerts.map((al) => (
+              <div key={al.id} className="rounded-md border border-red-200 bg-white p-3 space-y-1 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-bold text-slate-900">{al.indicator}</span>
+                  <span className="font-mono font-bold text-red-700 tabular-nums">{al.measuredValue}</span>
+                </div>
+                <div className="text-slate-600">
+                  Umbral admisible: <span className="font-mono text-slate-800">{al.normativeThreshold}</span> · Plazo:{' '}
+                  <strong className="text-red-800">{al.deadline}</strong>
+                </div>
+                <p className="text-slate-800 pt-0.5">{al.actionRequired}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : (
+        <section
+          className={`rounded-lg border p-4 flex items-start gap-3 text-xs ${
+            trafficSummary.amberCount > 0
+              ? 'border-amber-300 bg-amber-50/75 text-amber-950'
+              : 'border-emerald-300 bg-emerald-50/75 text-emerald-950'
+          }`}
+        >
+          {trafficSummary.amberCount > 0 ? (
+            <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+          ) : (
+            <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+          )}
+          <div>
+            <p className="font-bold">
+              {trafficSummary.amberCount > 0
+                ? `Sin alertas rojas de atención inmediata · ${trafficSummary.amberCount} indicador(es) en Semáforo Ámbar`
+                : 'Control Ergonómico Favorable · Todos los indicadores evaluados se encuentran en Semáforo Verde'}
+            </p>
+            <p className="mt-0.5">
+              {trafficSummary.amberCount > 0
+                ? 'Se recomienda ejecutar mejoras programadas sobre los factores en zona ámbar y mantener seguimiento periódico.'
+                : 'No se registran superaciones de límites normativos en las pestañas activas del estudio.'}
+            </p>
+          </div>
+        </section>
+      )}
+
+      {/* TABLA SEMÁFORO DE COLORES (VERDE / ÁMBAR / ROJO) */}
+      <section className="rounded-lg border border-slate-200 bg-white p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-900">
+              Tabla Semáforo de Control Ergonómico y Biomecánico (Incluida en Informe PDF y Word)
+            </h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Clasificación directa de criticidad para toma de decisiones rápidas en planta y comité de seguridad
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3 text-xs font-mono tabular-nums">
+            <span className="inline-flex items-center gap-1.5 text-red-800 font-semibold">
+              <span className="w-2.5 h-2.5 rounded-full bg-red-600 inline-block" />
+              Rojo: {trafficSummary.redCount}
+            </span>
+            <span className="inline-flex items-center gap-1.5 text-amber-800 font-semibold">
+              <span className="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block" />
+              Ámbar: {trafficSummary.amberCount}
+            </span>
+            <span className="inline-flex items-center gap-1.5 text-emerald-800 font-semibold">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-600 inline-block" />
+              Verde: {trafficSummary.greenCount}
+            </span>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto border border-slate-200 rounded-lg">
+          <table className="w-full text-left border-collapse text-xs">
+            <thead>
+              <tr className="bg-slate-900 text-white">
+                <th className="py-2.5 px-3 font-semibold">Semáforo</th>
+                <th className="py-2.5 px-3 font-semibold">Indicador / Método</th>
+                <th className="py-2.5 px-3 font-semibold">Valor Medido</th>
+                <th className="py-2.5 px-3 font-semibold">Límite Normativo</th>
+                <th className="py-2.5 px-3 font-semibold">Acción Requerida y Plazo</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-200">
+              {trafficSummary.rows.map((r) => {
+                const st = getTrafficCellClasses(r.color);
+                return (
+                  <tr key={r.id} className="hover:bg-slate-50/80 align-top">
+                    <td className={`py-2.5 px-3 whitespace-nowrap ${st.cellBg}`}>
+                      <span className={`inline-flex items-center gap-2 ${st.textClass}`}>
+                        <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${st.dotBg}`} />
+                        <span>{r.shortBadge}</span>
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-3">
+                      <div className="font-semibold text-slate-900">{r.indicator}</div>
+                      <div className="text-slate-500 mt-0.5">{r.contextLabel}</div>
+                    </td>
+                    <td className="py-2.5 px-3 font-mono font-semibold tabular-nums text-slate-900">
+                      {r.measuredValue}
+                    </td>
+                    <td className="py-2.5 px-3 font-mono tabular-nums text-slate-700">{r.normativeThreshold}</td>
+                    <td className="py-2.5 px-3 text-slate-700">
+                      <span>{r.actionRequired}</span>{' '}
+                      <span className="font-semibold text-slate-900">({r.deadline})</span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       </section>
 

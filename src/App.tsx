@@ -3,7 +3,9 @@ import { AnimatePresence, motion } from 'motion/react';
 import {
   AlertTriangle,
   BookOpen,
+  Box,
   Building2,
+  Calculator,
   ChevronLeft,
   ChevronRight,
   FileDown,
@@ -13,27 +15,31 @@ import {
   Plus,
   Scale,
   Sliders,
-  Sparkles,
+  Video,
   X,
 } from 'lucide-react';
 import {
-  CanvasTheme,
   DisplayPreferences,
   GeneralStudyData,
   MethodId,
   StudyTab,
 } from './types/ergonomics';
-import { createNewStudyTab } from './utils/defaults';
-import { buildBlankStudy, buildPresetLibroEjemplos, buildPresetPoseSa } from './utils/presets';
+import { createInitialGeneralData, createNewStudyTab } from './utils/defaults';
+import { buildBlankStudy, buildPresetEmpresaX, buildPresetLibroEjemplos } from './utils/presets';
 import { evaluateStudyTab } from './utils/calculations';
 import { exportStudyToPdf, exportStudyToWord } from './utils/reportExport';
 import { exportUserManualPdf } from './utils/manualExport';
+import { countModifiedFormulaMethods, subscribeFormulaChanges } from './utils/formulaConfig';
 import { GeneralDataForm } from './components/GeneralDataForm';
 import { StudyTabWorkspace } from './components/StudyTabWorkspace';
 import { SummarySection } from './components/SummarySection';
 import { ReferenceViewerModal } from './components/ReferenceViewerModal';
 import { DisplayControlsModal } from './components/DisplayControlsModal';
 import { AboutModal } from './components/AboutModal';
+import { FigurePlanStudio } from './components/FigurePlanStudio';
+import { FormulaStudio } from './components/FormulaStudio';
+import { VideoBiomechExtractor } from './components/VideoBiomechExtractor';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 const STORAGE_KEY = 'ergoeval_workspace_v1';
 const PREFS_STORAGE_KEY = 'ergoeval_display_prefs_v1';
@@ -51,19 +57,65 @@ interface SavedProjectFile {
   tabs: StudyTab[];
 }
 
+function deepReplaceLegacyBrand<T>(input: T): T {
+  if (typeof input === 'string') {
+    if (
+      input.startsWith('data:') ||
+      input.startsWith('/assets/') ||
+      input.startsWith('http://') ||
+      input.startsWith('https://') ||
+      input.startsWith('blob:')
+    ) {
+      return input;
+    }
+    return input.replace(/\bpose\b/gi, 'EmpresaX') as unknown as T;
+  }
+  if (Array.isArray(input)) {
+    return input.map((item) => deepReplaceLegacyBrand(item)) as unknown as T;
+  }
+  if (input && typeof input === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+      out[k] = deepReplaceLegacyBrand(v);
+    }
+    return out as T;
+  }
+  return input;
+}
+
 function loadInitialState(): { general: GeneralStudyData; tabs: StudyTab[] } {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as SavedProjectFile;
+      const parsed = deepReplaceLegacyBrand(JSON.parse(raw) as SavedProjectFile);
       if (parsed && parsed.general && Array.isArray(parsed.tabs) && parsed.tabs.length > 0) {
-        return { general: parsed.general, tabs: parsed.tabs };
+        // Deep sanitize every tab against standard defaults to prevent crashes from older/incomplete schema
+        const sanitizedTabs: StudyTab[] = parsed.tabs.map((tab, idx) => {
+          const fresh = createNewStudyTab(idx + 1, tab.method || MethodId.RULA, tab.taskEvaluated);
+          return {
+            ...fresh,
+            ...tab,
+            id: tab.id || fresh.id,
+            tabNumber: idx + 1,
+            tabLabel: tab.tabLabel || fresh.tabLabel,
+            method: tab.method || MethodId.RULA,
+            payloads: {
+              ...fresh.payloads,
+              ...(tab.payloads || {}),
+            },
+          };
+        });
+        const sanitizedGeneral: GeneralStudyData = {
+          ...createInitialGeneralData(),
+          ...parsed.general,
+        };
+        return { general: sanitizedGeneral, tabs: sanitizedTabs };
       }
     }
   } catch {
-    // Ignore malformed storage and fallback to default POSE S.A. study
+    // Ignore malformed storage and fallback to default EmpresaX S.A. study
   }
-  return buildPresetPoseSa();
+  return buildPresetEmpresaX();
 }
 
 function loadInitialPreferences(): DisplayPreferences {
@@ -100,6 +152,11 @@ export default function App() {
   const [isAboutModalOpen, setIsAboutModalOpen] = useState(false);
   const [isDisclaimerDismissed, setIsDisclaimerDismissed] = useState(false);
 
+  // Espacio de trabajo superior: Evaluador Ergonómico, Motor 3D Plan de Figuras, Editor de Fórmulas o Extractor Video IA
+  const [activeWorkspace, setActiveWorkspace] = useState<'evaluador' | 'figuras3d' | 'formulas' | 'video_ia'>('evaluador');
+  const [formulaStudioMethodId, setFormulaStudioMethodId] = useState<MethodId>(MethodId.RULA);
+  const [formulaRevision, setFormulaRevision] = useState<number>(0);
+
   // Page index: 0 = Datos Generales, 1..tabs.length = Pestañas de Estudio, tabs.length + 1 = Resumen Automático
   const [activeSlideIndex, setActiveSlideIndex] = useState<number>(0);
   const [slideDirection, setSlideDirection] = useState<number>(1);
@@ -113,6 +170,16 @@ export default function App() {
 
   const totalSlides = tabs.length + 2;
   const safeSlideIndex = Math.min(activeSlideIndex, totalSlides - 1);
+
+  useEffect(() => {
+    const unsub = subscribeFormulaChanges(() => {
+      setFormulaRevision((r) => r + 1);
+    });
+    return unsub;
+  }, []);
+
+  void formulaRevision;
+  const modifiedFormulaCount = countModifiedFormulaMethods();
 
   useEffect(() => {
     try {
@@ -140,6 +207,7 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (activeWorkspace !== 'evaluador') return;
       if (e.altKey && e.key === 'ArrowRight') {
         e.preventDefault();
         navigateToSlide(Math.min(totalSlides - 1, safeSlideIndex + 1));
@@ -186,10 +254,10 @@ export default function App() {
     setActiveSlideIndex(Math.max(1, Math.min(nextTabs.length, tabIdx)));
   };
 
-  const handleLoadPreset = (presetKey: 'pose' | 'libro' | 'blank') => {
+  const handleLoadPreset = (presetKey: 'empresax' | 'libro' | 'blank') => {
     const built =
-      presetKey === 'pose'
-        ? buildPresetPoseSa()
+      presetKey === 'empresax'
+        ? buildPresetEmpresaX()
         : presetKey === 'libro'
           ? buildPresetLibroEjemplos()
           : buildBlankStudy();
@@ -198,8 +266,8 @@ export default function App() {
     setSlideDirection(1);
     setActiveSlideIndex(0);
     showTempBanner(
-      presetKey === 'pose'
-        ? 'Se cargó el estudio modelo POSE S.A. con 5 pestañas evaluadas.'
+      presetKey === 'empresax'
+        ? 'Se cargó el estudio modelo EmpresaX S.A. con 5 pestañas evaluadas.'
         : presetKey === 'libro'
           ? 'Se cargaron los 6 ejercicios resueltos de los Capítulos 4 a 8 del libro.'
           : 'Se inició un formulario en blanco listo para carga en campo.',
@@ -223,7 +291,7 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        const parsed = JSON.parse(String(reader.result || '')) as SavedProjectFile;
+        const parsed = deepReplaceLegacyBrand(JSON.parse(String(reader.result || '')) as SavedProjectFile);
         if (parsed.general && Array.isArray(parsed.tabs) && parsed.tabs.length > 0) {
           setGeneral(parsed.general);
           setTabs(parsed.tabs);
@@ -283,6 +351,57 @@ export default function App() {
     setIsReferenceModalOpen(true);
   };
 
+  const handleOpenFormulaEditor = (methodId?: MethodId) => {
+    const currentTabMethod =
+      safeSlideIndex >= 1 && safeSlideIndex <= tabs.length
+        ? tabs[safeSlideIndex - 1]?.method
+        : MethodId.RULA;
+    setFormulaStudioMethodId(methodId || currentTabMethod);
+    setActiveWorkspace('formulas');
+  };
+
+  const handleEmitTabsAndReportFromVideo = async ({
+    nioshTab,
+    rebaTab,
+    autoDownloadPdf,
+  }: {
+    nioshTab: StudyTab;
+    rebaTab: StudyTab;
+    autoDownloadPdf: boolean;
+  }) => {
+    const updatedGeneral: GeneralStudyData = {
+      ...general,
+      hazardsIdentified: {
+        ...general.hazardsIdentified,
+        manipulacion_cargas: true,
+        posturas_forzadas: true,
+      },
+    };
+    const filteredExisting = tabs.filter(
+      (t) => t.id !== 'tab-video-ia-niosh' && t.id !== 'tab-video-ia-reba',
+    );
+    const nextTabs = [...filteredExisting, nioshTab, rebaTab];
+
+    setGeneral(updatedGeneral);
+    setTabs(nextTabs);
+
+    if (autoDownloadPdf) {
+      setIsExportingPdf(true);
+      try {
+        await exportStudyToPdf(updatedGeneral, nextTabs);
+        showTempBanner(
+          'Video procesado: variables extraídas, pestañas NIOSH/REBA creadas e Informe Técnico PDF emitido automáticamente.',
+        );
+      } finally {
+        setIsExportingPdf(false);
+      }
+    } else {
+      showTempBanner(
+        'Video procesado: pestañas NIOSH y REBA integradas en el estudio EmpresaX con su informe en pantalla.',
+      );
+    }
+  };
+
   // Soporte táctil para deslizar (swipe horizontal) entre pestañas sin interferir con inputs
   const onTouchStart = (e: React.TouchEvent) => {
     const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
@@ -330,39 +449,101 @@ export default function App() {
       {/* BARRA SUPERIOR GLOBAL */}
       <header className="sticky top-0 z-30 bg-white border-b border-slate-300 shadow-2xs">
         <div className="max-w-[1400px] mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
-          {/* Marca y Crédito de Autor */}
-          <div className="flex items-center gap-3 shrink-0">
+          {/* Marca, Pestaña Complementaria Motor 3D y Crédito de Autor */}
+          <div className="flex items-center gap-2.5 shrink-0">
             <button
               type="button"
-              onClick={() => navigateToSlide(0)}
-              className="font-bold text-base tracking-tight text-slate-900 whitespace-nowrap cursor-pointer flex items-center gap-2"
+              onClick={() => {
+                setActiveWorkspace('evaluador');
+                navigateToSlide(0);
+              }}
+              className={`font-bold text-base tracking-tight whitespace-nowrap cursor-pointer flex items-center gap-2 px-2 py-1 rounded-md transition-colors ${
+                activeWorkspace === 'evaluador'
+                  ? 'text-slate-900 bg-slate-100'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+              }`}
+              title="Estudio Ergonómico Multipestaña"
             >
               <span className="w-7 h-7 rounded-md bg-sky-700 text-white flex items-center justify-center text-xs font-mono font-bold">
                 EE
               </span>
               <span>ErgoEval</span>
             </button>
-            <span className="hidden xl:inline text-[11px] text-slate-500 font-normal pl-1 border-l border-slate-300">
+
+            <button
+              type="button"
+              onClick={() => setActiveWorkspace('figuras3d')}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
+                activeWorkspace === 'figuras3d'
+                  ? 'bg-sky-700 text-white border-sky-800 shadow-2xs'
+                  : 'bg-sky-50/80 text-sky-900 border-sky-200 hover:bg-sky-100'
+              }`}
+              title="Motor de Renderizado Biomecánico 3D y Plan de Figuras del Libro"
+            >
+              <Box className="w-3.5 h-3.5" />
+              <span>Motor 3D · Plan de Figuras</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleOpenFormulaEditor()}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
+                activeWorkspace === 'formulas'
+                  ? 'bg-slate-900 text-white border-slate-900 shadow-2xs'
+                  : 'bg-slate-100 text-slate-900 border-slate-300 hover:bg-slate-200'
+              }`}
+              title="Ver y modificar las fórmulas algebraicas y umbrales de cada método"
+            >
+              <Calculator className="w-3.5 h-3.5" />
+              <span>
+                Fórmulas de Métodos
+                {modifiedFormulaCount > 0 ? ` (${modifiedFormulaCount})` : ''}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveWorkspace('video_ia')}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
+                activeWorkspace === 'video_ia'
+                  ? 'bg-emerald-700 text-white border-emerald-800 shadow-2xs'
+                  : 'bg-emerald-50/90 text-emerald-950 border-emerald-300 hover:bg-emerald-100'
+              }`}
+              title="Extractor de Variables Biomecánicas desde Archivo de Video con Emisión Automática de Informe"
+            >
+              <Video className="w-3.5 h-3.5" />
+              <span>Video IA · Informe</span>
+            </button>
+
+            <span className="hidden 2xl:inline text-[11px] text-slate-500 font-normal pl-1 border-l border-slate-300">
               por Mauricio Alejandro Pizarro Muñoz
             </span>
           </div>
 
           {/* Navegación central y accesos de desarrollo / visualización */}
-          <nav className="hidden lg:flex items-center gap-4 text-xs font-medium text-slate-600">
+          <nav className="hidden xl:flex items-center gap-3.5 text-xs font-medium text-slate-600">
             <button
               type="button"
-              onClick={() => navigateToSlide(0)}
+              onClick={() => {
+                setActiveWorkspace('evaluador');
+                navigateToSlide(0);
+              }}
               className={`py-1 whitespace-nowrap shrink-0 cursor-pointer hover:text-slate-900 ${
-                safeSlideIndex === 0 ? 'text-sky-700 font-semibold underline underline-offset-4' : ''
+                activeWorkspace === 'evaluador' && safeSlideIndex === 0
+                  ? 'text-sky-700 font-semibold underline underline-offset-4'
+                  : ''
               }`}
             >
               Datos Generales
             </button>
             <button
               type="button"
-              onClick={() => navigateToSlide(1)}
+              onClick={() => {
+                setActiveWorkspace('evaluador');
+                navigateToSlide(1);
+              }}
               className={`py-1 whitespace-nowrap shrink-0 cursor-pointer hover:text-slate-900 ${
-                safeSlideIndex >= 1 && safeSlideIndex <= tabs.length
+                activeWorkspace === 'evaluador' && safeSlideIndex >= 1 && safeSlideIndex <= tabs.length
                   ? 'text-sky-700 font-semibold underline underline-offset-4'
                   : ''
               }`}
@@ -371,9 +552,14 @@ export default function App() {
             </button>
             <button
               type="button"
-              onClick={() => navigateToSlide(tabs.length + 1)}
+              onClick={() => {
+                setActiveWorkspace('evaluador');
+                navigateToSlide(tabs.length + 1);
+              }}
               className={`py-1 whitespace-nowrap shrink-0 cursor-pointer hover:text-slate-900 ${
-                safeSlideIndex === tabs.length + 1 ? 'text-sky-700 font-semibold underline underline-offset-4' : ''
+                activeWorkspace === 'evaluador' && safeSlideIndex === tabs.length + 1
+                  ? 'text-sky-700 font-semibold underline underline-offset-4'
+                  : ''
               }`}
             >
               Resumen Automático
@@ -439,10 +625,28 @@ export default function App() {
             <button
               type="button"
               onClick={() => setIsDisplayModalOpen(true)}
-              className="lg:hidden p-1.5 rounded-md border border-slate-300 text-slate-700 hover:bg-slate-100 cursor-pointer"
+              className="xl:hidden p-1.5 rounded-md border border-slate-300 text-slate-700 hover:bg-slate-100 cursor-pointer"
               title="Visualización"
             >
               <Sliders className="w-4 h-4" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                setActiveWorkspace((prev) => (prev === 'figuras3d' ? 'evaluador' : 'figuras3d'))
+              }
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
+                activeWorkspace === 'figuras3d'
+                  ? 'bg-sky-700 text-white border-sky-800'
+                  : 'bg-white hover:bg-slate-50 text-slate-800 border-slate-300'
+              }`}
+              title="Alternar al Estudio de Figuras 3D del Libro (PNG < 120 KB)"
+            >
+              <Box className={`w-3.5 h-3.5 ${activeWorkspace === 'figuras3d' ? 'text-white' : 'text-sky-600'}`} />
+              <span className="hidden sm:inline">
+                {activeWorkspace === 'figuras3d' ? 'Ir a Evaluador' : 'Figuras 3D'}
+              </span>
             </button>
 
             <button
@@ -501,107 +705,109 @@ export default function App() {
         </div>
       )}
 
-      {/* BARRA DESLIZABLE DE PESTAÑAS DE TRABAJO */}
-      <div className="bg-[#d2dfec] border-b border-slate-300">
-        <div className="max-w-[1400px] mx-auto px-2 sm:px-6 flex items-center gap-1.5 py-2">
-          <button
-            type="button"
-            onClick={() => navigateToSlide(safeSlideIndex - 1)}
-            disabled={safeSlideIndex === 0}
-            title="Deslizar a la pestaña anterior (Alt + ←)"
-            className="p-1.5 rounded border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-35 text-slate-700 shrink-0 cursor-pointer"
-          >
-            <ChevronLeft className="w-4 h-4" />
-          </button>
-
-          <div className="flex-1 flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
-            {/* Pestaña 0: Datos Generales */}
+      {/* BARRA DESLIZABLE DE PESTAÑAS DE TRABAJO (MODO EVALUADOR) */}
+      {activeWorkspace === 'evaluador' && (
+        <div className="bg-[#d2dfec] border-b border-slate-300">
+          <div className="max-w-[1400px] mx-auto px-2 sm:px-6 flex items-center gap-1.5 py-2">
             <button
-              ref={(el) => {
-                tabButtonsRef.current[0] = el;
-              }}
               type="button"
-              onClick={() => navigateToSlide(0)}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
-                safeSlideIndex === 0
-                  ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
-                  : 'bg-white/95 text-slate-700 border-slate-300 hover:border-slate-400 hover:bg-white hover:text-slate-900'
-              }`}
+              onClick={() => navigateToSlide(safeSlideIndex - 1)}
+              disabled={safeSlideIndex === 0}
+              title="Deslizar a la pestaña anterior (Alt + ←)"
+              className="p-1.5 rounded border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-35 text-slate-700 shrink-0 cursor-pointer"
             >
-              <Building2 className="w-3.5 h-3.5" />
-              Datos Empresa y Puesto
+              <ChevronLeft className="w-4 h-4" />
             </button>
 
-            {/* Pestañas Dinámicas de Estudio 1..N */}
-            {tabs.map((tab, idx) => {
-              const slideIdx = idx + 1;
-              const isActive = safeSlideIndex === slideIdx;
-              const sevTag = getSeverityShortCode(tab);
-              return (
-                <button
-                  key={tab.id}
-                  ref={(el) => {
-                    tabButtonsRef.current[slideIdx] = el;
-                  }}
-                  type="button"
-                  onClick={() => navigateToSlide(slideIdx)}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
-                    isActive
-                      ? 'bg-sky-700 text-white border-sky-800 shadow-xs'
-                      : 'bg-white/95 text-slate-700 border-slate-300 hover:border-sky-400 hover:bg-white hover:text-slate-900'
-                  }`}
-                >
-                  <span>{tab.tabLabel}</span>
-                  <span
-                    className={`font-mono text-[10px] tabular-nums ${
-                      isActive ? 'text-sky-100' : sevTag.textClass
+            <div className="flex-1 flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
+              {/* Pestaña 0: Datos Generales */}
+              <button
+                ref={(el) => {
+                  tabButtonsRef.current[0] = el;
+                }}
+                type="button"
+                onClick={() => navigateToSlide(0)}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
+                  safeSlideIndex === 0
+                    ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                    : 'bg-white/95 text-slate-700 border-slate-300 hover:border-slate-400 hover:bg-white hover:text-slate-900'
+                }`}
+              >
+                <Building2 className="w-3.5 h-3.5" />
+                Datos Empresa y Puesto
+              </button>
+
+              {/* Pestañas Dinámicas de Estudio 1..N */}
+              {tabs.map((tab, idx) => {
+                const slideIdx = idx + 1;
+                const isActive = safeSlideIndex === slideIdx;
+                const sevTag = getSeverityShortCode(tab);
+                return (
+                  <button
+                    key={tab.id}
+                    ref={(el) => {
+                      tabButtonsRef.current[slideIdx] = el;
+                    }}
+                    type="button"
+                    onClick={() => navigateToSlide(slideIdx)}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
+                      isActive
+                        ? 'bg-sky-700 text-white border-sky-800 shadow-xs'
+                        : 'bg-white/95 text-slate-700 border-slate-300 hover:border-sky-400 hover:bg-white hover:text-slate-900'
                     }`}
                   >
-                    · {sevTag.label}
-                  </span>
-                </button>
-              );
-            })}
+                    <span>{tab.tabLabel}</span>
+                    <span
+                      className={`font-mono text-[10px] tabular-nums ${
+                        isActive ? 'text-sky-100' : sevTag.textClass
+                      }`}
+                    >
+                      · {sevTag.label}
+                    </span>
+                  </button>
+                );
+              })}
 
-            {/* Botón + Añadir nueva pestaña de método */}
+              {/* Botón + Añadir nueva pestaña de método */}
+              <button
+                type="button"
+                onClick={() => handleAddTab(MethodId.RULA)}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-dashed border-sky-700/70 bg-sky-50/90 hover:bg-white text-xs font-semibold text-sky-800 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Añadir Pestaña
+              </button>
+
+              {/* Pestaña Final: Resumen Automático */}
+              <button
+                ref={(el) => {
+                  tabButtonsRef.current[tabs.length + 1] = el;
+                }}
+                type="button"
+                onClick={() => navigateToSlide(tabs.length + 1)}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
+                  safeSlideIndex === tabs.length + 1
+                    ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                    : 'bg-white/95 text-slate-800 border-slate-300 hover:border-slate-400 hover:bg-white'
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                Resumen Automático ({tabs.length})
+              </button>
+            </div>
+
             <button
               type="button"
-              onClick={() => handleAddTab(MethodId.RULA)}
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-dashed border-sky-700/70 bg-sky-50/90 hover:bg-white text-xs font-semibold text-sky-800 whitespace-nowrap shrink-0 cursor-pointer"
+              onClick={() => navigateToSlide(safeSlideIndex + 1)}
+              disabled={safeSlideIndex === totalSlides - 1}
+              title="Deslizar a la pestaña siguiente (Alt + →)"
+              className="p-1.5 rounded border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-35 text-slate-700 shrink-0 cursor-pointer"
             >
-              <Plus className="w-3.5 h-3.5" />
-              Añadir Pestaña
-            </button>
-
-            {/* Pestaña Final: Resumen Automático */}
-            <button
-              ref={(el) => {
-                tabButtonsRef.current[tabs.length + 1] = el;
-              }}
-              type="button"
-              onClick={() => navigateToSlide(tabs.length + 1)}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
-                safeSlideIndex === tabs.length + 1
-                  ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
-                  : 'bg-white/95 text-slate-800 border-slate-300 hover:border-slate-400 hover:bg-white'
-              }`}
-            >
-              <Layers className="w-3.5 h-3.5" />
-              Resumen Automático ({tabs.length})
+              <ChevronRight className="w-4 h-4" />
             </button>
           </div>
-
-          <button
-            type="button"
-            onClick={() => navigateToSlide(safeSlideIndex + 1)}
-            disabled={safeSlideIndex === totalSlides - 1}
-            title="Deslizar a la pestaña siguiente (Alt + →)"
-            className="p-1.5 rounded border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-35 text-slate-700 shrink-0 cursor-pointer"
-          >
-            <ChevronRight className="w-4 h-4" />
-          </button>
         </div>
-      </div>
+      )}
 
       {/* Notificación temporal no bloqueante */}
       {statusBanner && (
@@ -619,85 +825,124 @@ export default function App() {
         </div>
       )}
 
-      {/* CONTENEDOR PRINCIPAL CON DESLIZAMIENTO HORIZONTAL ENTRE PESTAÑAS */}
-      <main
-        onTouchStart={onTouchStart}
-        onTouchEnd={onTouchEnd}
-        className="flex-1 max-w-[1400px] w-full mx-auto px-4 sm:px-6 py-6 overflow-x-hidden"
-      >
-        <AnimatePresence mode="wait" initial={false}>
-          <motion.div
-            key={
-              safeSlideIndex === 0
-                ? 'slide-general'
-                : safeSlideIndex === tabs.length + 1
-                  ? 'slide-summary'
-                  : `slide-tab-${tabs[safeSlideIndex - 1]?.id}`
-            }
-            initial={{ opacity: 0, x: slideDirection * 32 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -slideDirection * 32 }}
-            transition={{ duration: 0.18, ease: 'easeOut' }}
-          >
-            {safeSlideIndex === 0 ? (
-              <GeneralDataForm
-                data={general}
-                onChange={setGeneral}
-                onLoadPreset={handleLoadPreset}
-                onQuickAddMethodTab={(method, hint) => handleAddTab(method, hint)}
-                onGoToFirstTab={() => navigateToSlide(1)}
-              />
-            ) : safeSlideIndex === tabs.length + 1 ? (
-              <SummarySection
-                general={general}
-                tabs={tabs}
-                onChangeGeneral={setGeneral}
-                onSelectTabIndex={(tabIdx) => navigateToSlide(tabIdx + 1)}
-                onExportPdf={handleExportPdf}
-                onExportWord={handleExportWord}
-                isExportingPdf={isExportingPdf}
-                isExportingWord={isExportingWord}
-              />
-            ) : (
-              <StudyTabWorkspace
-                tab={tabs[safeSlideIndex - 1]}
-                tabIndex={safeSlideIndex - 1}
-                totalTabs={tabs.length}
-                onChange={(updated) => handleUpdateTab(safeSlideIndex - 1, updated)}
-                onDeleteTab={() => handleDeleteTab(safeSlideIndex - 1)}
-                onOpenReference={(methodId, query) => handleOpenReference(methodId, query)}
-              />
-            )}
-          </motion.div>
-        </AnimatePresence>
+      {/* CONTENEDOR PRINCIPAL */}
+      {activeWorkspace === 'figuras3d' ? (
+        <main className="flex-1 max-w-[1400px] w-full mx-auto px-4 sm:px-6 py-6 overflow-x-hidden">
+          <ErrorBoundary>
+            <FigurePlanStudio onBackToEvaluator={() => setActiveWorkspace('evaluador')} />
+          </ErrorBoundary>
+        </main>
+      ) : activeWorkspace === 'formulas' ? (
+        <main className="flex-1 max-w-[1400px] w-full mx-auto px-4 sm:px-6 py-6 overflow-x-hidden">
+          <ErrorBoundary>
+            <FormulaStudio
+              initialMethodId={formulaStudioMethodId}
+              tabs={tabs}
+              onBackToEvaluator={() => setActiveWorkspace('evaluador')}
+              onOpenReference={(mId) => handleOpenReference(mId)}
+              onNotify={showTempBanner}
+            />
+          </ErrorBoundary>
+        </main>
+      ) : activeWorkspace === 'video_ia' ? (
+        <main className="flex-1 max-w-[1400px] w-full mx-auto px-4 sm:px-6 py-6 overflow-x-hidden">
+          <ErrorBoundary>
+            <VideoBiomechExtractor
+              general={general}
+              onBackToEvaluator={() => setActiveWorkspace('evaluador')}
+              onEmitTabsAndReport={handleEmitTabsAndReportFromVideo}
+              onExportCurrentPdf={handleExportPdf}
+              onExportCurrentWord={handleExportWord}
+              onOpenGeneratedTabsInEvaluator={() => {
+                setActiveWorkspace('evaluador');
+                const nioshIdx = tabs.findIndex((t) => t.id === 'tab-video-ia-niosh');
+                navigateToSlide(nioshIdx >= 0 ? nioshIdx + 1 : Math.max(1, tabs.length - 1));
+              }}
+            />
+          </ErrorBoundary>
+        </main>
+      ) : (
+        <main
+          onTouchStart={onTouchStart}
+          onTouchEnd={onTouchEnd}
+          className="flex-1 max-w-[1400px] w-full mx-auto px-4 sm:px-6 py-6 overflow-x-hidden"
+        >
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key={
+                safeSlideIndex === 0
+                  ? 'slide-general'
+                  : safeSlideIndex === tabs.length + 1
+                    ? 'slide-summary'
+                    : `slide-tab-${tabs[safeSlideIndex - 1]?.id}`
+              }
+              initial={{ opacity: 0, x: slideDirection * 32 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -slideDirection * 32 }}
+              transition={{ duration: 0.18, ease: 'easeOut' }}
+            >
+              {safeSlideIndex === 0 ? (
+                <GeneralDataForm
+                  data={general}
+                  onChange={setGeneral}
+                  onLoadPreset={handleLoadPreset}
+                  onQuickAddMethodTab={(method, hint) => handleAddTab(method, hint)}
+                  onGoToFirstTab={() => navigateToSlide(1)}
+                />
+              ) : safeSlideIndex === tabs.length + 1 ? (
+                <SummarySection
+                  general={general}
+                  tabs={tabs}
+                  onChangeGeneral={setGeneral}
+                  onSelectTabIndex={(tabIdx) => navigateToSlide(tabIdx + 1)}
+                  onExportPdf={handleExportPdf}
+                  onExportWord={handleExportWord}
+                  isExportingPdf={isExportingPdf}
+                  isExportingWord={isExportingWord}
+                />
+              ) : (
+                <StudyTabWorkspace
+                  tab={tabs[safeSlideIndex - 1]}
+                  tabIndex={safeSlideIndex - 1}
+                  totalTabs={tabs.length}
+                  onChange={(updated) => handleUpdateTab(safeSlideIndex - 1, updated)}
+                  onDeleteTab={() => handleDeleteTab(safeSlideIndex - 1)}
+                  onOpenReference={(methodId, query) => handleOpenReference(methodId, query)}
+                  onOpenFormulaEditor={(methodId) => handleOpenFormulaEditor(methodId)}
+                  onOpenVideoExtractor={() => setActiveWorkspace('video_ia')}
+                />
+              )}
+            </motion.div>
+          </AnimatePresence>
 
-        {/* Navegación inferior rápida de deslizamiento entre pestañas */}
-        <div className="mt-8 pt-4 border-t border-slate-300 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-700">
-          <button
-            type="button"
-            onClick={() => navigateToSlide(safeSlideIndex - 1)}
-            disabled={safeSlideIndex === 0}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-40 font-medium text-slate-800 whitespace-nowrap cursor-pointer"
-          >
-            <ChevronLeft className="w-4 h-4" />
-            Pestaña Anterior
-          </button>
+          {/* Navegación inferior rápida de deslizamiento entre pestañas */}
+          <div className="mt-8 pt-4 border-t border-slate-300 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-700">
+            <button
+              type="button"
+              onClick={() => navigateToSlide(safeSlideIndex - 1)}
+              disabled={safeSlideIndex === 0}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-40 font-medium text-slate-800 whitespace-nowrap cursor-pointer"
+            >
+              <ChevronLeft className="w-4 h-4" />
+              Pestaña Anterior
+            </button>
 
-          <span className="font-mono tabular-nums text-slate-600">
-            Página {safeSlideIndex + 1} de {totalSlides} · Deslice o use Alt + ← / →
-          </span>
+            <span className="font-mono tabular-nums text-slate-600">
+              Página {safeSlideIndex + 1} de {totalSlides} · Deslice o use Alt + ← / →
+            </span>
 
-          <button
-            type="button"
-            onClick={() => navigateToSlide(safeSlideIndex + 1)}
-            disabled={safeSlideIndex === totalSlides - 1}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md bg-slate-900 hover:bg-slate-800 disabled:opacity-40 font-medium text-white whitespace-nowrap cursor-pointer"
-          >
-            Pestaña Siguiente
-            <ChevronRight className="w-4 h-4" />
-          </button>
-        </div>
-      </main>
+            <button
+              type="button"
+              onClick={() => navigateToSlide(safeSlideIndex + 1)}
+              disabled={safeSlideIndex === totalSlides - 1}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md bg-slate-900 hover:bg-slate-800 disabled:opacity-40 font-medium text-white whitespace-nowrap cursor-pointer"
+            >
+              Pestaña Siguiente
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+        </main>
+      )}
 
       {/* PIE DE PÁGINA INSTITUCIONAL CON COPYRIGHT Y RESPONSABILIDAD PROFESIONAL */}
       <footer className="mt-auto bg-slate-900 text-slate-300 border-t border-slate-800 text-xs">
@@ -767,6 +1012,7 @@ export default function App() {
         initialMethodId={referenceInitialMethod}
         initialQuery={referenceInitialQuery}
         onDownloadManualPdf={handleDownloadManualPdf}
+        onOpenFormulaEditor={(mId) => handleOpenFormulaEditor(mId)}
       />
 
       {/* MODAL 2: CONTROLES DE VISUALIZACIÓN Y CONTRASTE */}

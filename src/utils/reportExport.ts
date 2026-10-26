@@ -18,10 +18,16 @@ import {
 } from 'docx';
 import { GeneralStudyData, MethodId, RiskSeverity, StudyTab } from '../types/ergonomics';
 import { METHOD_CATALOG } from './defaults';
+import { getMethodFormulaProfile, isMethodFormulaModified } from './formulaConfig';
 import {
   buildPrioritizedStudies,
   generateAutomaticExecutiveSynthesis,
 } from '../components/SummarySection';
+import {
+  TrafficLightColor,
+  buildStudyTrafficLightMatrix,
+  describeNioshTrajectory,
+} from './trafficLightAlerts';
 
 export const PROFESSIONAL_DISCLAIMER_TEXT =
   'AVISO Y DESCARGO DE RESPONSABILIDAD PROFESIONAL: Esta herramienta informática fue desarrollada para el uso exclusivo de profesionales con formación y competencia técnica en ergonomía laboral y salud ocupacional. Los cálculos, estimaciones y ponderaciones algorítmicas emitidos por este sistema constituyen un soporte técnico de cálculo y NO sustituyen en modo alguno el análisis crítico, la inspección presencial de campo ni la verificación obligatoria de los resultados obtenidos que debe efectuar el propio profesional evaluador en ejercicio de su responsabilidad legal.';
@@ -104,6 +110,41 @@ function severityBadgeColors(sev: RiskSeverity): { rgb: [number, number, number]
   }
 }
 
+function trafficLightPalette(color: TrafficLightColor): {
+  dotRgb: [number, number, number];
+  fillRgb: [number, number, number];
+  textRgb: [number, number, number];
+  hexFill: string;
+  hexText: string;
+} {
+  switch (color) {
+    case 'rojo':
+      return {
+        dotRgb: [220, 38, 38],
+        fillRgb: [254, 226, 226],
+        textRgb: [153, 27, 27],
+        hexFill: 'FEE2E2',
+        hexText: '991B1B',
+      };
+    case 'ambar':
+      return {
+        dotRgb: [217, 119, 6],
+        fillRgb: [254, 243, 199],
+        textRgb: [146, 64, 14],
+        hexFill: 'FEF3C7',
+        hexText: '92400E',
+      };
+    case 'verde':
+      return {
+        dotRgb: [22, 163, 74],
+        fillRgb: [220, 252, 231],
+        textRgb: [22, 101, 52],
+        hexFill: 'DCFCE7',
+        hexText: '166534',
+      };
+  }
+}
+
 function extractRawSeriesRows(tab: StudyTab): { headers: string[]; rows: string[][] } | null {
   if (tab.method === MethodId.OWAS) {
     const obs = tab.payloads[MethodId.OWAS].observations;
@@ -163,6 +204,18 @@ function extractRawSeriesRows(tab: StudyTab): { headers: string[]; rows: string[
   return null;
 }
 
+function getTabTrajectoryClarification(tab: StudyTab): string | null {
+  if (tab.method === MethodId.NIOSH) {
+    const nd = tab.payloads[MethodId.NIOSH];
+    return describeNioshTrajectory(nd.vOriginCm, nd.vDestCm).technicalExplanation;
+  }
+  if (tab.method === MethodId.LMC_295) {
+    const ld = tab.payloads[MethodId.LMC_295];
+    return describeNioshTrajectory(ld.originHeightCm, ld.destHeightCm).technicalExplanation;
+  }
+  return null;
+}
+
 // ============================================================================
 // 1. EXPORTACIÓN A PDF DETALLADO (jsPDF + jspdf-autotable)
 // ============================================================================
@@ -171,9 +224,18 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
   const margin = 14;
+  const pageTopY = 34;
+  const pageBottomMargin = 18;
   const contentWidth = pageWidth - margin * 2;
+  const safeTableMargin = {
+    top: pageTopY,
+    bottom: pageBottomMargin,
+    left: margin,
+    right: margin,
+  };
 
   const prioritized = buildPrioritizedStudies(general, tabs);
+  const trafficSummary = buildStudyTrafficLightMatrix(general, tabs);
   const executiveSummary =
     general.customGlobalConclusion.trim() || generateAutomaticExecutiveSynthesis(general, prioritized);
 
@@ -181,12 +243,12 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
     ? await normalizeDataUrlToPng(general.companyLogoDataUrl, 320)
     : null;
 
-  let currentY = 36;
+  let currentY = pageTopY + 2;
 
   const ensureSpace = (neededMm: number) => {
-    if (currentY + neededMm > pageHeight - 18) {
+    if (currentY + neededMm > pageHeight - pageBottomMargin) {
       doc.addPage();
-      currentY = 36;
+      currentY = pageTopY + 2;
     }
   };
 
@@ -197,27 +259,27 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
 
   // SECCIÓN 1: IDENTIFICACIÓN INSTITUCIONAL Y DEL EVALUADOR
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(13);
+  doc.setFontSize(12.5);
   doc.setTextColor(15, 23, 42);
   doc.text('INFORME TÉCNICO DE EVALUACIÓN ERGONÓMICA DE PUESTO DE TRABAJO', margin, currentY);
-  currentY += 6;
+  currentY += 5.5;
 
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9);
+  doc.setFontSize(8.8);
   doc.setTextColor(71, 85, 105);
   doc.text(
     'Desarrollado conforme a metodologías ergonómicas validadas (Capítulos 4 a 10 — Protocolo de Evaluación Integral)',
     margin,
     currentY,
   );
-  currentY += 5;
+  currentY += 4.5;
 
   autoTable(doc, {
     startY: currentY,
-    margin: { left: margin, right: margin },
+    margin: safeTableMargin,
     theme: 'grid',
     headStyles: { fillColor: [15, 23, 42], textColor: 255, fontSize: 8.5, fontStyle: 'bold' },
-    bodyStyles: { fontSize: 8.5, textColor: [30, 41, 59], cellPadding: 2.3 },
+    bodyStyles: { fontSize: 8.3, textColor: [30, 41, 59], cellPadding: 2.3 },
     head: [['1. DATOS DE LA EMPRESA EVALUADA', '2. DATOS DEL PROFESIONAL EVALUADOR']],
     body: [
       [
@@ -231,12 +293,12 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
   // ADVERTENCIA DE RESPONSABILIDAD PROFESIONAL Y COPYRIGHT
   autoTable(doc, {
     startY: currentY,
-    margin: { left: margin, right: margin },
+    margin: safeTableMargin,
     theme: 'plain',
     styles: {
       fillColor: [248, 250, 252],
       textColor: [71, 85, 105],
-      fontSize: 7,
+      fontSize: 6.9,
       cellPadding: 2,
       lineColor: [203, 213, 225],
       lineWidth: 0.2,
@@ -262,10 +324,10 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
 
   autoTable(doc, {
     startY: currentY,
-    margin: { left: margin, right: margin },
+    margin: safeTableMargin,
     theme: 'grid',
     headStyles: { fillColor: [2, 132, 199], textColor: 255, fontSize: 8.5, fontStyle: 'bold' },
-    bodyStyles: { fontSize: 8.5, textColor: [30, 41, 59], cellPadding: 2.3 },
+    bodyStyles: { fontSize: 8.3, textColor: [30, 41, 59], cellPadding: 2.2 },
     head: [['3. DESCRIPCIÓN TÉCNICA DEL PUESTO DE TRABAJO EVALUADO', 'DETALLE RELEVADO']],
     columnStyles: { 0: { cellWidth: 52, fontStyle: 'bold' } },
     body: [
@@ -289,20 +351,141 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
   });
   currentY = getLastAutoTableY();
 
-  // SECCIÓN 3: RESUMEN EJECUTIVO Y TABLA DE PRIORIZACIÓN (CAPÍTULO 10)
-  ensureSpace(45);
+  // SECCIÓN 3: ALERTA DE ATENCIÓN INMEDIATA + TABLA SEMÁFORO DE COLORES
+  ensureSpace(42);
+  if (trafficSummary.immediateAlerts.length > 0) {
+    autoTable(doc, {
+      startY: currentY,
+      margin: safeTableMargin,
+      theme: 'grid',
+      headStyles: {
+        fillColor: [185, 28, 28],
+        textColor: [255, 255, 255],
+        fontSize: 8.8,
+        fontStyle: 'bold',
+      },
+      bodyStyles: {
+        fillColor: [254, 242, 242],
+        textColor: [127, 29, 29],
+        fontSize: 8.1,
+        cellPadding: 2.3,
+        lineColor: [252, 165, 165],
+      },
+      head: [
+        [
+          `ALERTA ERGONÓMICA DE ATENCIÓN INMEDIATA — ${trafficSummary.immediateAlerts.length} HALLAZGO(S) EN ZONA CRÍTICA (SEMÁFORO ROJO)`,
+        ],
+      ],
+      body: trafficSummary.immediateAlerts.map((al, idx) => [
+        `${idx + 1}. ${al.indicator} — Medido: ${al.measuredValue} (Límite normativo: ${al.normativeThreshold}).\nAcción inmediata requerida (${al.deadline}): ${al.actionRequired}`,
+      ]),
+    });
+    currentY = getLastAutoTableY();
+  } else {
+    const isAmber = trafficSummary.amberCount > 0;
+    autoTable(doc, {
+      startY: currentY,
+      margin: safeTableMargin,
+      theme: 'grid',
+      headStyles: {
+        fillColor: isAmber ? [180, 83, 9] : [21, 128, 61],
+        textColor: [255, 255, 255],
+        fontSize: 8.5,
+        fontStyle: 'bold',
+      },
+      bodyStyles: {
+        fillColor: isAmber ? [254, 252, 232] : [240, 253, 244],
+        textColor: isAmber ? [120, 53, 15] : [20, 83, 45],
+        fontSize: 8.1,
+        cellPadding: 2.2,
+      },
+      head: [
+        [
+          isAmber
+            ? `AVISO PREVENTIVO — SIN ALERTAS ROJAS INMEDIATAS (${trafficSummary.amberCount} INDICADOR(ES) EN ÁMBAR)`
+            : 'ESTADO DE CONTROL ERGONÓMICO — SIN ALERTAS DE ATENCIÓN INMEDIATA (TODOS LOS INDICADORES EN VERDE)',
+        ],
+      ],
+      body: [
+        [
+          isAmber
+            ? 'No se detectan exposiciones intolerables de acción inmediata, pero existen condiciones en nivel ÁMBAR que requieren ajustes programados de ingeniería u organización.'
+            : 'La totalidad de los métodos y parámetros biomecánicos evaluados se mantiene dentro de los umbrales ergonómicos aceptables.',
+        ],
+      ],
+    });
+    currentY = getLastAutoTableY();
+  }
+
+  ensureSpace(44);
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(10.5);
+  doc.setFontSize(10);
   doc.setTextColor(15, 23, 42);
-  doc.text('4. RESUMEN EJECUTIVO Y JERARQUIZACIÓN BIOMECÁNICA DE INTERVENCIONES', margin, currentY);
-  currentY += 4;
+  doc.text(
+    `4. TABLA SEMÁFORO DE CONTROL ERGONÓMICO (Rojo: ${trafficSummary.redCount} · Ámbar: ${trafficSummary.amberCount} · Verde: ${trafficSummary.greenCount})`,
+    margin,
+    currentY,
+  );
+  currentY += 3.5;
 
   autoTable(doc, {
     startY: currentY,
-    margin: { left: margin, right: margin },
+    margin: safeTableMargin,
     theme: 'grid',
-    headStyles: { fillColor: [15, 23, 42], textColor: 255, fontSize: 8, fontStyle: 'bold' },
-    bodyStyles: { fontSize: 8, textColor: [30, 41, 59], cellPadding: 2 },
+    headStyles: { fillColor: [15, 23, 42], textColor: 255, fontSize: 7.8, fontStyle: 'bold' },
+    bodyStyles: { fontSize: 7.6, textColor: [30, 41, 59], cellPadding: 2 },
+    columnStyles: {
+      0: { cellWidth: 28, fontStyle: 'bold' },
+      1: { cellWidth: 42 },
+      2: { cellWidth: 34, fontStyle: 'bold' },
+      3: { cellWidth: 30 },
+      4: { cellWidth: contentWidth - 134 },
+    },
+    head: [['Semáforo', 'Dimensión / Método', 'Valor Medido', 'Límite Normativo', 'Acción Requerida y Plazo']],
+    body: trafficSummary.rows.map((r) => [
+      `    ${r.shortBadge}`,
+      `${r.indicator}\n${r.contextLabel}`,
+      r.measuredValue,
+      r.normativeThreshold,
+      `${r.actionRequired} (${r.deadline})`,
+    ]),
+    didParseCell: (hookData) => {
+      if (hookData.section === 'body' && hookData.column.index === 0) {
+        const rowData = trafficSummary.rows[hookData.row.index];
+        if (rowData) {
+          const pal = trafficLightPalette(rowData.color);
+          hookData.cell.styles.fillColor = pal.fillRgb;
+          hookData.cell.styles.textColor = pal.textRgb;
+        }
+      }
+    },
+    didDrawCell: (hookData) => {
+      if (hookData.section === 'body' && hookData.column.index === 0) {
+        const rowData = trafficSummary.rows[hookData.row.index];
+        if (rowData) {
+          const pal = trafficLightPalette(rowData.color);
+          doc.setFillColor(pal.dotRgb[0], pal.dotRgb[1], pal.dotRgb[2]);
+          doc.circle(hookData.cell.x + 3.6, hookData.cell.y + hookData.cell.height / 2, 1.5, 'F');
+        }
+      }
+    },
+  });
+  currentY = getLastAutoTableY();
+
+  // SECCIÓN 4: RESUMEN EJECUTIVO Y TABLA DE PRIORIZACIÓN (CAPÍTULO 10)
+  ensureSpace(42);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10);
+  doc.setTextColor(15, 23, 42);
+  doc.text('5. RESUMEN EJECUTIVO Y JERARQUIZACIÓN BIOMECÁNICA DE INTERVENCIONES', margin, currentY);
+  currentY += 3.5;
+
+  autoTable(doc, {
+    startY: currentY,
+    margin: safeTableMargin,
+    theme: 'grid',
+    headStyles: { fillColor: [30, 41, 59], textColor: 255, fontSize: 7.9, fontStyle: 'bold' },
+    bodyStyles: { fontSize: 7.9, textColor: [30, 41, 59], cellPadding: 2 },
     head: [['Prioridad', 'Pestaña / Subtarea', 'Método', 'Resultado', 'Nivel de Riesgo', 'Plazo Propuesto']],
     body: prioritized.map((p) => [
       `#${p.rank}`,
@@ -315,59 +498,81 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
   });
   currentY = getLastAutoTableY();
 
-  // Síntesis ejecutiva escrita
-  ensureSpace(28);
-  const splitExec = doc.splitTextToSize(executiveSummary, contentWidth - 4);
+  // Síntesis ejecutiva escrita con control estricto de salto de página por párrafo
+  const execParagraphs = executiveSummary.split('\n\n').filter((p) => p.trim().length > 0);
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8.8);
+  doc.setFontSize(8.6);
   doc.setTextColor(30, 41, 59);
-  doc.text(splitExec, margin + 2, currentY + 2);
-  currentY += splitExec.length * 4.2 + 8;
+  for (const para of execParagraphs) {
+    const lines = doc.splitTextToSize(para.trim(), contentWidth - 4);
+    const blockH = lines.length * 4.1 + 3;
+    ensureSpace(blockH);
+    doc.text(lines, margin + 1, currentY + 3);
+    currentY += blockH;
+  }
+  currentY += 3;
 
-  // SECCIÓN 4: DESARROLLO DETALLADO PESTAÑA POR PESTAÑA
+  // SECCIÓN 5: DESARROLLO DETALLADO PESTAÑA POR PESTAÑA
   for (let i = 0; i < tabs.length; i++) {
     const tab = tabs[i];
     const pEntry = prioritized.find((p) => p.tab.id === tab.id)!;
     const res = pEntry.result;
     const catalog = METHOD_CATALOG.find((m) => m.id === tab.method)!;
     const sevColor = severityBadgeColors(res.severity);
+    const trajectoryNote = getTabTrajectoryClarification(tab);
 
     doc.addPage();
-    currentY = 36;
+    currentY = pageTopY + 2;
 
     // Título de pestaña
     doc.setFillColor(241, 245, 249);
-    doc.rect(margin, currentY - 5, contentWidth, 14, 'F');
+    doc.rect(margin, currentY - 4, contentWidth, 14, 'F');
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(11);
+    doc.setFontSize(10.5);
     doc.setTextColor(15, 23, 42);
-    doc.text(`ESTUDIO ${i + 1} DE ${tabs.length}: ${tab.tabLabel.toUpperCase()}`, margin + 3, currentY + 1);
+    const studyTitleLine = doc.splitTextToSize(
+      `ESTUDIO ${i + 1} DE ${tabs.length}: ${tab.tabLabel.toUpperCase()}`,
+      contentWidth - 6,
+    )[0];
+    doc.text(studyTitleLine, margin + 3, currentY + 1.5);
 
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8.5);
+    doc.setFontSize(8.3);
     doc.setTextColor(71, 85, 105);
-    doc.text(`${catalog.fullName} (${catalog.chapterRef})`, margin + 3, currentY + 6.5);
+    doc.text(`${catalog.fullName} (${catalog.chapterRef})`, margin + 3, currentY + 7);
     currentY += 14;
+
+    const summaryBodyRows: string[][] = [
+      ['Subtarea Evaluada', tab.taskEvaluated || 'Ciclo operativo del puesto'],
+      ['Justificación del Método', catalog.justificationTemplate],
+      ['Instrumental / Relevamiento', tab.instrumentsUsed || 'Observación directa y medición angular'],
+      [
+        'Formulación Aplicada',
+        `${getMethodFormulaProfile(tab.method).expressions.map((e) => `${e.symbol} = ${e.expression}`).join('  |  ')}${
+          isMethodFormulaModified(tab.method) ? ' (Fórmula personalizada activa)' : ''
+        }`,
+      ],
+      [
+        'Resultado Principal',
+        `${res.primaryScoreText}${res.secondaryScoreText ? ` (${res.secondaryScoreText})` : ''}`,
+      ],
+      ['Nivel de Riesgo y Acción', `${res.riskLabel.toUpperCase()} — ${res.actionLevelText}`],
+    ];
+
+    if (trajectoryNote) {
+      summaryBodyRows.push(['Sentido y Dualidad Origen ↔ Destino', trajectoryNote]);
+    }
 
     // Ficha resumen de la pestaña
     autoTable(doc, {
       startY: currentY,
-      margin: { left: margin, right: margin },
+      margin: safeTableMargin,
       theme: 'grid',
-      bodyStyles: { fontSize: 8.5, textColor: [30, 41, 59], cellPadding: 2.2 },
+      bodyStyles: { fontSize: 8.3, textColor: [30, 41, 59], cellPadding: 2.2 },
       columnStyles: { 0: { cellWidth: 48, fontStyle: 'bold', fillColor: [248, 250, 252] } },
-      body: [
-        ['Subtarea Evaluada', tab.taskEvaluated || 'Ciclo operativo del puesto'],
-        ['Justificación del Método', catalog.justificationTemplate],
-        ['Instrumental / Relevamiento', tab.instrumentsUsed || 'Observación directa y medición angular'],
-        [
-          'Resultado Principal',
-          `${res.primaryScoreText}${res.secondaryScoreText ? ` (${res.secondaryScoreText})` : ''}`,
-        ],
-        ['Nivel de Riesgo y Acción', `${res.riskLabel.toUpperCase()} — ${res.actionLevelText}`],
-      ],
+      body: summaryBodyRows,
       didParseCell: (hookData) => {
-        if (hookData.section === 'body' && hookData.row.index === 4 && hookData.column.index === 1) {
+        if (hookData.section === 'body' && hookData.row.index === 5 && hookData.column.index === 1) {
           hookData.cell.styles.textColor = sevColor.rgb;
           hookData.cell.styles.fontStyle = 'bold';
         }
@@ -378,10 +583,10 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
     // Tabla de desglose técnico de variables y fórmulas
     autoTable(doc, {
       startY: currentY,
-      margin: { left: margin, right: margin },
+      margin: safeTableMargin,
       theme: 'striped',
-      headStyles: { fillColor: [15, 23, 42], textColor: 255, fontSize: 8.2, fontStyle: 'bold' },
-      bodyStyles: { fontSize: 8.2, textColor: [30, 41, 59], cellPadding: 2 },
+      headStyles: { fillColor: [15, 23, 42], textColor: 255, fontSize: 8.1, fontStyle: 'bold' },
+      bodyStyles: { fontSize: 8.0, textColor: [30, 41, 59], cellPadding: 2 },
       head: [['Parámetro / Factor del Método', 'Valor Calculado', 'Referencia / Criterio Normativo']],
       body: res.breakdownRows.map((r) => [r.parameter, r.value, r.reference || '—']),
     });
@@ -393,7 +598,7 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
       ensureSpace(30);
       autoTable(doc, {
         startY: currentY,
-        margin: { left: margin, right: margin },
+        margin: safeTableMargin,
         theme: 'grid',
         headStyles: { fillColor: [51, 65, 85], textColor: 255, fontSize: 7.8, fontStyle: 'bold' },
         bodyStyles: { fontSize: 7.8, textColor: [30, 41, 59], cellPadding: 1.8 },
@@ -403,35 +608,93 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
       currentY = getLastAutoTableY();
     }
 
-    // Fotografías anotadas con goniómetro
+    // Fotografías y Reconstrucciones 3D en grilla enmarcada de 2 columnas SIN SOLAPAMIENTO
     if (tab.photos.length > 0) {
-      ensureSpace(68);
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(9.5);
-      doc.setTextColor(15, 23, 42);
-      doc.text('Registro Fotográfico y Medición Angular en Puesto:', margin, currentY);
-      currentY += 4;
+      const preparedPhotos: Array<{
+        asset: NormalizedImageAsset;
+        fullCaption: string;
+      }> = [];
 
       for (const photo of tab.photos) {
-        const asset = await normalizeDataUrlToPng(photo.annotatedDataUrl || photo.dataUrl, 850);
+        const asset = await normalizeDataUrlToPng(photo.annotatedDataUrl || photo.dataUrl, 900);
         if (!asset) continue;
-        const maxW = 88;
-        const maxH = 62;
-        const ratio = Math.min(maxW / asset.widthPx, maxH / asset.heightPx);
-        const drawW = asset.widthPx * ratio;
-        const drawH = asset.heightPx * ratio;
-
-        ensureSpace(drawH + 14);
-        doc.addImage(asset.pngDataUrl, 'PNG', margin, currentY, drawW, drawH);
-        doc.setFont('helvetica', 'italic');
-        doc.setFontSize(8);
-        doc.setTextColor(71, 85, 105);
         const angleSummary =
           photo.annotations.length > 0
             ? ` | Ángulos medidos: ${photo.annotations.map((a) => `${a.label}: ${a.degrees}°`).join(', ')}`
             : '';
-        doc.text(`${photo.caption}${angleSummary}`, margin, currentY + drawH + 4.5);
-        currentY += drawH + 10;
+        preparedPhotos.push({
+          asset,
+          fullCaption: `${photo.caption}${angleSummary}`,
+        });
+      }
+
+      if (preparedPhotos.length > 0) {
+        ensureSpace(78);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(9.3);
+        doc.setTextColor(15, 23, 42);
+        doc.text('Registro Fotográfico, Fotogramas Críticos y Modelización 3D:', margin, currentY);
+        currentY += 4;
+
+        const gapMm = 5;
+        const isSingleTotal = preparedPhotos.length === 1;
+        const colW = isSingleTotal ? Math.min(126, contentWidth) : (contentWidth - gapMm) / 2;
+        const imgBoxH = 54;
+
+        for (let pIdx = 0; pIdx < preparedPhotos.length; pIdx += isSingleTotal ? 1 : 2) {
+          const rowItems = isSingleTotal
+            ? [preparedPhotos[pIdx]]
+            : preparedPhotos.slice(pIdx, pIdx + 2);
+
+          doc.setFont('helvetica', 'italic');
+          doc.setFontSize(7.6);
+          const captionLinesList = rowItems.map((item) =>
+            doc.splitTextToSize(item.fullCaption, colW - 6),
+          );
+          const maxCaptionLines = Math.max(...captionLinesList.map((lines) => lines.length), 1);
+          const cardH = imgBoxH + 5 + maxCaptionLines * 3.5 + 3.5;
+
+          ensureSpace(cardH + 5);
+
+          rowItems.forEach((item, colOffset) => {
+            const cardX = isSingleTotal
+              ? margin + (contentWidth - colW) / 2
+              : margin + colOffset * (colW + gapMm);
+
+            // Marco limpio de tarjeta fotográfica
+            doc.setDrawColor(203, 213, 225);
+            doc.setFillColor(248, 250, 252);
+            doc.rect(cardX, currentY, colW, cardH, 'FD');
+
+            // Área blanca interior reservada exclusivamente a la imagen
+            const innerX = cardX + 2.5;
+            const innerY = currentY + 2.5;
+            const innerW = colW - 5;
+            const innerH = imgBoxH - 2;
+            doc.setFillColor(255, 255, 255);
+            doc.setDrawColor(226, 232, 240);
+            doc.rect(innerX, innerY, innerW, innerH, 'FD');
+
+            const fitRatio = Math.min(
+              (innerW - 2) / Math.max(1, item.asset.widthPx),
+              (innerH - 2) / Math.max(1, item.asset.heightPx),
+            );
+            const drawW = item.asset.widthPx * fitRatio;
+            const drawH = item.asset.heightPx * fitRatio;
+            const drawX = innerX + (innerW - drawW) / 2;
+            const drawY = innerY + (innerH - drawH) / 2;
+
+            doc.addImage(item.asset.pngDataUrl, 'PNG', drawX, drawY, drawW, drawH);
+
+            // Epígrafe envuelto debajo del recuadro de imagen sin pisar ninguna figura
+            doc.setFont('helvetica', 'italic');
+            doc.setFontSize(7.6);
+            doc.setTextColor(51, 65, 85);
+            doc.text(captionLinesList[colOffset], cardX + 3, currentY + imgBoxH + 4.5);
+          });
+
+          currentY += cardH + 5;
+        }
       }
     }
 
@@ -445,10 +708,10 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
 
     autoTable(doc, {
       startY: currentY,
-      margin: { left: margin, right: margin },
+      margin: safeTableMargin,
       theme: 'grid',
       headStyles: { fillColor: [2, 132, 199], textColor: 255, fontSize: 8.5, fontStyle: 'bold' },
-      bodyStyles: { fontSize: 8.5, textColor: [15, 23, 42], cellPadding: 2.5 },
+      bodyStyles: { fontSize: 8.3, textColor: [15, 23, 42], cellPadding: 2.5 },
       head: [['OBSERVACIONES DEL EVALUADOR Y PLAN DE ACCIÓN DE LA HOJA']],
       body: [
         [`Observaciones del Evaluador:\n${obsText}`],
@@ -462,8 +725,8 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
   }
 
   // FIRMA PROFESIONAL AL FINAL DEL ÚLTIMO FOLIO
-  ensureSpace(38);
-  currentY += 8;
+  ensureSpace(36);
+  currentY += 6;
   doc.setDrawColor(100, 116, 139);
   doc.line(pageWidth - margin - 72, currentY + 14, pageWidth - margin, currentY + 14);
   doc.setFont('helvetica', 'bold');
@@ -483,7 +746,7 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
   );
   doc.text(`Próxima Reevaluación Sugerida: ${general.nextReevaluationDate || 'Anual'}`, margin, currentY + 19);
 
-  // Numeración y encabezado institucional en todas las páginas (estilo Informe Técnico)
+  // Numeración y encabezado institucional en todas las páginas (acotado para no pisar columna derecha)
   const totalPages = doc.getNumberOfPages();
   for (let p = 1; p <= totalPages; p++) {
     doc.setPage(p);
@@ -504,21 +767,35 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
     }
 
     const textStartX = logoAsset ? margin + 32 : margin + 3;
+    const maxLeftHeaderW = Math.max(60, pageWidth - margin - 38 - textStartX);
+
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(8.5);
+    doc.setFontSize(8.4);
     doc.setTextColor(15, 23, 42);
-    doc.text(general.companyName || 'ESTUDIO ERGONÓMICO INTEGRAL', textStartX, 16);
+    const headerCompanyLine = doc.splitTextToSize(
+      general.companyName || 'ESTUDIO ERGONÓMICO INTEGRAL',
+      maxLeftHeaderW,
+    )[0];
+    doc.text(headerCompanyLine, textStartX, 15.8);
 
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7.8);
+    doc.setFontSize(7.6);
     doc.setTextColor(71, 85, 105);
-    doc.text(`Puesto: ${general.workstationName || '—'} · Sector: ${general.department || '—'}`, textStartX, 21);
-    doc.text(`Evaluador: ${general.evaluatorName || '—'}`, textStartX, 25.2);
+    const headerWorkstationLine = doc.splitTextToSize(
+      `Puesto: ${general.workstationName || '—'} · Sector: ${general.department || '—'}`,
+      maxLeftHeaderW,
+    )[0];
+    const headerEvaluatorLine = doc.splitTextToSize(
+      `Evaluador: ${general.evaluatorName || '—'}`,
+      maxLeftHeaderW,
+    )[0];
+    doc.text(headerWorkstationLine, textStartX, 20.8);
+    doc.text(headerEvaluatorLine, textStartX, 25.2);
 
     doc.setFont('helvetica', 'bold');
-    doc.text(`Hoja ${p} de ${totalPages}`, pageWidth - margin - 3, 16, { align: 'right' });
+    doc.text(`Hoja ${p} de ${totalPages}`, pageWidth - margin - 3, 15.8, { align: 'right' });
     doc.setFont('helvetica', 'normal');
-    doc.text(`Fecha: ${general.reportDate}`, pageWidth - margin - 3, 21, { align: 'right' });
+    doc.text(`Fecha: ${general.reportDate}`, pageWidth - margin - 3, 20.8, { align: 'right' });
 
     // Pie de página institucional con Copyright y aviso profesional
     doc.setDrawColor(226, 232, 240);
@@ -531,12 +808,7 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
       margin,
       pageHeight - 7.5,
     );
-    doc.text(
-      `Hoja ${p} de ${totalPages}`,
-      pageWidth - margin,
-      pageHeight - 7.5,
-      { align: 'right' },
-    );
+    doc.text(`Hoja ${p} de ${totalPages}`, pageWidth - margin, pageHeight - 7.5, { align: 'right' });
   }
 
   doc.save(getSafeFilename(general, 'pdf'));
@@ -582,6 +854,7 @@ function createCell(
 
 export async function exportStudyToWord(general: GeneralStudyData, tabs: StudyTab[]): Promise<void> {
   const prioritized = buildPrioritizedStudies(general, tabs);
+  const trafficSummary = buildStudyTrafficLightMatrix(general, tabs);
   const executiveSummary =
     general.customGlobalConclusion.trim() || generateAutomaticExecutiveSynthesis(general, prioritized);
 
@@ -723,14 +996,89 @@ export async function exportStudyToWord(general: GeneralStudyData, tabs: StudyTa
     }),
   );
 
-  // Tabla 2: Resumen Ejecutivo y Matriz Priorizada
+  // Tabla 2: Alerta de Atención Inmediata y Semáforo de Colores
+  docChildren.push(
+    new Paragraph({
+      heading: HeadingLevel.HEADING_2,
+      spacing: { before: 240, after: 100 },
+      children: [
+        new TextRun({
+          text: '2. Alerta de Atención Inmediata y Tabla Semáforo de Control Ergonómico',
+          bold: true,
+          size: 23,
+          color: trafficSummary.immediateAlerts.length > 0 ? 'B91C1C' : '0284C7',
+          font: 'Calibri',
+        }),
+      ],
+    }),
+  );
+
+  if (trafficSummary.immediateAlerts.length > 0) {
+    docChildren.push(
+      new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows: [
+          new TableRow({
+            children: [
+              createCell(
+                `ALERTA ERGONÓMICA DE ATENCIÓN INMEDIATA (${trafficSummary.immediateAlerts.length} HALLAZGO(S) EN SEMÁFORO ROJO)`,
+                { bold: true, fillHex: 'B91C1C', colorHex: 'FFFFFF' },
+              ),
+            ],
+          }),
+          ...trafficSummary.immediateAlerts.map((al, idx) =>
+            new TableRow({
+              children: [
+                createCell(
+                  `${idx + 1}. ${al.indicator} — Medido: ${al.measuredValue} (Umbral: ${al.normativeThreshold})\nAcción requerida (${al.deadline}): ${al.actionRequired}`,
+                  { fillHex: 'FEF2F2', colorHex: '7F1D1D', bold: idx === 0 },
+                ),
+              ],
+            }),
+          ),
+        ],
+      }),
+      new Paragraph({ spacing: { after: 120 }, children: [] }),
+    );
+  }
+
+  docChildren.push(
+    new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      rows: [
+        new TableRow({
+          children: [
+            createCell('Semáforo', { bold: true, fillHex: '0F172A', colorHex: 'FFFFFF', widthPct: 16 }),
+            createCell('Indicador / Método', { bold: true, fillHex: '0F172A', colorHex: 'FFFFFF', widthPct: 24 }),
+            createCell('Valor Medido', { bold: true, fillHex: '0F172A', colorHex: 'FFFFFF', widthPct: 20 }),
+            createCell('Límite Normativo', { bold: true, fillHex: '0F172A', colorHex: 'FFFFFF', widthPct: 16 }),
+            createCell('Acción Requerida y Plazo', { bold: true, fillHex: '0F172A', colorHex: 'FFFFFF', widthPct: 24 }),
+          ],
+        }),
+        ...trafficSummary.rows.map((r) => {
+          const pal = trafficLightPalette(r.color);
+          return new TableRow({
+            children: [
+              createCell(`● ${r.shortBadge}`, { bold: true, fillHex: pal.hexFill, colorHex: pal.hexText }),
+              createCell(`${r.indicator}\n${r.contextLabel}`),
+              createCell(r.measuredValue, { bold: true }),
+              createCell(r.normativeThreshold),
+              createCell(`${r.actionRequired} (${r.deadline})`),
+            ],
+          });
+        }),
+      ],
+    }),
+  );
+
+  // Tabla 3: Resumen Ejecutivo y Matriz Priorizada
   docChildren.push(
     new Paragraph({
       heading: HeadingLevel.HEADING_2,
       spacing: { before: 260, after: 100 },
       children: [
         new TextRun({
-          text: '2. Resumen Ejecutivo Automático y Priorización de Intervenciones (Cap. 10)',
+          text: '3. Resumen Ejecutivo Automático y Priorización de Intervenciones (Cap. 10)',
           bold: true,
           size: 23,
           color: '0284C7',
@@ -777,13 +1125,69 @@ export async function exportStudyToWord(general: GeneralStudyData, tabs: StudyTa
     );
   });
 
-  // SECCIÓN 3: DESARROLLO INDIVIDUAL DE CADA PESTAÑA
+  // SECCIÓN 4: DESARROLLO INDIVIDUAL DE CADA PESTAÑA
   for (let i = 0; i < tabs.length; i++) {
     const tab = tabs[i];
     const pEntry = prioritized.find((p) => p.tab.id === tab.id)!;
     const res = pEntry.result;
     const catalog = METHOD_CATALOG.find((m) => m.id === tab.method)!;
     const sev = severityBadgeColors(res.severity);
+    const trajectoryNote = getTabTrajectoryClarification(tab);
+
+    const studyRows: TableRow[] = [
+      new TableRow({
+        children: [
+          createCell('Resultado Principal', { bold: true, fillHex: 'F8FAFC', widthPct: 30 }),
+          createCell(
+            `${res.primaryScoreText}${res.secondaryScoreText ? ` (${res.secondaryScoreText})` : ''}`,
+            { bold: true, widthPct: 70 },
+          ),
+        ],
+      }),
+      new TableRow({
+        children: [
+          createCell('Valoración y Nivel de Actuación', { bold: true, fillHex: 'F8FAFC' }),
+          createCell(`${res.riskLabel.toUpperCase()} — ${res.actionLevelText}`, {
+            bold: true,
+            fillHex: sev.hexFill,
+            colorHex: sev.hexText,
+          }),
+        ],
+      }),
+      new TableRow({
+        children: [
+          createCell('Instrumental y Técnica', { bold: true, fillHex: 'F8FAFC' }),
+          createCell(tab.instrumentsUsed || 'Observación directa y medición angular'),
+        ],
+      }),
+      new TableRow({
+        children: [
+          createCell('Formulación Aplicada', { bold: true, fillHex: 'F8FAFC' }),
+          createCell(
+            `${getMethodFormulaProfile(tab.method).expressions.map((e) => `${e.symbol} = ${e.expression}`).join('  |  ')}${
+              isMethodFormulaModified(tab.method) ? ' (Fórmula personalizada activa)' : ''
+            }`,
+          ),
+        ],
+      }),
+      new TableRow({
+        children: [
+          createCell('Interpretación Técnica', { bold: true, fillHex: 'F8FAFC' }),
+          createCell(res.interpretation),
+        ],
+      }),
+    ];
+
+    if (trajectoryNote) {
+      studyRows.push(
+        new TableRow({
+          children: [
+            createCell('Sentido y Dualidad Origen ↔ Destino', { bold: true, fillHex: 'F0F9FF' }),
+            createCell(trajectoryNote),
+          ],
+        }),
+      );
+    }
 
     docChildren.push(
       new Paragraph({ children: [new PageBreak()] }),
@@ -814,39 +1218,7 @@ export async function exportStudyToWord(general: GeneralStudyData, tabs: StudyTa
       }),
       new Table({
         width: { size: 100, type: WidthType.PERCENTAGE },
-        rows: [
-          new TableRow({
-            children: [
-              createCell('Resultado Principal', { bold: true, fillHex: 'F8FAFC', widthPct: 30 }),
-              createCell(
-                `${res.primaryScoreText}${res.secondaryScoreText ? ` (${res.secondaryScoreText})` : ''}`,
-                { bold: true, widthPct: 70 },
-              ),
-            ],
-          }),
-          new TableRow({
-            children: [
-              createCell('Valoración y Nivel de Actuación', { bold: true, fillHex: 'F8FAFC' }),
-              createCell(`${res.riskLabel.toUpperCase()} — ${res.actionLevelText}`, {
-                bold: true,
-                fillHex: sev.hexFill,
-                colorHex: sev.hexText,
-              }),
-            ],
-          }),
-          new TableRow({
-            children: [
-              createCell('Instrumental y Técnica', { bold: true, fillHex: 'F8FAFC' }),
-              createCell(tab.instrumentsUsed || 'Observación directa y medición angular'),
-            ],
-          }),
-          new TableRow({
-            children: [
-              createCell('Interpretación Técnica', { bold: true, fillHex: 'F8FAFC' }),
-              createCell(res.interpretation),
-            ],
-          }),
-        ],
+        rows: studyRows,
       }),
       new Paragraph({
         spacing: { before: 180, after: 80 },
@@ -917,14 +1289,14 @@ export async function exportStudyToWord(general: GeneralStudyData, tabs: StudyTa
       );
     }
 
-    // Imágenes anotadas
+    // Imágenes anotadas con espaciado protegido
     if (tab.photos.length > 0) {
       docChildren.push(
         new Paragraph({
           spacing: { before: 180, after: 80 },
           children: [
             new TextRun({
-              text: 'Registro Fotográfico y Ángulos Relevados:',
+              text: 'Registro Fotográfico y Modelización 3D:',
               bold: true,
               size: 20,
               color: '0F172A',
@@ -935,16 +1307,16 @@ export async function exportStudyToWord(general: GeneralStudyData, tabs: StudyTa
       );
 
       for (const photo of tab.photos) {
-        const asset = await normalizeDataUrlToPng(photo.annotatedDataUrl || photo.dataUrl, 750);
+        const asset = await normalizeDataUrlToPng(photo.annotatedDataUrl || photo.dataUrl, 800);
         if (!asset) continue;
-        const maxWidthDocx = 420;
-        const maxHeightDocx = 290;
+        const maxWidthDocx = 390;
+        const maxHeightDocx = 260;
         const scale = Math.min(maxWidthDocx / asset.widthPx, maxHeightDocx / asset.heightPx);
 
         docChildren.push(
           new Paragraph({
             alignment: AlignmentType.CENTER,
-            spacing: { before: 80, after: 40 },
+            spacing: { before: 120, after: 50 },
             children: [
               new ImageRun({
                 data: asset.uint8,
@@ -958,7 +1330,7 @@ export async function exportStudyToWord(general: GeneralStudyData, tabs: StudyTa
           }),
           new Paragraph({
             alignment: AlignmentType.CENTER,
-            spacing: { after: 120 },
+            spacing: { after: 160 },
             children: [
               new TextRun({
                 text: `${photo.caption}${

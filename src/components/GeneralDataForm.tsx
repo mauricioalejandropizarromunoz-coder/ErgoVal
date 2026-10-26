@@ -16,7 +16,7 @@ import { GeneralStudyData, MethodId } from '../types/ergonomics';
 interface GeneralDataFormProps {
   data: GeneralStudyData;
   onChange: (next: GeneralStudyData) => void;
-  onLoadPreset: (presetKey: 'pose' | 'libro' | 'blank') => void;
+  onLoadPreset: (presetKey: 'empresax' | 'libro' | 'blank') => void;
   onQuickAddMethodTab: (method: MethodId, taskHint: string) => void;
   onGoToFirstTab: () => void;
 }
@@ -121,11 +121,11 @@ export function GeneralDataForm({
           <div className="flex flex-wrap items-center gap-2 shrink-0">
             <button
               type="button"
-              onClick={() => onLoadPreset('pose')}
+              onClick={() => onLoadPreset('empresax')}
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-xs font-medium text-slate-800 whitespace-nowrap shrink-0 cursor-pointer transition-colors"
             >
               <FolderOpen className="w-3.5 h-3.5 text-sky-700" />
-              Caso Informe POSE S.A. (5 pestañas)
+              Caso Informe EmpresaX S.A. (5 pestañas)
             </button>
             <button
               type="button"

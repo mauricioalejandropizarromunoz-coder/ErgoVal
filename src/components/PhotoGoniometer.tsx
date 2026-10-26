@@ -41,6 +41,8 @@ async function renderAnnotatedImage(dataUrl: string, annotations: AngleAnnotatio
       }
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
+      const placedTagRects: Array<{ x: number; y: number; w: number; h: number }> = [];
+
       annotations.forEach((ann) => {
         const x1 = ann.p1.x * canvas.width;
         const y1 = ann.p1.y * canvas.height;
@@ -68,21 +70,60 @@ async function renderAnnotatedImage(dataUrl: string, annotations: AngleAnnotatio
           ctx.fill();
         });
 
-        const tag = `${ann.degrees}°`;
-        const fontSize = Math.max(13, Math.round(canvas.width * 0.022));
+        const tag = `${ann.label ? `${ann.label}: ` : ''}${ann.degrees}°`;
+        const fontSize = Math.max(12, Math.round(canvas.width * 0.02));
         ctx.font = `bold ${fontSize}px monospace`;
         const textWidth = ctx.measureText(tag).width;
-        const bx = Math.min(canvas.width - textWidth - 16, Math.max(8, vx + 8));
-        const by = Math.max(fontSize + 8, vy - 10);
+        const boxW = textWidth + 12;
+        const boxH = fontSize + 8;
+
+        const offsets = [
+          [14, -(boxH + 8)],
+          [14, 14],
+          [-(boxW + 14), -(boxH + 8)],
+          [-(boxW + 14), 14],
+          [0, -(boxH + 34)],
+          [0, 38],
+        ];
+
+        let chosenX = Math.min(canvas.width - boxW - 6, Math.max(6, vx + 14));
+        let chosenY = Math.min(canvas.height - boxH - 6, Math.max(6, vy - boxH - 8));
+
+        for (const [dx, dy] of offsets) {
+          const candX = Math.min(canvas.width - boxW - 6, Math.max(6, vx + dx));
+          const candY = Math.min(canvas.height - boxH - 6, Math.max(6, vy + dy));
+          const collides = placedTagRects.some(
+            (r) =>
+              candX < r.x + r.w + 6 &&
+              candX + boxW + 6 > r.x &&
+              candY < r.y + r.h + 6 &&
+              candY + boxH + 6 > r.y,
+          );
+          if (!collides) {
+            chosenX = candX;
+            chosenY = candY;
+            break;
+          }
+        }
+
+        placedTagRects.push({ x: chosenX, y: chosenY, w: boxW, h: boxH });
+
+        ctx.strokeStyle = '#854d0e';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(vx, vy);
+        ctx.lineTo(chosenX + boxW / 2, chosenY + boxH / 2);
+        ctx.stroke();
 
         ctx.fillStyle = '#fef08a';
-        ctx.fillRect(bx - 5, by - fontSize, textWidth + 10, fontSize + 6);
+        ctx.fillRect(chosenX, chosenY, boxW, boxH);
         ctx.strokeStyle = '#854d0e';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(bx - 5, by - fontSize, textWidth + 10, fontSize + 6);
+        ctx.lineWidth = 1.2;
+        ctx.strokeRect(chosenX, chosenY, boxW, boxH);
 
         ctx.fillStyle = '#0f172a';
-        ctx.fillText(tag, bx, by - 2);
+        ctx.textBaseline = 'middle';
+        ctx.fillText(tag, chosenX + 6, chosenY + boxH / 2 + 0.5);
       });
 
       resolve(canvas.toDataURL('image/jpeg', 0.88));

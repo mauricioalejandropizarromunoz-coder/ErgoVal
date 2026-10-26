@@ -1,17 +1,20 @@
 import React, { useState } from 'react';
 import {
   BookOpen,
+  Calculator,
   CheckCircle2,
   ClipboardPenLine,
   Eye,
   FileText,
   Sparkles,
   Trash2,
+  Video,
   X,
 } from 'lucide-react';
 import { MethodEvaluationResult, MethodId, RiskSeverity, StudyTab } from '../types/ergonomics';
 import { evaluateStudyTab } from '../utils/calculations';
 import { METHOD_CATALOG } from '../utils/defaults';
+import { isMethodFormulaModified } from '../utils/formulaConfig';
 import { PhotoGoniometer } from './PhotoGoniometer';
 import { EnvironmentFormsSwitch, LoadRepetitiveSwitch, PosturalSwitch } from './MethodFormDispatcher';
 
@@ -22,6 +25,8 @@ interface StudyTabWorkspaceProps {
   onChange: (updated: StudyTab) => void;
   onDeleteTab: () => void;
   onOpenReference?: (methodId: MethodId, query?: string) => void;
+  onOpenFormulaEditor?: (methodId: MethodId) => void;
+  onOpenVideoExtractor?: () => void;
 }
 
 export function getSeverityStyles(severity: RiskSeverity) {
@@ -60,12 +65,15 @@ export function StudyTabWorkspace({
   onChange,
   onDeleteTab,
   onOpenReference,
+  onOpenFormulaEditor,
+  onOpenVideoExtractor,
 }: StudyTabWorkspaceProps) {
   const [showRefPoster, setShowRefPoster] = useState(false);
 
   const catalogItem = METHOD_CATALOG.find((m) => m.id === tab.method)!;
   const result: MethodEvaluationResult = evaluateStudyTab(tab);
   const sevStyle = getSeverityStyles(result.severity);
+  const isCustomFormula = isMethodFormulaModified(tab.method);
 
   const handleMethodChange = (nextMethod: MethodId) => {
     const nextMeta = METHOD_CATALOG.find((m) => m.id === nextMethod)!;
@@ -178,9 +186,45 @@ export function StudyTabWorkspace({
             <span>{catalogItem.chapterRef}</span>
             <span>·</span>
             <span>Jerarquía Biomecánica Cap. 10: Prioridad {catalogItem.hierarchyOrder}°</span>
+            {isCustomFormula && (
+              <>
+                <span>·</span>
+                <span className="font-semibold text-amber-700">Fórmula personalizada activa</span>
+              </>
+            )}
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {onOpenVideoExtractor &&
+              (tab.method === MethodId.NIOSH ||
+                tab.method === MethodId.REBA ||
+                tab.method === MethodId.RULA ||
+                tab.method === MethodId.OWAS ||
+                tab.method === MethodId.LMC_295 ||
+                tab.method === MethodId.SNOOK) && (
+                <button
+                  type="button"
+                  onClick={onOpenVideoExtractor}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded border border-sky-700 bg-sky-700 hover:bg-sky-800 text-xs font-semibold text-white whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                  title="Extraer variables geométricas (H, V, D, A) y ángulos desde archivo de video y emitir informe"
+                >
+                  <Video className="w-3.5 h-3.5" />
+                  Extraer desde Video IA
+                </button>
+              )}
+
+            {onOpenFormulaEditor && (
+              <button
+                type="button"
+                onClick={() => onOpenFormulaEditor(tab.method)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded border border-slate-300 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-800 whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                title="Abrir la pestaña de edición de fórmulas y constantes de este método"
+              >
+                <Calculator className="w-3.5 h-3.5 text-sky-700" />
+                Editar Fórmulas
+              </button>
+            )}
+
             {onOpenReference && (
               <button
                 type="button"
@@ -189,7 +233,7 @@ export function StudyTabWorkspace({
                 title="Abrir fundamento matemático, fórmulas y tablas de cálculo del libro"
               >
                 <BookOpen className="w-3.5 h-3.5 text-sky-700" />
-                Fundamento y Fórmulas
+                Fundamento y Tablas
               </button>
             )}
 

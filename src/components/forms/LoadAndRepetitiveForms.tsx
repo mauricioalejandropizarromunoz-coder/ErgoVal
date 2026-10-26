@@ -126,20 +126,57 @@ export function NioshForm({ data, onChange }: { data: NioshData; onChange: (next
           </div>
         </div>
 
-        <div className="pt-3 border-t border-slate-100">
-          <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-800 cursor-pointer mb-3">
-            <input
-              type="checkbox"
-              checked={data.evaluateDestination}
-              onChange={(e) => onChange({ ...data, evaluateDestination: e.target.checked })}
-              className="rounded border-slate-300 text-sky-600"
-            />
-            Requiere control significativo en el destino (calcula RWL en Origen y en Destino y adopta el más desfavorable)
-          </label>
+        <div className="pt-3 border-t border-slate-100 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-800 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={data.evaluateDestination}
+                onChange={(e) => onChange({ ...data, evaluateDestination: e.target.checked })}
+                className="rounded border-slate-300 text-sky-600"
+              />
+              Requiere control significativo en el destino (calcula RWL en Origen y en Destino y adopta el más desfavorable)
+            </label>
+
+            <button
+              type="button"
+              onClick={() =>
+                onChange({
+                  ...data,
+                  evaluateDestination: true,
+                  hOriginCm: data.hDestCm,
+                  hDestCm: data.hOriginCm,
+                  vOriginCm: data.vDestCm,
+                  vDestCm: data.vOriginCm,
+                  asymmetryOriginDeg: data.asymmetryDestDeg,
+                  asymmetryDestDeg: data.asymmetryOriginDeg,
+                })
+              }
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded border border-sky-300 bg-sky-50 hover:bg-sky-100 text-xs font-semibold text-sky-900 cursor-pointer whitespace-nowrap shrink-0"
+              title="Intercambiar las cotas de Origen y Destino (ej. pasar de estibar a desestibar)"
+            >
+              Invertir Origen ↔ Destino
+            </button>
+          </div>
+
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700 leading-relaxed">
+            <strong className="text-slate-900">
+              Sentido detectado:{' '}
+              {data.vDestCm - data.vOriginCm >= 10
+                ? `Levantamiento ascendente (${data.vOriginCm} cm → ${data.vDestCm} cm, ej. suelo/tarima hacia estantería)`
+                : data.vOriginCm - data.vDestCm >= 10
+                  ? `Descenso / bajada de carga (${data.vOriginCm} cm → ${data.vDestCm} cm, desde altura mayor hacia altura menor)`
+                  : `Traslado horizontal a nivel similar (${data.vOriginCm} cm ↔ ${data.vDestCm} cm)`}
+              .
+            </strong>{' '}
+            Aclaración ergonómica: el punto de <strong>Origen</strong> también puede constituir el <strong>Destino</strong> de la carga en ciclos reversibles de estiba y desestiba; evaluando ambos extremos se garantiza cubrir la postura más exigente.
+          </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="p-4 rounded-lg border border-slate-200 bg-slate-50/50 space-y-3">
-              <h5 className="text-xs font-semibold text-slate-900">Geometría en el Origen del Levantamiento</h5>
+              <h5 className="text-xs font-semibold text-slate-900">
+                Geometría en el Origen (Toma inicial · piso, tarima o estantería alta)
+              </h5>
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="block text-[11px] font-medium text-slate-600 mb-1">H Origen (cm)</label>

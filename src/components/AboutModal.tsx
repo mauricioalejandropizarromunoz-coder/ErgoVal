@@ -108,44 +108,48 @@ export function AboutModal({
               <div className="p-4 rounded-lg border border-amber-300 bg-amber-50/80 space-y-2">
                 <div className="flex items-center gap-2 text-amber-900 font-semibold text-sm">
                   <ShieldAlert className="w-4 h-4 text-amber-700 shrink-0" />
-                  ¿Por qué aparece un cartel de advertencia al abrir el enlace compartido?
+                  ¿Por qué aparece un cartel en inglés con opción de «Report» al compartir el enlace?
                 </div>
                 <p className="text-amber-950">
-                  Cuando compartes la dirección de prueba generada en Google AI Studio (con dominio{' '}
+                  Cuando otro usuario abre por primera vez un enlace de previsualización en la nube (subdominios{' '}
                   <code className="font-mono bg-amber-100 px-1 py-0.5 rounded text-amber-900">
-                    https://ais-pre-*.run.app
+                    *.run.app
                   </code>
-                  ), Google Cloud muestra por seguridad un cartel intersticial indicando que se trata de un{' '}
-                  <strong>«entorno de prueba o aplicación experimental desarrollada por un tercero»</strong>.
+                  ), la infraestructura del servidor muestra de forma automática una antesala de seguridad en inglés con
+                  dos opciones: continuar hacia la aplicación (<strong>«Continue to the app»</strong>) o denunciar abuso
+                  (<strong>«Report» / «Report abuse»</strong>).
                 </p>
               </div>
 
               <div className="space-y-2.5">
-                <h4 className="text-sm font-semibold text-slate-900">1. Causa técnica del aviso</h4>
+                <h4 className="text-sm font-semibold text-slate-900">1. ¿Por qué incluye un botón en inglés para denunciar («Report»)?</h4>
                 <p>
-                  No se trata de un error de la aplicación ni de un riesgo de seguridad en tu dispositivo. Google
-                  Cloud aplica de forma obligatoria e ineludible esta pantalla de advertencia a cualquier prototipo o
-                  despliegue en sandbox para prevenir prácticas de phishing en nombres de dominio genéricos.
+                  No significa que esta aplicación haya sido denunciada ni que contenga código malicioso. Por normativa
+                  internacional de seguridad web y prevención de <em>phishing</em>, los proveedores de alojamiento en la
+                  nube exigen mostrar ese aviso estándar en inglés en todos los enlaces de vista previa creados por
+                  usuarios independientes, ofreciendo un botón obligatorio de reporte en caso de suplantación de identidad.
                 </p>
 
-                <h4 className="text-sm font-semibold text-slate-900">2. Cómo proceder al abrir la app</h4>
+                <h4 className="text-sm font-semibold text-slate-900">2. Qué debe hacer el destinatario del enlace</h4>
                 <ul className="list-disc pl-5 space-y-1.5 text-slate-600">
                   <li>
-                    Si tú o tu cliente acceden desde el enlace directo, simplemente deben presionar el botón de Google:{' '}
-                    <strong>«Continuar al sitio»</strong> o <strong>«Aceptar y continuar»</strong>.
+                    Indicar al colega o cliente que presione únicamente el botón principal{' '}
+                    <strong>«Continue» / «Continue to the app»</strong> para ingresar normalmente a ErgoEval (evitando
+                    pulsar <em>Report</em>, ya que eso enviaría un falso reporte automático al proveedor).
                   </li>
                   <li>
-                    La aplicación funciona con cifrado TLS/HTTPS completo y no transmite datos a terceros. Toda la
-                    información de tus evaluaciones se procesa en el navegador de manera privada.
+                    La aplicación opera bajo conexión cifrada HTTPS y procesa todos los cálculos localmente en el
+                    navegador del usuario sin recolectar contraseñas ni datos sensibles.
                   </li>
                 </ul>
 
-                <h4 className="text-sm font-semibold text-slate-900">3. Recomendación para entregas a clientes</h4>
+                <h4 className="text-sm font-semibold text-slate-900">3. Cómo eliminar por completo esa pantalla previa</h4>
                 <p>
-                  Para remitir informes formales a empresas clientes, departamentos de RRHH, ART o peritajes
-                  judiciales, se recomienda utilizar el botón superior de <strong>Exportar PDF</strong> o{' '}
-                  <strong>Exportar Word</strong>. El documento generado no depende de enlaces externos y contiene todas
-                  las firmas, láminas angulares y tablas reglamentarias.
+                  Ese cartel solo existe en los enlaces gratuitos de vista previa (<code className="font-mono">ais-pre-*</code>).
+                  Si se publica la aplicación en un servicio de producción propio (despliegue directo en servidor propio
+                  o dominio personalizado) o se entregan directamente los documentos generados mediante{' '}
+                  <strong>Exportar PDF</strong> y <strong>Exportar Word</strong>, los destinatarios no verán ninguna
+                  advertencia intermedia.
                 </p>
               </div>
             </div>

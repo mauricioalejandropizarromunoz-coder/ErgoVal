@@ -1,7 +1,9 @@
 import {
   BIPOLAR_ITEMS,
   METHOD_CATALOG,
+  createDefaultPayloads,
 } from './defaults';
+import { evalMethodExpr, getMethodParam } from './formulaConfig';
 import {
   FangerData,
   Iso2631Data,
@@ -104,10 +106,20 @@ function computeRulaSide(side: RulaSideInput, scoreD: number) {
 
   const colIdx = (wrist - 1) * 2 + (wristTwist - 1);
   const scoreA = RULA_TABLE_A[upperArm - 1][lowerArm - 1][colIdx];
-  const scoreC = scoreA + side.muscleUseA + side.forceLoadA;
+  const scoreC = Math.round(
+    evalMethodExpr(
+      MethodId.RULA,
+      'scoreC',
+      { scoreA, muscleUseA: side.muscleUseA, forceLoadA: side.forceLoadA },
+      scoreA + side.muscleUseA + side.forceLoadA,
+    ),
+  );
   const cIdx = clamp(scoreC, 1, 8) - 1;
   const dIdx = clamp(scoreD, 1, 7) - 1;
-  const finalScore = RULA_TABLE_C[cIdx][dIdx];
+  const tableC = RULA_TABLE_C[cIdx][dIdx];
+  const finalScore = Math.round(
+    evalMethodExpr(MethodId.RULA, 'finalScore', { tableC, scoreC, scoreD }, tableC),
+  );
 
   return { upperArm, lowerArm, wrist, wristTwist, scoreA, scoreC, finalScore };
 }
@@ -118,7 +130,14 @@ export function evaluateRula(data: RulaData): MethodEvaluationResult {
   const legs = clamp(data.legsPos, 1, 2);
   const colB = (trunk - 1) * 2 + (legs - 1);
   const scoreB = RULA_TABLE_B[neck - 1][colB];
-  const scoreD = scoreB + data.muscleUseB + data.forceLoadB;
+  const scoreD = Math.round(
+    evalMethodExpr(
+      MethodId.RULA,
+      'scoreD',
+      { scoreB, muscleUseB: data.muscleUseB, forceLoadB: data.forceLoadB },
+      scoreB + data.muscleUseB + data.forceLoadB,
+    ),
+  );
 
   const rightRes = computeRulaSide(data.right, scoreD);
   const leftRes = computeRulaSide(data.left, scoreD);
@@ -136,34 +155,38 @@ export function evaluateRula(data: RulaData): MethodEvaluationResult {
     secondary = `Der: ${rightRes.finalScore} · Izq: ${leftRes.finalScore}`;
   }
 
+  const modMin = getMethodParam(MethodId.RULA, 'modMin', 3);
+  const highMin = getMethodParam(MethodId.RULA, 'highMin', 5);
+  const veryHighMin = getMethodParam(MethodId.RULA, 'veryHighMin', 7);
+
   let severity: RiskSeverity = 'bajo';
   let riskLabel = 'Postura aceptable';
   let actionLevelText = 'Nivel de Actuación 1 — No requiere cambios';
   let deadline: MethodEvaluationResult['recommendedDeadline'] = 'Sin plazo específico';
   let interpretation =
-    'La puntuación final es 1 o 2 (Nivel de Actuación 1). La postura evaluada resulta aceptable si no se mantiene o repite por largos períodos.';
+    'La puntuación final corresponde al Nivel de Actuación 1. La postura evaluada resulta aceptable si no se mantiene o repite por largos períodos.';
 
-  if (worstScore === 3 || worstScore === 4) {
-    severity = 'moderado';
-    riskLabel = 'Riesgo moderado';
-    actionLevelText = 'Nivel de Actuación 2 — Profundizar estudio / posibles cambios';
-    deadline = 'Medio plazo';
-    interpretation =
-      'Puntuación final 3 o 4 (Nivel de Actuación 2). Pueden requerirse cambios en la tarea; es necesario profundizar en el estudio postural.';
-  } else if (worstScore === 5 || worstScore === 6) {
-    severity = 'alto';
-    riskLabel = 'Riesgo alto';
-    actionLevelText = 'Nivel de Actuación 3 — Rediseño de la tarea pronto';
-    deadline = 'Corto plazo';
-    interpretation =
-      'Puntuación final 5 o 6 (Nivel de Actuación 3). Se requiere el rediseño de la tarea y realizar actividades de investigación ergonómica.';
-  } else if (worstScore >= 7) {
+  if (worstScore >= veryHighMin) {
     severity = 'muy_alto';
     riskLabel = 'Riesgo muy alto';
     actionLevelText = 'Nivel de Actuación 4 — Cambios urgentes';
     deadline = 'Inmediato';
     interpretation =
-      'Puntuación final 7 (Nivel de Actuación 4). Se requieren cambios urgentes en el diseño del puesto o en la ejecución de la tarea.';
+      'Puntuación final en Nivel de Actuación 4. Se requieren cambios urgentes en el diseño del puesto o en la ejecución de la tarea.';
+  } else if (worstScore >= highMin) {
+    severity = 'alto';
+    riskLabel = 'Riesgo alto';
+    actionLevelText = 'Nivel de Actuación 3 — Rediseño de la tarea pronto';
+    deadline = 'Corto plazo';
+    interpretation =
+      'Puntuación final en Nivel de Actuación 3. Se requiere el rediseño de la tarea y realizar actividades de investigación ergonómica.';
+  } else if (worstScore >= modMin) {
+    severity = 'moderado';
+    riskLabel = 'Riesgo moderado';
+    actionLevelText = 'Nivel de Actuación 2 — Profundizar estudio / posibles cambios';
+    deadline = 'Medio plazo';
+    interpretation =
+      'Puntuación final en Nivel de Actuación 2. Pueden requerirse cambios en la tarea; es necesario profundizar en el estudio postural.';
   }
 
   const suggestions: string[] = [];
@@ -317,9 +340,23 @@ function computeRebaSide(side: RebaSideInput, scoreA: number, activityScore: num
   const lowerArm = clamp(side.lowerArmPos, 1, 2);
   const wrist = clamp(side.wristPos + (side.wristTwistedOrDeviated ? 1 : 0), 1, 3);
   const tableB = REBA_TABLE_B[upperArm - 1][lowerArm - 1][wrist - 1];
-  const scoreB = clamp(tableB + side.coupling, 1, 12);
-  const tableC = REBA_TABLE_C[clamp(scoreA, 1, 12) - 1][scoreB - 1];
-  const finalReba = clamp(tableC + activityScore, 1, 15);
+  const scoreB = Math.round(
+    evalMethodExpr(
+      MethodId.REBA,
+      'scoreB',
+      { tableB, coupling: side.coupling },
+      clamp(tableB + side.coupling, 1, 12),
+    ),
+  );
+  const tableC = REBA_TABLE_C[clamp(scoreA, 1, 12) - 1][clamp(scoreB, 1, 12) - 1];
+  const finalReba = Math.round(
+    evalMethodExpr(
+      MethodId.REBA,
+      'finalReba',
+      { tableC, activityScore, scoreA, scoreB },
+      clamp(tableC + activityScore, 1, 15),
+    ),
+  );
   return { upperArm, lowerArm, wrist, tableB, scoreB, tableC, finalReba };
 }
 
@@ -330,7 +367,14 @@ export function evaluateReba(data: RebaData): MethodEvaluationResult {
 
   const tableA = REBA_TABLE_A[trunk - 1][neck - 1][legs - 1];
   const loadPoints = data.loadForce + (data.shockForce ? 1 : 0);
-  const scoreA = clamp(tableA + loadPoints, 1, 12);
+  const scoreA = Math.round(
+    evalMethodExpr(
+      MethodId.REBA,
+      'scoreA',
+      { tableA, loadPoints },
+      clamp(tableA + loadPoints, 1, 12),
+    ),
+  );
   const activityScore =
     (data.activityStatic ? 1 : 0) + (data.activityRepetitive ? 1 : 0) + (data.activityUnstableChanges ? 1 : 0);
 
@@ -350,36 +394,41 @@ export function evaluateReba(data: RebaData): MethodEvaluationResult {
     secondary = `Der: ${rightRes.finalReba} · Izq: ${leftRes.finalReba}`;
   }
 
+  const lowMin = getMethodParam(MethodId.REBA, 'lowMin', 2);
+  const modMin = getMethodParam(MethodId.REBA, 'modMin', 4);
+  const highMin = getMethodParam(MethodId.REBA, 'highMin', 8);
+  const veryHighMin = getMethodParam(MethodId.REBA, 'veryHighMin', 11);
+
   let severity: RiskSeverity = 'bajo';
   let riskLabel = 'Riesgo inapreciable';
   let actionLevelText = 'Nivel de Actuación 0 — No es necesaria la actuación';
   let deadline: MethodEvaluationResult['recommendedDeadline'] = 'Sin plazo específico';
-  let interpretation = 'Puntuación final REBA igual a 1. El riesgo postural es inapreciable y no requiere intervención.';
+  let interpretation = 'Puntuación final REBA en Nivel 0. El riesgo postural es inapreciable y no requiere intervención.';
 
-  if (worstScore >= 2 && worstScore <= 3) {
-    severity = 'bajo';
-    riskLabel = 'Riesgo bajo';
-    actionLevelText = 'Nivel de Actuación 1 — Puede ser necesaria la actuación';
-    deadline = 'Medio plazo';
-    interpretation = 'Puntuación REBA entre 2 y 3 (Nivel 1). Riesgo bajo; puede requerirse profundizar el estudio o ajustes menores.';
-  } else if (worstScore >= 4 && worstScore <= 7) {
-    severity = 'moderado';
-    riskLabel = 'Riesgo medio';
-    actionLevelText = 'Nivel de Actuación 2 — Es necesaria la actuación';
-    deadline = 'Medio plazo';
-    interpretation = 'Puntuación REBA entre 4 y 7 (Nivel 2). Riesgo medio; se requiere rediseñar condiciones de la tarea.';
-  } else if (worstScore >= 8 && worstScore <= 10) {
-    severity = 'alto';
-    riskLabel = 'Riesgo alto';
-    actionLevelText = 'Nivel de Actuación 3 — Es necesaria la actuación cuanto antes';
-    deadline = 'Corto plazo';
-    interpretation = 'Puntuación REBA entre 8 y 10 (Nivel 3). Riesgo alto; se requieren cambios a corto plazo sobre el puesto.';
-  } else if (worstScore >= 11) {
+  if (worstScore >= veryHighMin) {
     severity = 'muy_alto';
     riskLabel = 'Riesgo muy alto';
     actionLevelText = 'Nivel de Actuación 4 — Actuar de inmediato';
     deadline = 'Inmediato';
-    interpretation = 'Puntuación REBA entre 11 y 15 (Nivel 4). Riesgo muy alto; exige intervención correctora de inmediato.';
+    interpretation = 'Puntuación REBA en Nivel 4. Riesgo muy alto; exige intervención correctora de inmediato.';
+  } else if (worstScore >= highMin) {
+    severity = 'alto';
+    riskLabel = 'Riesgo alto';
+    actionLevelText = 'Nivel de Actuación 3 — Es necesaria la actuación cuanto antes';
+    deadline = 'Corto plazo';
+    interpretation = 'Puntuación REBA en Nivel 3. Riesgo alto; se requieren cambios a corto plazo sobre el puesto.';
+  } else if (worstScore >= modMin) {
+    severity = 'moderado';
+    riskLabel = 'Riesgo medio';
+    actionLevelText = 'Nivel de Actuación 2 — Es necesaria la actuación';
+    deadline = 'Medio plazo';
+    interpretation = 'Puntuación REBA en Nivel 2. Riesgo medio; se requiere rediseñar condiciones de la tarea.';
+  } else if (worstScore >= lowMin) {
+    severity = 'bajo';
+    riskLabel = 'Riesgo bajo';
+    actionLevelText = 'Nivel de Actuación 1 — Puede ser necesaria la actuación';
+    deadline = 'Medio plazo';
+    interpretation = 'Puntuación REBA en Nivel 1. Riesgo bajo; puede requerirse profundizar el estudio o ajustes menores.';
   }
 
   const suggestions: string[] = [];
@@ -524,6 +573,16 @@ export function evaluateOwas(data: OwasData): MethodEvaluationResult {
   const cat3Pct = (counts[3] / totalFreq) * 100;
   const cat4Pct = (counts[4] / totalFreq) * 100;
 
+  const weightedIndex = evalMethodExpr(
+    MethodId.OWAS,
+    'weightedIndex',
+    { cat1Pct, cat2Pct, cat3Pct, cat4Pct, totalObs: totalFreq },
+    (cat1Pct * 1 + cat2Pct * 2 + cat3Pct * 3 + cat4Pct * 4) / 100,
+  );
+  const cat4MinPct = getMethodParam(MethodId.OWAS, 'cat4MinPct', 0.01);
+  const cat3MinPct = getMethodParam(MethodId.OWAS, 'cat3MinPct', 0.01);
+  const cat2MinPct = getMethodParam(MethodId.OWAS, 'cat2MinPct', 0.01);
+
   let severity: RiskSeverity = 'bajo';
   let riskLabel = 'Categoría 1 — Posturas normales';
   let actionLevelText = 'Categoría de Acción 1 — No requiere medidas';
@@ -531,19 +590,19 @@ export function evaluateOwas(data: OwasData): MethodEvaluationResult {
   let interpretation =
     'Predominan posturas normales y naturales sin efectos dañinos sobre el aparato locomotor (Tabla 4.43).';
 
-  if (counts[4] > 0) {
+  if (counts[4] > 0 && cat4Pct >= cat4MinPct) {
     severity = 'muy_alto';
     riskLabel = 'Categoría 4 — Efectos altamente dañinos';
     actionLevelText = 'Categoría de Acción 4 — Corrección inmediata';
     deadline = 'Inmediato';
-    interpretation = `Se registran posturas de Categoría 4 (${cat4Pct.toFixed(1)}% del ciclo). Conforme a la Tabla 4.44, la presencia de cualquier postura de Categoría 4 exige medidas correctoras de forma inmediata.`;
-  } else if (counts[3] > 0) {
+    interpretation = `Se registran posturas de Categoría 4 (${cat4Pct.toFixed(1)}% del ciclo). Conforme a la Tabla 4.44, exige medidas correctoras de forma inmediata.`;
+  } else if (counts[3] > 0 && cat3Pct >= cat3MinPct) {
     severity = 'alto';
     riskLabel = 'Categoría 3 — Efectos dañinos';
     actionLevelText = 'Categoría de Acción 3 — Corrección a corto plazo';
     deadline = 'Corto plazo';
     interpretation = `Se registran posturas de Categoría 3 (${cat3Pct.toFixed(1)}% del ciclo). Se requieren medidas correctoras a corto plazo sobre las fases críticas.`;
-  } else if (counts[2] > 0) {
+  } else if (counts[2] > 0 && cat2Pct >= cat2MinPct) {
     severity = 'moderado';
     riskLabel = 'Categoría 2 — Posibilidad de daño';
     actionLevelText = 'Categoría de Acción 2 — Corrección a medio plazo';
@@ -567,7 +626,7 @@ export function evaluateOwas(data: OwasData): MethodEvaluationResult {
     categoryLabel: meta.categoryLabel,
     hierarchyOrder: meta.hierarchyOrder,
     primaryScoreText: `Cat. ${maxCat}`,
-    secondaryScoreText: `C4: ${cat4Pct.toFixed(0)}% · C3: ${cat3Pct.toFixed(0)}% · C2: ${cat2Pct.toFixed(0)}%`,
+    secondaryScoreText: `C4: ${cat4Pct.toFixed(0)}% · C3: ${cat3Pct.toFixed(0)}% · I=${weightedIndex.toFixed(2)}`,
     severity,
     riskLabel,
     actionLevelText,
@@ -578,7 +637,7 @@ export function evaluateOwas(data: OwasData): MethodEvaluationResult {
       {
         parameter: 'Distribución por Categoría de Acción',
         value: `C1: ${cat1Pct.toFixed(1)}% | C2: ${cat2Pct.toFixed(1)}% | C3: ${cat3Pct.toFixed(1)}% | C4: ${cat4Pct.toFixed(1)}%`,
-        reference: `Total: ${totalFreq} observaciones`,
+        reference: `Total: ${totalFreq} obs. · Índice ponderado: ${weightedIndex.toFixed(2)}`,
       },
     ],
     suggestedMeasures: suggestions,
@@ -613,38 +672,40 @@ const NIOSH_FM_TABLE: { maxFreq: number; le_1h: number; '1_to_2h': number; '2_to
 ];
 
 export function evaluateNiosh(data: NioshData): MethodEvaluationResult {
-  const LC = 23;
-  const hWorst = data.evaluateDestination ? Math.max(data.hOriginCm, data.hDestCm) : data.hOriginCm;
-  const hm = hWorst <= 25 ? 1.0 : hWorst > 63 ? 0 : 25 / hWorst;
+  const LC = getMethodParam(MethodId.NIOSH, 'LC', 23);
+  const hOpt = getMethodParam(MethodId.NIOSH, 'hOpt', 25);
+  const hMax = getMethodParam(MethodId.NIOSH, 'hMax', 63);
+  const vOpt = getMethodParam(MethodId.NIOSH, 'vOpt', 75);
+  const vMax = getMethodParam(MethodId.NIOSH, 'vMax', 175);
+  const aMax = getMethodParam(MethodId.NIOSH, 'aMax', 135);
 
-  const vmOrigin = data.vOriginCm < 0 || data.vOriginCm > 175 ? 0 : 1 - 0.003 * Math.abs(data.vOriginCm - 75);
-  const vmDest = data.vDestCm < 0 || data.vDestCm > 175 ? 0 : 1 - 0.003 * Math.abs(data.vDestCm - 75);
+  const hWorst = data.evaluateDestination ? Math.max(data.hOriginCm, data.hDestCm) : data.hOriginCm;
+  const hmDefault = hWorst <= hOpt ? 1.0 : hWorst > hMax ? 0 : hOpt / hWorst;
+  const hm = evalMethodExpr(MethodId.NIOSH, 'hm', { H: hWorst, hOpt, hMax }, hmDefault);
+
+  const vmOrigDef = data.vOriginCm < 0 || data.vOriginCm > vMax ? 0 : 1 - 0.003 * Math.abs(data.vOriginCm - vOpt);
+  const vmDestDef = data.vDestCm < 0 || data.vDestCm > vMax ? 0 : 1 - 0.003 * Math.abs(data.vDestCm - vOpt);
+  const vmOrigin = evalMethodExpr(MethodId.NIOSH, 'vm', { V: data.vOriginCm, vOpt, vMax }, vmOrigDef);
+  const vmDest = evalMethodExpr(MethodId.NIOSH, 'vm', { V: data.vDestCm, vOpt, vMax }, vmDestDef);
   const vm = data.evaluateDestination ? Math.min(vmOrigin, vmDest) : vmOrigin;
   const vWorst = data.evaluateDestination && vmDest < vmOrigin ? data.vDestCm : data.vOriginCm;
 
   const d = Math.abs(data.vDestCm - data.vOriginCm);
-  let dm = 1.0;
-  if (d > 175) {
-    dm = 0.82 + 4.5 / d;
-  } else if (d >= 25 && d <= 175) {
-    // Según apartado 5.4.3 del libro.html: DM = 1 cuando D está entre 25 y 175 cm
-    dm = 1.0;
-  } else {
-    dm = d <= 0 ? 1.0 : Math.min(1.0, 0.82 + 4.5 / Math.max(d, 10));
-  }
+  const dmDef = d < 25 ? 1.0 : d > 175 ? 0 : 0.82 + 4.5 / d;
+  const dm = evalMethodExpr(MethodId.NIOSH, 'dm', { D: d }, dmDef);
 
   const aWorst = data.evaluateDestination ? Math.max(data.asymmetryOriginDeg, data.asymmetryDestDeg) : data.asymmetryOriginDeg;
-  const am = aWorst >= 135 ? 0 : Math.max(0, 1 - 0.0032 * aWorst);
+  const amDef = aWorst >= aMax ? 0 : Math.max(0, 1 - 0.0032 * aWorst);
+  const am = evalMethodExpr(MethodId.NIOSH, 'am', { A: aWorst, aMax }, amDef);
 
   const fmRow = NIOSH_FM_TABLE.find((r) => data.frequencyLiftsPerMin <= r.maxFreq);
   const fm = fmRow ? fmRow[data.durationCategory] : 0;
 
   let cm = 1.0;
   if (data.couplingQuality === 'bueno') cm = 1.0;
-  else if (data.couplingQuality === 'regular') cm = vWorst < 75 ? 0.95 : 1.0;
+  else if (data.couplingQuality === 'regular') cm = vWorst < vOpt ? 0.95 : 1.0;
   else cm = 0.9;
 
-  // Round multipliers to 2 decimals as in Ejercicio resuelto 5.5 of libro.html
   const hmR = Number(hm.toFixed(2));
   const vmR = Number(vm.toFixed(2));
   const dmR = Number(dm.toFixed(2));
@@ -652,49 +713,72 @@ export function evaluateNiosh(data: NioshData): MethodEvaluationResult {
   const fmR = Number(fm.toFixed(2));
   const cmR = Number(cm.toFixed(2));
 
-  const rwl = LC * hmR * vmR * dmR * amR * fmR * cmR;
-  const il = rwl > 0 ? data.loadWeightKg / rwl : 99.9;
+  const rwl = evalMethodExpr(
+    MethodId.NIOSH,
+    'rwl',
+    { LC, HM: hmR, VM: vmR, DM: dmR, AM: amR, FM: fmR, CM: cmR },
+    LC * hmR * vmR * dmR * amR * fmR * cmR,
+  );
+  const il =
+    rwl > 0
+      ? evalMethodExpr(MethodId.NIOSH, 'il', { L: data.loadWeightKg, RWL: rwl }, data.loadWeightKg / rwl)
+      : 99.9;
+
+  const modLimit = getMethodParam(MethodId.NIOSH, 'modLimit', 1.0);
+  const highLimit = getMethodParam(MethodId.NIOSH, 'highLimit', 2.0);
+  const veryHighLimit = getMethodParam(MethodId.NIOSH, 'veryHighLimit', 3.0);
 
   let severity: RiskSeverity = 'bajo';
   let riskLabel = 'Riesgo bajo';
-  let actionLevelText = 'IL ≤ 1,0 — Dentro de límites recomendados';
+  let actionLevelText = `IL ≤ ${modLimit.toFixed(1)} — Dentro de límites recomendados`;
   let deadline: MethodEvaluationResult['recommendedDeadline'] = 'Sin plazo específico';
   let interpretation =
-    'El Índice de Levantamiento es igual o inferior a 1. La operación se encuentra dentro de los límites recomendados para la mayoría de los trabajadores.';
+    `El Índice de Levantamiento es igual o inferior a ${modLimit.toFixed(1)}. La operación se encuentra dentro de los límites recomendados para la mayoría de los trabajadores.`;
 
-  if (rwl <= 0 || il > 3) {
+  if (rwl <= 0 || il > veryHighLimit) {
     severity = 'muy_alto';
     riskLabel = 'Riesgo muy alto';
-    actionLevelText = 'IL > 3,0 — Corrección inmediata';
+    actionLevelText = `IL > ${veryHighLimit.toFixed(1)} — Corrección inmediata`;
     deadline = 'Inmediato';
     interpretation =
       rwl <= 0
         ? 'Alguno de los factores multiplicadores es nulo (fuera del ámbito admisible de la ecuación). La operación es inaceptable y debe corregirse de inmediato.'
-        : 'El Índice de Levantamiento supera el valor de 3. La exposición es incompatible con la protección de la salud lumbar y exige intervención inmediata.';
-  } else if (il > 2) {
+        : `El Índice de Levantamiento supera el valor de ${veryHighLimit.toFixed(1)}. La exposición es incompatible con la protección de la salud lumbar y exige intervención inmediata.`;
+  } else if (il > highLimit) {
     severity = 'alto';
     riskLabel = 'Riesgo alto';
-    actionLevelText = '2,0 < IL ≤ 3,0 — Corrección a corto plazo';
+    actionLevelText = `${highLimit.toFixed(1)} < IL ≤ ${veryHighLimit.toFixed(1)} — Corrección a corto plazo`;
     deadline = 'Corto plazo';
     interpretation =
-      'El Índice de Levantamiento se sitúa entre 2 y 3. Es necesario intervenir a corto plazo sobre el diseño geométrico del puesto y la organización del trabajo.';
-  } else if (il > 1) {
+      `El Índice de Levantamiento se sitúa entre ${highLimit.toFixed(1)} y ${veryHighLimit.toFixed(1)}. Es necesario intervenir a corto plazo sobre el diseño geométrico del puesto y la organización del trabajo.`;
+  } else if (il > modLimit) {
     severity = 'moderado';
     riskLabel = 'Riesgo moderado';
-    actionLevelText = '1,0 < IL ≤ 2,0 — Requiere corrección programada';
+    actionLevelText = `${modLimit.toFixed(1)} < IL ≤ ${highLimit.toFixed(1)} — Requiere corrección programada`;
     deadline = 'Medio plazo';
     interpretation =
-      'El Índice de Levantamiento supera la unidad (entre 1 y 2). Se recomienda modificar las condiciones de manipulación para descender el índice por debajo de 1.';
+      `El Índice de Levantamiento supera ${modLimit.toFixed(1)} (hasta ${highLimit.toFixed(1)}). Se recomienda modificar las condiciones de manipulación para descender el índice.`;
   }
 
   const suggestions: string[] = [];
   if (hmR < 0.8) suggestions.push(`Reducir la distancia horizontal H (${hWorst} cm) acercando la carga al cuerpo y eliminando barreras físicas.`);
   if (fmR < 0.75) suggestions.push('Disminuir la frecuencia de levantamientos por minuto o rotar personal para reducir la duración de exposición.');
-  if (vmR < 0.9) suggestions.push(`Adecuar la altura vertical (${vWorst} cm) empleando mesas elevadoras o plataformas próximas a 75 cm.`);
+  if (vmR < 0.9) suggestions.push(`Adecuar la altura vertical (${vWorst} cm) empleando mesas elevadoras o plataformas próximas a ${vOpt} cm.`);
   if (amR < 0.95) suggestions.push(`Eliminar el giro de tronco (${aWorst}°) reubicando origen/destino para operar en el plano sagital.`);
   if (cmR < 1.0) suggestions.push('Incorporar asas o asideros anatómicos en los envases para asegurar un agarre firme.');
-  if (il > 1) suggestions.push('Evaluar la incorporación de ayudas mecánicas (aparejos, carros elevadores) o reducir la masa unitaria.');
+  if (il > modLimit) suggestions.push('Evaluar la incorporación de ayudas mecánicas (aparejos, carros elevadores) o reducir la masa unitaria.');
   if (suggestions.length === 0) suggestions.push('Mantener la carga próxima al eje corporal y capacitar en técnica de levantamiento con piernas.');
+
+  const deltaV = Math.round((data.vDestCm - data.vOriginCm) * 10) / 10;
+  const trajectoryLabel =
+    deltaV >= 10
+      ? `Levantamiento ascendente (nivel bajo ${data.vOriginCm} cm → estantería/plano alto ${data.vDestCm} cm)`
+      : deltaV <= -10
+        ? `Descenso de carga (altura superior ${data.vOriginCm} cm → altura menor ${data.vDestCm} cm)`
+        : `Traslado horizontal / nivel similar (${data.vOriginCm} cm ↔ ${data.vDestCm} cm)`;
+
+  const reversibleNote =
+    'Nota metodológica: el punto de origen puede actuar también como destino en ciclos reversibles (estiba/desestiba); se adopta el RWL más restrictivo entre ambos extremos.';
 
   const loss = (f: number) => `Pérdida de capacidad: ${Math.round((1 - f) * 100)}%`;
 
@@ -711,11 +795,16 @@ export function evaluateNiosh(data: NioshData): MethodEvaluationResult {
     riskLabel,
     actionLevelText,
     recommendedDeadline: deadline,
-    interpretation,
+    interpretation: `${interpretation} Sentido evaluado: ${trajectoryLabel}. ${reversibleNote}`,
     breakdownRows: [
-      { parameter: 'Constante de Carga (LC)', value: '23,00 kg', reference: 'Condiciones ideales' },
+      {
+        parameter: 'Sentido Cinemático (Origen ↔ Destino)',
+        value: trajectoryLabel,
+        reference: 'Origen y destino intercambiables en ciclo reversible',
+      },
+      { parameter: 'Constante de Carga (LC)', value: `${LC.toFixed(2)} kg`, reference: 'Condiciones ideales' },
       { parameter: `Factor Horizontal HM (H = ${hWorst} cm)`, value: hmR.toFixed(2), reference: loss(hmR) },
-      { parameter: `Factor Vertical VM (V = ${vWorst} cm)`, value: vmR.toFixed(2), reference: loss(vmR) },
+      { parameter: `Factor Vertical VM (V crít. = ${vWorst} cm)`, value: vmR.toFixed(2), reference: `${loss(vmR)} (Orig ${data.vOriginCm} / Dest ${data.vDestCm} cm)` },
       { parameter: `Factor Desplazamiento DM (D = ${d} cm)`, value: dmR.toFixed(2), reference: loss(dmR) },
       { parameter: `Factor Asimetría AM (A = ${aWorst}°)`, value: amR.toFixed(2), reference: loss(amR) },
       { parameter: `Factor Frecuencia FM (${data.frequencyLiftsPerMin} lev/min)`, value: fmR.toFixed(2), reference: loss(fmR) },
@@ -749,6 +838,9 @@ const SNOOK_KG_MIN_LIMIT: Record<SnookData['liftHeightZone'], { masculina: numbe
 
 export function evaluateSnook(data: SnookData): MethodEvaluationResult {
   const meta = METHOD_CATALOG.find((m) => m.id === MethodId.SNOOK)!;
+  const modLimit = getMethodParam(MethodId.SNOOK, 'modLimit', 1.0);
+  const highLimit = getMethodParam(MethodId.SNOOK, 'highLimit', 1.25);
+  const veryHighLimit = getMethodParam(MethodId.SNOOK, 'veryHighLimit', 1.5);
 
   if (data.operationType === 'levantamiento') {
     const fIdx = Math.max(0, SNOOK_FREQS.indexOf(data.liftFrequencyPerMin));
@@ -756,14 +848,24 @@ export function evaluateSnook(data: SnookData): MethodEvaluationResult {
       data.population === 'masculina'
         ? SNOOK_LIFT_MALE[data.liftHeightZone][fIdx]
         : SNOOK_LIFT_FEMALE[data.liftHeightZone][fIdx];
-    const kgPerMin = data.actualWeightKg * data.liftFrequencyPerMin;
+    const kgPerMin = evalMethodExpr(
+      MethodId.SNOOK,
+      'kgPerMin',
+      { actualWeight: data.actualWeightKg, freq: data.liftFrequencyPerMin },
+      data.actualWeightKg * data.liftFrequencyPerMin,
+    );
     const maxKgMin = SNOOK_KG_MIN_LIMIT[data.liftHeightZone][data.population];
     const ratioUnit = data.actualWeightKg / maxWeight;
     const ratioAccum = kgPerMin / maxKgMin;
-    const worstRatio = Math.max(ratioUnit, ratioAccum);
+    const worstRatio = evalMethodExpr(
+      MethodId.SNOOK,
+      'liftRatio',
+      { actualWeight: data.actualWeightKg, maxWeight, kgPerMin, maxKgMin },
+      Math.max(ratioUnit, ratioAccum),
+    );
 
     const severity: RiskSeverity =
-      worstRatio <= 1 ? 'bajo' : worstRatio <= 1.25 ? 'moderado' : worstRatio <= 1.5 ? 'alto' : 'muy_alto';
+      worstRatio <= modLimit ? 'bajo' : worstRatio <= highLimit ? 'moderado' : worstRatio <= veryHighLimit ? 'alto' : 'muy_alto';
     const deadline: MethodEvaluationResult['recommendedDeadline'] =
       severity === 'bajo' ? 'Sin plazo específico' : severity === 'moderado' ? 'Medio plazo' : severity === 'alto' ? 'Corto plazo' : 'Inmediato';
 
@@ -776,20 +878,20 @@ export function evaluateSnook(data: SnookData): MethodEvaluationResult {
       primaryScoreText: `${data.actualWeightKg} / ${maxWeight} kg`,
       secondaryScoreText: `Acumulado: ${kgPerMin.toFixed(1)} / ${maxKgMin} kg/min`,
       severity,
-      riskLabel: worstRatio <= 1 ? 'Operación admisible' : 'Supera peso máximo aceptable',
-      actionLevelText: worstRatio <= 1 ? 'Dentro del límite Snook y Ciriello' : `Exceso del ${Math.round((worstRatio - 1) * 100)}% sobre referencia`,
+      riskLabel: worstRatio <= modLimit ? 'Operación admisible' : 'Supera peso máximo aceptable',
+      actionLevelText: worstRatio <= modLimit ? 'Dentro del límite Snook y Ciriello' : `Razón exigencia = ${worstRatio.toFixed(2)}`,
       recommendedDeadline: deadline,
       interpretation:
-        worstRatio <= 1
+        worstRatio <= modLimit
           ? 'Tanto el peso unitario como la masa acumulada por minuto se mantienen dentro de los valores aceptables tabulados.'
           : 'Se supera el límite psicofísico aceptable (por peso unitario o exigencia acumulada en kg/min), requiriendo rediseño de altura, frecuencia o masa.',
       breakdownRows: [
         { parameter: 'Modalidad evaluada', value: `Levantamiento (Población ${data.population})`, reference: 'Tablas 5.11 a 5.13' },
         { parameter: 'Peso real vs. Máximo aceptable', value: `${data.actualWeightKg} kg vs. ${maxWeight} kg`, reference: `Índice: ${ratioUnit.toFixed(2)}` },
-        { parameter: 'Exigencia acumulada (kg/min)', value: `${kgPerMin.toFixed(1)} kg/min vs. ${maxKgMin} kg/min`, reference: `Frecuencia: ${data.liftFrequencyPerMin}/min` },
+        { parameter: 'Exigencia acumulada (kg/min)', value: `${kgPerMin.toFixed(1)} kg/min vs. ${maxKgMin} kg/min`, reference: `Índice combinado: ${worstRatio.toFixed(2)}` },
       ],
       suggestedMeasures:
-        worstRatio <= 1
+        worstRatio <= modLimit
           ? ['Mantener condiciones actuales de agarre, iluminación y superficie de tránsito.']
           : [
               'Modificar la altura de toma hacia la zona media (entre rodillas y hombros).',
@@ -811,14 +913,24 @@ export function evaluateSnook(data: SnookData): MethodEvaluationResult {
       pies: { '2m': [260, 170], '60m': [150, 90] },
     };
     const baseLimits = (data.operationType === 'empuje' ? pushTable : pullTable)[data.handHeightZone][data.pushPullDistance];
-    const femFactor = data.population === 'femenina' ? 0.72 : 1.0;
+    const femFactor = data.population === 'femenina' ? getMethodParam(MethodId.SNOOK, 'femFactor', 0.72) : 1.0;
     const maxInit = Math.round(baseLimits[0] * femFactor);
     const maxSust = Math.round(baseLimits[1] * femFactor);
 
-    const ratioInit = data.actualInitialForceN / maxInit;
-    const ratioSust = data.actualSustainedForceN / maxSust;
-    const worst = Math.max(ratioInit, ratioSust);
-    const severity: RiskSeverity = worst <= 1 ? 'bajo' : worst <= 1.25 ? 'moderado' : worst <= 1.5 ? 'alto' : 'muy_alto';
+    const ratioInit = data.actualInitialForceN / Math.max(1, maxInit);
+    const ratioSust = data.actualSustainedForceN / Math.max(1, maxSust);
+    const worst = evalMethodExpr(
+      MethodId.SNOOK,
+      'pushPullRatio',
+      {
+        actualInit: data.actualInitialForceN,
+        maxInit: Math.max(1, maxInit),
+        actualSust: data.actualSustainedForceN,
+        maxSust: Math.max(1, maxSust),
+      },
+      Math.max(ratioInit, ratioSust),
+    );
+    const severity: RiskSeverity = worst <= modLimit ? 'bajo' : worst <= highLimit ? 'moderado' : worst <= veryHighLimit ? 'alto' : 'muy_alto';
 
     return {
       methodId: MethodId.SNOOK,
@@ -829,18 +941,18 @@ export function evaluateSnook(data: SnookData): MethodEvaluationResult {
       primaryScoreText: `${data.actualInitialForceN} / ${maxInit} N`,
       secondaryScoreText: `Mantenimiento: ${data.actualSustainedForceN} / ${maxSust} N`,
       severity,
-      riskLabel: worst <= 1 ? 'Fuerzas admisibles' : 'Supera fuerza máxima aceptable',
-      actionLevelText: worst <= 1 ? 'Dentro de límites de empuje/tracción' : 'Requiere reducción de esfuerzo dinámico',
+      riskLabel: worst <= modLimit ? 'Fuerzas admisibles' : 'Supera fuerza máxima aceptable',
+      actionLevelText: worst <= modLimit ? 'Dentro de límites de empuje/tracción' : 'Requiere reducción de esfuerzo dinámico',
       recommendedDeadline:
         severity === 'bajo' ? 'Sin plazo específico' : severity === 'moderado' ? 'Medio plazo' : severity === 'alto' ? 'Corto plazo' : 'Inmediato',
       interpretation:
-        worst <= 1
+        worst <= modLimit
           ? 'Tanto la fuerza inicial de arranque como la fuerza sostenida se encuentran por debajo de los límites máximos aceptables.'
           : 'Las fuerzas medidas con dinamómetro superan los valores aceptables tabulados para la altura de manos y distancia evaluadas.',
       breakdownRows: [
         { parameter: 'Acción evaluada', value: `${data.operationType.toUpperCase()} (${data.pushPullDistance})`, reference: `Altura manos: ${data.handHeightZone}` },
         { parameter: 'Fuerza de arranque (N)', value: `${data.actualInitialForceN} N vs. máx. ${maxInit} N`, reference: `Relación: ${ratioInit.toFixed(2)}` },
-        { parameter: 'Fuerza de mantenimiento (N)', value: `${data.actualSustainedForceN} N vs. máx. ${maxSust} N`, reference: `Relación: ${ratioSust.toFixed(2)}` },
+        { parameter: 'Fuerza de mantenimiento (N)', value: `${data.actualSustainedForceN} N vs. máx. ${maxSust} N`, reference: `Relación combinada: ${worst.toFixed(2)}` },
       ],
       suggestedMeasures: [
         'Verificar el estado de rodamientos, ruedas de mayor diámetro y nivelación del pavimento.',
@@ -857,8 +969,13 @@ export function evaluateSnook(data: SnookData): MethodEvaluationResult {
     mas_10m: { masculina: 23, femenina: 14 },
   };
   const maxCarry = carryLimits[data.carryDistance][data.population];
-  const ratio = data.actualWeightKg / maxCarry;
-  const severity: RiskSeverity = ratio <= 1 ? 'bajo' : ratio <= 1.25 ? 'moderado' : ratio <= 1.5 ? 'alto' : 'muy_alto';
+  const ratio = evalMethodExpr(
+    MethodId.SNOOK,
+    'carryRatio',
+    { actualWeight: data.actualWeightKg, maxCarry },
+    data.actualWeightKg / maxCarry,
+  );
+  const severity: RiskSeverity = ratio <= modLimit ? 'bajo' : ratio <= highLimit ? 'moderado' : ratio <= veryHighLimit ? 'alto' : 'muy_alto';
 
   return {
     methodId: MethodId.SNOOK,
@@ -913,8 +1030,12 @@ const LMC_TABLES: Record<1 | 2 | 3, Record<Lmc295Data['verticalZone'], Record<Lm
 };
 
 export function evaluateLmc295(data: Lmc295Data): MethodEvaluationResult {
+  const maxLiftsPerHour = getMethodParam(MethodId.LMC_295, 'maxLiftsPerHour', 360);
+  const precautionRatio = getMethodParam(MethodId.LMC_295, 'precautionRatio', 0.85);
+  const criticalRatio = getMethodParam(MethodId.LMC_295, 'criticalRatio', 1.3);
+
   let selectedTable: 1 | 2 | 3 | null = 1;
-  if (data.liftsPerHour > 360) {
+  if (data.liftsPerHour > maxLiftsPerHour) {
     selectedTable = null;
   } else if (data.durationHours === 'hasta_2h') {
     selectedTable = data.liftsPerHour <= 60 ? 1 : 2;
@@ -934,6 +1055,16 @@ export function evaluateLmc295(data: Lmc295Data): MethodEvaluationResult {
     data.highHeatHumidity && 'Calor y humedad elevados',
   ].filter(Boolean) as string[];
 
+  const weightRatio =
+    limitKg !== null && limitKg > 0
+      ? evalMethodExpr(
+          MethodId.LMC_295,
+          'weightRatio',
+          { actualWeight: data.actualWeightKg, limitKg, aggravatingCount: aggravating.length },
+          data.actualWeightKg / limitKg,
+        )
+      : 99.9;
+
   let severity: RiskSeverity = 'bajo';
   let riskLabel = 'Aceptable';
   let actionLevelText = 'Debajo del Valor Límite Umbral';
@@ -944,12 +1075,12 @@ export function evaluateLmc295(data: Lmc295Data): MethodEvaluationResult {
     riskLabel = 'Sin límite seguro conocido';
     actionLevelText = 'Zona sin límite seguro para levantamientos repetidos';
     deadline = 'Inmediato';
-  } else if (data.actualWeightKg > limitKg) {
-    severity = data.actualWeightKg > limitKg * 1.3 ? 'muy_alto' : 'alto';
+  } else if (weightRatio > 1.0) {
+    severity = weightRatio > criticalRatio ? 'muy_alto' : 'alto';
     riskLabel = 'No Aceptable — Supera VLU';
-    actionLevelText = `Peso real (${data.actualWeightKg} kg) > Límite (${limitKg} kg)`;
+    actionLevelText = `Peso real (${data.actualWeightKg} kg) > Límite (${limitKg} kg) · R=${weightRatio.toFixed(2)}`;
     deadline = severity === 'muy_alto' ? 'Inmediato' : 'Corto plazo';
-  } else if (aggravating.length > 0 || data.actualWeightKg > limitKg * 0.85) {
+  } else if (aggravating.length > 0 || weightRatio > precautionRatio) {
     severity = 'moderado';
     riskLabel = 'Aceptable con precaución';
     actionLevelText = 'Próximo al límite o con factores agravantes presentes';
@@ -996,39 +1127,75 @@ export function evaluateLmc295(data: Lmc295Data): MethodEvaluationResult {
 // ============================================================================
 export function evaluateOcraCompleto(data: OcraCompletoData): MethodEvaluationResult {
   const cycleSec = Math.max(1, data.cycleDurationSec);
-  const frequencyPerMin = (data.actionsPerCycle / cycleSec) * 60;
-  const ataPerformed = frequencyPerMin * data.netRepetitiveMinutes;
-  const ataRefPerMin =
-    30 *
-    data.fmForce *
-    data.fpPosture *
-    data.ffRepetitiveness *
-    data.feStereotypy *
-    data.faPhysicalAgents *
-    data.ftRecovery *
-    data.fcDuration;
+  const CF = getMethodParam(MethodId.OCRA_COMPLETO, 'CF', 30);
+  const modLimit = getMethodParam(MethodId.OCRA_COMPLETO, 'modLimit', 2.2);
+  const highLimit = getMethodParam(MethodId.OCRA_COMPLETO, 'highLimit', 3.5);
+  const veryHighLimit = getMethodParam(MethodId.OCRA_COMPLETO, 'veryHighLimit', 4.5);
+
+  const frequencyPerMin = evalMethodExpr(
+    MethodId.OCRA_COMPLETO,
+    'freqPerMin',
+    { actionsPerCycle: data.actionsPerCycle, cycleSec },
+    (data.actionsPerCycle / cycleSec) * 60,
+  );
+  const ataPerformed = evalMethodExpr(
+    MethodId.OCRA_COMPLETO,
+    'ataPerformed',
+    { freqPerMin: frequencyPerMin, netMin: data.netRepetitiveMinutes },
+    frequencyPerMin * data.netRepetitiveMinutes,
+  );
+  const ataRefPerMin = evalMethodExpr(
+    MethodId.OCRA_COMPLETO,
+    'ataRefPerMin',
+    {
+      CF,
+      Fm: data.fmForce,
+      Fp: data.fpPosture,
+      Ff: data.ffRepetitiveness,
+      Fe: data.feStereotypy,
+      Fa: data.faPhysicalAgents,
+      Ft: data.ftRecovery,
+      Fc: data.fcDuration,
+    },
+    CF *
+      data.fmForce *
+      data.fpPosture *
+      data.ffRepetitiveness *
+      data.feStereotypy *
+      data.faPhysicalAgents *
+      data.ftRecovery *
+      data.fcDuration,
+  );
   const ataReference = ataRefPerMin * data.netRepetitiveMinutes;
-  const ocraIndex = ataReference > 0 ? ataPerformed / ataReference : 99.9;
+  const ocraIndex =
+    ataReference > 0
+      ? evalMethodExpr(
+          MethodId.OCRA_COMPLETO,
+          'ocraIndex',
+          { ataPerformed, ataRefPerMin, netMin: data.netRepetitiveMinutes },
+          ataPerformed / ataReference,
+        )
+      : 99.9;
 
   let severity: RiskSeverity = 'bajo';
   let riskLabel = 'Riesgo aceptable';
-  let actionLevelText = 'Índice ≤ 2,2 — Exposición admisible';
+  let actionLevelText = `Índice ≤ ${modLimit.toFixed(1)} — Exposición admisible`;
   let deadline: MethodEvaluationResult['recommendedDeadline'] = 'Sin plazo específico';
 
-  if (ocraIndex > 4.5) {
+  if (ocraIndex > veryHighLimit) {
     severity = 'muy_alto';
     riskLabel = 'Riesgo muy alto';
-    actionLevelText = 'Índice > 4,5 — Reducción inmediata';
+    actionLevelText = `Índice > ${veryHighLimit.toFixed(1)} — Reducción inmediata`;
     deadline = 'Inmediato';
-  } else if (ocraIndex > 3.5) {
+  } else if (ocraIndex > highLimit) {
     severity = 'alto';
     riskLabel = 'Riesgo alto';
-    actionLevelText = 'Índice 3,6 a 4,5 — Reducción a corto plazo';
+    actionLevelText = `Índice ${highLimit.toFixed(1)} a ${veryHighLimit.toFixed(1)} — Reducción a corto plazo`;
     deadline = 'Corto plazo';
-  } else if (ocraIndex > 2.2) {
+  } else if (ocraIndex > modLimit) {
     severity = 'moderado';
     riskLabel = 'Riesgo límite / leve';
-    actionLevelText = 'Índice 2,3 a 3,5 — Revisión organizativa y pausas';
+    actionLevelText = `Índice ${modLimit.toFixed(1)} a ${highLimit.toFixed(1)} — Revisión organizativa y pausas`;
     deadline = 'Medio plazo';
   }
 
@@ -1046,8 +1213,8 @@ export function evaluateOcraCompleto(data: OcraCompletoData): MethodEvaluationRe
     actionLevelText,
     recommendedDeadline: deadline,
     interpretation:
-      ocraIndex <= 2.2
-        ? 'El índice de exposición OCRA se mantiene hasta 2,2 (Tabla 6.10). La exposición repetitiva resulta aceptable.'
+      ocraIndex <= modLimit
+        ? `El índice de exposición OCRA se mantiene hasta ${modLimit.toFixed(1)} (Tabla 6.10). La exposición repetitiva resulta aceptable.`
         : `El trabajador efectúa ${ocraIndex.toFixed(1)} veces las acciones técnicas recomendadas para estas condiciones. Se requiere actuar sobre pausas, frecuencia y posturas.`,
     breakdownRows: [
       { parameter: 'Frecuencia de acciones técnicas', value: `${frequencyPerMin.toFixed(1)} acciones/min`, reference: `${data.actionsPerCycle} acc. / ${cycleSec}s` },
@@ -1057,7 +1224,7 @@ export function evaluateOcraCompleto(data: OcraCompletoData): MethodEvaluationRe
         value: `${data.fmForce} × ${data.fpPosture} × ${data.ffRepetitiveness} × ${data.feStereotypy} × ${data.faPhysicalAgents} × ${data.ftRecovery} × ${data.fcDuration}`,
         reference: `${ataRefPerMin.toFixed(2)} acc/min ref.`,
       },
-      { parameter: 'Acciones de referencia (ATA ref)', value: `${Math.round(ataReference).toLocaleString('es-AR')} acciones`, reference: 'Constante base 30 acc/min' },
+      { parameter: 'Acciones de referencia (ATA ref)', value: `${Math.round(ataReference).toLocaleString('es-AR')} acciones`, reference: `Constante base ${CF} acc/min` },
       { parameter: 'Índice de Exposición OCRA', value: ocraIndex.toFixed(2), reference: actionLevelText },
     ],
     suggestedMeasures: [
@@ -1084,13 +1251,14 @@ function getDurationMultiplierClassic(netMin: number): number {
 
 export function evaluateOcraChecklist(data: OcraChecklistData): MethodEvaluationResult {
   const meta = METHOD_CATALOG.find((m) => m.id === MethodId.OCRA_CHECKLIST)!;
+  const CF = getMethodParam(MethodId.OCRA_CHECKLIST, 'CF', 30);
 
   if (data.mode === 'libro_coeficientes') {
     const cycleSec = Math.max(1, data.cycleDurationSec);
     const freq = (data.actionsPerCycle / cycleSec) * 60;
     const ataReal = freq * data.netRepetitiveMinutes;
     const ataRefMin =
-      30 *
+      CF *
       data.coefRecovery *
       data.coefFrequency *
       data.coefForce *
@@ -1099,7 +1267,26 @@ export function evaluateOcraChecklist(data: OcraChecklistData): MethodEvaluation
       data.coefStereotypy *
       data.coefDuration;
     const ataRef = ataRefMin * data.netRepetitiveMinutes;
-    const estIndex = ataRef > 0 ? ataReal / ataRef : 99.9;
+    const estIndex =
+      ataRef > 0
+        ? evalMethodExpr(
+            MethodId.OCRA_CHECKLIST,
+            'estIndexCoef',
+            {
+              actionsPerCycle: data.actionsPerCycle,
+              cycleSec,
+              CF,
+              coefRec: data.coefRecovery,
+              coefFreq: data.coefFrequency,
+              coefForce: data.coefForce,
+              coefPost: data.coefPosture,
+              coefComp: data.coefComplementary,
+              coefStereo: data.coefStereotypy,
+              coefDur: data.coefDuration,
+            },
+            ataReal / ataRef,
+          )
+        : 99.9;
 
     const severity: RiskSeverity =
       estIndex <= 2.2 ? 'bajo' : estIndex <= 3.5 ? 'moderado' : estIndex <= 4.5 ? 'alto' : 'muy_alto';
@@ -1126,7 +1313,7 @@ export function evaluateOcraChecklist(data: OcraChecklistData): MethodEvaluation
         {
           parameter: 'Coeficientes (Rec·Frec·Fza·Post·Comp·Est·Dur)',
           value: `${data.coefRecovery} × ${data.coefFrequency} × ${data.coefForce} × ${data.coefPosture} × ${data.coefComplementary} × ${data.coefStereotypy} × ${data.coefDuration}`,
-          reference: 'Tablas 6.12 a 6.17',
+          reference: `Tablas 6.12 a 6.17 (CF=${CF})`,
         },
         { parameter: 'Índice OCRA Estimado', value: estIndex.toFixed(2), reference: 'Corte admisible: 2,2' },
       ],
@@ -1138,9 +1325,16 @@ export function evaluateOcraChecklist(data: OcraChecklistData): MethodEvaluation
   }
 
   // Modo Clásico Bilateral (Fichas 1 a 6 del Informe PDF)
-  const netRepMin = Math.max(
-    0,
-    data.shiftMinutes - data.officialBreaksMinutes - data.lunchBreakMinutes - data.nonRepetitiveMinutes,
+  const netRepMin = evalMethodExpr(
+    MethodId.OCRA_CHECKLIST,
+    'netRepMin',
+    {
+      shiftMin: data.shiftMinutes,
+      breaksMin: data.officialBreaksMinutes,
+      lunchMin: data.lunchBreakMinutes,
+      nonRepMin: data.nonRepetitiveMinutes,
+    },
+    Math.max(0, data.shiftMinutes - data.officialBreaksMinutes - data.lunchBreakMinutes - data.nonRepetitiveMinutes),
   );
   const fd = getDurationMultiplierClassic(netRepMin);
 
@@ -1148,37 +1342,55 @@ export function evaluateOcraChecklist(data: OcraChecklistData): MethodEvaluation
     const postureMax = Math.max(s.shoulderScore, s.elbowScore, s.wristScore, s.handGripScore) + s.stereotypyScore;
     const comp = s.complementaryPhysicalScore + s.complementaryOrganizationalScore;
     const raw = data.recoveryFactorScore + s.frequencyFactor + s.forceFactor + postureMax + comp;
-    return { postureMax, comp, index: Number((raw * fd).toFixed(2)) };
+    const computedIcl = evalMethodExpr(
+      MethodId.OCRA_CHECKLIST,
+      'iclSide',
+      {
+        FR: data.recoveryFactorScore,
+        FF: s.frequencyFactor,
+        FFz: s.forceFactor,
+        FP: postureMax,
+        FC: comp,
+        FD: fd,
+      },
+      raw * fd,
+    );
+    return { postureMax, comp, index: Number(computedIcl.toFixed(2)) };
   };
 
   const rRes = calcSide(data.right);
   const lRes = calcSide(data.left);
   const maxIdx = Math.max(rRes.index, lRes.index);
 
+  const greenLimit = getMethodParam(MethodId.OCRA_CHECKLIST, 'greenLimit', 7.5);
+  const yellowLimit = getMethodParam(MethodId.OCRA_CHECKLIST, 'yellowLimit', 11.0);
+  const redLightLimit = getMethodParam(MethodId.OCRA_CHECKLIST, 'redLightLimit', 14.0);
+  const redMedLimit = getMethodParam(MethodId.OCRA_CHECKLIST, 'redMedLimit', 22.5);
+
   let severity: RiskSeverity = 'bajo';
   let riskLabel = 'Aceptable (Verde)';
-  let actionLevelText = 'Hasta 7,5 — Riesgo aceptable';
+  let actionLevelText = `Hasta ${greenLimit.toFixed(1)} — Riesgo aceptable`;
   let deadline: MethodEvaluationResult['recommendedDeadline'] = 'Sin plazo específico';
 
-  if (maxIdx > 22.5) {
+  if (maxIdx > redMedLimit) {
     severity = 'muy_alto';
     riskLabel = 'No aceptable: Nivel Alto (Morado)';
-    actionLevelText = '≥ 22,6 — Mejora urgente del puesto y supervisión médica';
+    actionLevelText = `> ${redMedLimit.toFixed(1)} — Mejora urgente del puesto y supervisión médica`;
     deadline = 'Inmediato';
-  } else if (maxIdx > 14.0) {
+  } else if (maxIdx > redLightLimit) {
     severity = 'alto';
     riskLabel = 'No aceptable: Nivel Medio (Rojo intenso)';
-    actionLevelText = '14,1 a 22,5 — Mejora del puesto, supervisión y entrenamiento';
+    actionLevelText = `${redLightLimit.toFixed(1)} a ${redMedLimit.toFixed(1)} — Mejora del puesto, supervisión y entrenamiento`;
     deadline = 'Corto plazo';
-  } else if (maxIdx > 11.0) {
+  } else if (maxIdx > yellowLimit) {
     severity = 'moderado';
     riskLabel = 'No aceptable: Nivel Leve (Rojo suave)';
-    actionLevelText = '11,1 a 14,0 — Mejora del puesto y supervisión';
+    actionLevelText = `${yellowLimit.toFixed(1)} a ${redLightLimit.toFixed(1)} — Mejora del puesto y supervisión`;
     deadline = 'Medio plazo';
-  } else if (maxIdx > 7.5) {
+  } else if (maxIdx > greenLimit) {
     severity = 'moderado';
     riskLabel = 'Muy leve o incierto (Amarillo)';
-    actionLevelText = '7,6 a 11,0 — Se recomienda nuevo análisis o mejora';
+    actionLevelText = `${greenLimit.toFixed(1)} a ${yellowLimit.toFixed(1)} — Se recomienda nuevo análisis o mejora`;
     deadline = 'Medio plazo';
   }
 
@@ -1195,11 +1407,11 @@ export function evaluateOcraChecklist(data: OcraChecklistData): MethodEvaluation
     actionLevelText,
     recommendedDeadline: deadline,
     interpretation:
-      maxIdx <= 7.5
-        ? `El Índice Check List OCRA máximo (${maxIdx.toFixed(2)}) es ≤ 7,5. La repetitividad de movimientos en las tareas evaluadas resulta aceptable.`
+      maxIdx <= greenLimit
+        ? `El Índice Check List OCRA máximo (${maxIdx.toFixed(2)}) es ≤ ${greenLimit.toFixed(1)}. La repetitividad de movimientos en las tareas evaluadas resulta aceptable.`
         : `El Índice Check List OCRA (${maxIdx.toFixed(2)}) se clasifica como "${riskLabel}", requiriendo intervención sobre pausas, frecuencia y posturas forzadas.`,
     breakdownRows: [
-      { parameter: 'Tiempo neto de trabajo repetitivo', value: `${netRepMin} min`, reference: `Factor Duración FD = ${fd}` },
+      { parameter: 'Tiempo neto de trabajo repetitivo', value: `${Math.round(netRepMin)} min`, reference: `Factor Duración FD = ${fd}` },
       { parameter: 'Factor Recuperación (FR)', value: `${data.recoveryFactorScore} pts`, reference: 'Ficha 2 — Régimen de pausas' },
       {
         parameter: 'Factores Mano Derecha',
@@ -1213,7 +1425,7 @@ export function evaluateOcraChecklist(data: OcraChecklistData): MethodEvaluation
       },
     ],
     suggestedMeasures:
-      maxIdx <= 7.5
+      maxIdx <= greenLimit
         ? ['Mantener la distribución actual de pausas y alternancia con tareas no repetitivas.']
         : [
             'Incorporar pausas de 8-10 minutos por cada hora de tarea repetitiva.',
@@ -1228,8 +1440,18 @@ export function evaluateOcraChecklist(data: OcraChecklistData): MethodEvaluation
 // ============================================================================
 export function evaluateJsi(data: JsiData): MethodEvaluationResult {
   const cycleSec = Math.max(1, data.cycleDurationSec);
-  const pctCycle = (data.effortDurationSec / cycleSec) * 100;
-  const effortsPerMin = 60 / cycleSec;
+  const pctCycle = evalMethodExpr(
+    MethodId.JSI,
+    'pctCycle',
+    { effortSec: data.effortDurationSec, cycleSec },
+    (data.effortDurationSec / cycleSec) * 100,
+  );
+  const effortsPerMin = evalMethodExpr(
+    MethodId.JSI,
+    'effortsPerMin',
+    { cycleSec },
+    60 / cycleSec,
+  );
 
   let de: 1 | 2 | 3 | 4 | 5 = data.deDurationScore;
   let epm: 1 | 2 | 3 | 4 | 5 = data.epmEffortsScore;
@@ -1239,24 +1461,40 @@ export function evaluateJsi(data: JsiData): MethodEvaluationResult {
     epm = effortsPerMin < 4 ? 1 : effortsPerMin <= 8 ? 2 : effortsPerMin <= 14 ? 3 : effortsPerMin <= 19 ? 4 : 5;
   }
 
-  // Exact formula from libro.html Section 6.4.3 & Worked Example 6.6:
-  // JSI = IE * DE * EPM * PM * HT * NP
-  const jsiScore = data.ieIntensity * de * epm * data.pmWristPosture * data.htHoursPerDay * data.npSpeedWork;
+  const jsiScore = Number(
+    evalMethodExpr(
+      MethodId.JSI,
+      'jsiScore',
+      {
+        IE: data.ieIntensity,
+        DE: de,
+        EPM: epm,
+        PM: data.pmWristPosture,
+        HT: data.htHoursPerDay,
+        NP: data.npSpeedWork,
+      },
+      data.ieIntensity * de * epm * data.pmWristPosture * data.htHoursPerDay * data.npSpeedWork,
+    ).toFixed(2),
+  );
+
+  const modLimit = getMethodParam(MethodId.JSI, 'modLimit', 3.0);
+  const highLimit = getMethodParam(MethodId.JSI, 'highLimit', 7.0);
+  const veryHighLimit = getMethodParam(MethodId.JSI, 'veryHighLimit', 30.0);
 
   let severity: RiskSeverity = 'bajo';
   let riskLabel = 'Riesgo bajo';
-  let actionLevelText = 'JSI ≤ 3 — Dentro de límites admisibles';
+  let actionLevelText = `JSI ≤ ${modLimit} — Dentro de límites admisibles`;
   let deadline: MethodEvaluationResult['recommendedDeadline'] = 'Sin plazo específico';
 
-  if (jsiScore > 7) {
-    severity = jsiScore > 30 ? 'muy_alto' : 'alto';
+  if (jsiScore > highLimit) {
+    severity = jsiScore > veryHighLimit ? 'muy_alto' : 'alto';
     riskLabel = 'Riesgo alto';
-    actionLevelText = 'JSI > 7 — Rediseño prioritario de la tarea';
+    actionLevelText = `JSI > ${highLimit} — Rediseño prioritario de la tarea`;
     deadline = severity === 'muy_alto' ? 'Inmediato' : 'Corto plazo';
-  } else if (jsiScore > 3) {
+  } else if (jsiScore > modLimit) {
     severity = 'moderado';
     riskLabel = 'Riesgo moderado';
-    actionLevelText = '3 < JSI ≤ 7 — Revisión de la tarea';
+    actionLevelText = `${modLimit} < JSI ≤ ${highLimit} — Revisión de la tarea`;
     deadline = 'Medio plazo';
   }
 
@@ -1274,11 +1512,11 @@ export function evaluateJsi(data: JsiData): MethodEvaluationResult {
     actionLevelText,
     recommendedDeadline: deadline,
     interpretation:
-      jsiScore <= 3
-        ? 'El índice de tensión JSI es igual o inferior a 3 (Tabla 6.25). Es poco probable que se produzcan trastornos distales.'
-        : jsiScore <= 7
-          ? 'El índice JSI se ubica entre 3 y 7. Existe riesgo moderado en trabajadores sensibles; se recomienda revisar el puesto.'
-          : `El índice JSI (${jsiScore}) supera ampliamente el punto de corte de 7 (Tabla 6.25). Alta probabilidad de TME en muñeca y mano; requiere rediseño prioritario.`,
+      jsiScore <= modLimit
+        ? `El índice de tensión JSI es igual o inferior a ${modLimit} (Tabla 6.25). Es poco probable que se produzcan trastornos distales.`
+        : jsiScore <= highLimit
+          ? `El índice JSI se ubica entre ${modLimit} y ${highLimit}. Existe riesgo moderado en trabajadores sensibles; se recomienda revisar el puesto.`
+          : `El índice JSI (${jsiScore}) supera el punto de corte de ${highLimit} (Tabla 6.25). Alta probabilidad de TME en muñeca y mano; requiere rediseño prioritario.`,
     breakdownRows: [
       { parameter: 'Intensidad del Esfuerzo (IE)', value: `${data.ieIntensity}`, reference: 'Tabla 6.19 (Escala 1–5)' },
       { parameter: 'Duración del Esfuerzo (DE)', value: `${de}`, reference: `${pctCycle.toFixed(1)}% del ciclo (Tabla 6.20)` },
@@ -1311,10 +1549,15 @@ const NAM_FREQS = [0.125, 0.25, 0.5, 1.0, 2.0];
 
 function computeNamHand(h: Nam295Data['right']) {
   const period = Math.max(1, h.observationPeriodSec);
-  const dutyPct = clamp((h.effortTimeSec / period) * 100, 0, 100);
+  const dutyPct = evalMethodExpr(
+    MethodId.NAM_295,
+    'dutyPct',
+    { effortSec: h.effortTimeSec, periodSec: period },
+    clamp((h.effortTimeSec / period) * 100, 0, 100),
+  );
   const freq = h.effortsCount / period;
+  const namMax = getMethodParam(MethodId.NAM_295, 'namMax', 9);
 
-  // Closest row in Tabla 1
   let fIdx = 0;
   let minDiff = Infinity;
   NAM_FREQS.forEach((f, idx) => {
@@ -1327,12 +1570,21 @@ function computeNamHand(h: Nam295Data['right']) {
   const colIdx = dutyPct < 20 ? 0 : dutyPct < 40 ? 1 : dutyPct < 60 ? 2 : dutyPct < 80 ? 3 : 4;
   let nam = NAM_TABLE_1[fIdx][colIdx];
   if (nam === null) {
-    // Continuous approximation when outside discrete table cells (Figura 2 Res. 295/03)
-    nam = clamp(Math.round(Math.log10(Math.max(0.05, freq) * 10) * 3 + dutyPct / 22), 1, 9);
+    nam = clamp(Math.round(Math.log10(Math.max(0.05, freq) * 10) * 3 + dutyPct / 22), 1, namMax);
   }
 
-  const tlvLimit = Math.max(0, 7.8 - 0.78 * nam);
-  const actionLimit = Math.max(0, 5.56 - 0.556 * nam);
+  const tlvLimit = evalMethodExpr(
+    MethodId.NAM_295,
+    'tlvLimit',
+    { NAM: nam },
+    Math.max(0, 7.8 - 0.78 * nam),
+  );
+  const actionLimit = evalMethodExpr(
+    MethodId.NAM_295,
+    'actionLimit',
+    { NAM: nam },
+    Math.max(0, 5.56 - 0.556 * nam),
+  );
 
   let zone: 'Zona de Seguridad' | 'Zona de Control' | 'Zona de Peligro TME' = 'Zona de Seguridad';
   if (h.borgPeakForce > tlvLimit) zone = 'Zona de Peligro TME';
@@ -1384,12 +1636,12 @@ export function evaluateNam295(data: Nam295Data): MethodEvaluationResult {
       {
         parameter: 'Mano Derecha',
         value: `NAM = ${r.nam} · Fuerza Borg = ${data.right.borgPeakForce} → ${r.zone}`,
-        reference: `Ocupación ${r.dutyPct.toFixed(1)}% · Frec. ${r.freq.toFixed(3)} esf/s (adopta ${r.adoptedFreq})`,
+        reference: `LA=${r.actionLimit.toFixed(2)} · VLU=${r.tlvLimit.toFixed(2)} · Ocup. ${r.dutyPct.toFixed(1)}%`,
       },
       {
         parameter: 'Mano Izquierda',
         value: `NAM = ${l.nam} · Fuerza Borg = ${data.left.borgPeakForce} → ${l.zone}`,
-        reference: `Ocupación ${l.dutyPct.toFixed(1)}% · Frec. ${l.freq.toFixed(3)} esf/s (adopta ${l.adoptedFreq})`,
+        reference: `LA=${l.actionLimit.toFixed(2)} · VLU=${l.tlvLimit.toFixed(2)} · Ocup. ${l.dutyPct.toFixed(1)}%`,
       },
       {
         parameter: 'Factores adicionales Res. 295/03',
@@ -1419,28 +1671,50 @@ export function evaluateNam295(data: Nam295Data): MethodEvaluationResult {
 // ============================================================================
 export function evaluateBipolar(scores: number[]): MethodEvaluationResult {
   const cleanScores = BIPOLAR_ITEMS.map((_, idx) => clamp(scores[idx] ?? 0, 0, 10));
-  const total = cleanScores.reduce((a, b) => a + b, 0);
+  const sumScores = cleanScores.reduce((a, b) => a + b, 0);
   const maxItem = Math.max(...cleanScores);
-  const highItems = BIPOLAR_ITEMS.filter((_, idx) => cleanScores[idx] >= 6).map(
-    (it, idx) => `${it.rightPole} (${cleanScores[it.id - 1]})`,
+
+  const modTotalLimit = getMethodParam(MethodId.BIPOLAR, 'modTotalLimit', 25);
+  const highTotalLimit = getMethodParam(MethodId.BIPOLAR, 'highTotalLimit', 50);
+  const highItemLimit = getMethodParam(MethodId.BIPOLAR, 'highItemLimit', 6);
+  const criticalItemLimit = getMethodParam(MethodId.BIPOLAR, 'criticalItemLimit', 8);
+
+  const total = Number(
+    evalMethodExpr(
+      MethodId.BIPOLAR,
+      'totalScore',
+      { sumScores, itemCount: BIPOLAR_ITEMS.length, maxItem },
+      sumScores,
+    ).toFixed(1),
+  );
+  const meanScore = evalMethodExpr(
+    MethodId.BIPOLAR,
+    'meanScore',
+    { sumScores, itemCount: BIPOLAR_ITEMS.length },
+    sumScores / BIPOLAR_ITEMS.length,
+  );
+
+  const highItems = BIPOLAR_ITEMS.filter((_, idx) => cleanScores[idx] >= highItemLimit).map(
+    (it) => `${it.rightPole} (${cleanScores[it.id - 1]})`,
   );
 
   let severity: RiskSeverity = 'bajo';
   let riskLabel = total === 0 ? 'Puesto ideal (0 pts)' : 'Conforme — No requiere actuación';
-  let actionLevelText = 'Sumatoria ≤ 50 y ningún ítem ≥ 6';
+  let actionLevelText = `Sumatoria ≤ ${highTotalLimit} y ningún ítem ≥ ${highItemLimit}`;
   let deadline: MethodEvaluationResult['recommendedDeadline'] = 'Sin plazo específico';
 
-  if (maxItem >= 8) {
+  if (maxItem >= criticalItemLimit) {
     severity = 'muy_alto';
-    riskLabel = 'Ítem crítico ≥ 8 — Suspender y corregir tarea';
-    actionLevelText = 'Puntuación individual ≥ 8 puntos';
+    riskLabel = `Ítem crítico ≥ ${criticalItemLimit} — Suspender y corregir tarea`;
+    actionLevelText = `Puntuación individual ≥ ${criticalItemLimit} puntos`;
     deadline = 'Inmediato';
-  } else if (maxItem >= 6 || total > 50) {
+  } else if (maxItem >= highItemLimit || total > highTotalLimit) {
     severity = 'alto';
     riskLabel = 'Corrección urgente de variable';
-    actionLevelText = maxItem >= 6 ? 'Puntuación individual de 6 o 7 puntos' : 'Sumatoria total > 50 puntos';
+    actionLevelText =
+      maxItem >= highItemLimit ? `Puntuación individual ≥ ${highItemLimit} puntos` : `Sumatoria total > ${highTotalLimit} puntos`;
     deadline = 'Corto plazo';
-  } else if (total > 25) {
+  } else if (total > modTotalLimit) {
     severity = 'moderado';
     riskLabel = 'Disconformidad leve';
     actionLevelText = 'Seguimiento preventivo de confort';
@@ -1455,21 +1729,21 @@ export function evaluateBipolar(scores: number[]): MethodEvaluationResult {
     categoryLabel: meta.categoryLabel,
     hierarchyOrder: meta.hierarchyOrder,
     primaryScoreText: `${total} / 150 pts`,
-    secondaryScoreText: `Máx. individual: ${maxItem} / 10`,
+    secondaryScoreText: `Media: ${meanScore.toFixed(2)} · Máx. ítem: ${maxItem}/10`,
     severity,
     riskLabel,
     actionLevelText,
     recommendedDeadline: deadline,
     interpretation:
-      maxItem >= 8
-        ? 'Alguna de las puntuaciones individuales es 8 o superior: corresponde suspender la tarea y adecuar el factor crítico.'
-        : maxItem >= 6 || total > 50
-          ? 'Se registran variables con puntaje 6-7 o sumatoria > 50: se debe corregir la variable afectada en forma urgente.'
-          : `Sumatoria total de ${total} puntos (≤ 50) sin ítems críticos. De acuerdo al método Bipolar no se requieren modificaciones en la tarea, sin perjuicio de mejoras en mobiliario (IRAM 3753).`,
+      maxItem >= criticalItemLimit
+        ? `Alguna de las puntuaciones individuales es ${criticalItemLimit} o superior: corresponde suspender la tarea y adecuar el factor crítico.`
+        : maxItem >= highItemLimit || total > highTotalLimit
+          ? `Se registran variables con puntaje ≥ ${highItemLimit} o sumatoria > ${highTotalLimit}: se debe corregir la variable afectada en forma urgente.`
+          : `Sumatoria total de ${total} puntos (≤ ${highTotalLimit}) sin ítems críticos. De acuerdo al método Bipolar no se requieren modificaciones en la tarea, sin perjuicio de mejoras en mobiliario (IRAM 3753).`,
     breakdownRows: [
-      { parameter: 'Sumatoria Total Bipolar', value: `${total} puntos`, reference: 'Umbral de actuación: > 50 pts' },
-      { parameter: 'Puntuación individual máxima', value: `${maxItem} puntos`, reference: '6–7 urgente · ≥ 8 suspender' },
-      { parameter: 'Dimensiones con alerta (≥ 6)', value: highItems.length ? highItems.join(', ') : 'Ninguna', reference: '15 indicadores evaluados' },
+      { parameter: 'Sumatoria Total Bipolar', value: `${total} puntos`, reference: `Media: ${meanScore.toFixed(2)} · Umbral: > ${highTotalLimit} pts` },
+      { parameter: 'Puntuación individual máxima', value: `${maxItem} puntos`, reference: `≥${highItemLimit} urgente · ≥${criticalItemLimit} suspender` },
+      { parameter: `Dimensiones con alerta (≥ ${highItemLimit})`, value: highItems.length ? highItems.join(', ') : 'Ninguna', reference: '15 indicadores evaluados' },
     ],
     suggestedMeasures: [
       'Adecuar silla con regulación de altura (38 a 54 cm), apoyo lumbar y respaldo regulable conforme a IRAM 3753.',
@@ -1489,17 +1763,23 @@ export function evaluateFanger(data: FangerData): MethodEvaluationResult {
   const met = Math.max(0.8, data.metabolicRateMet);
   const clo = clamp(data.clothingInsulationClo, 0, 3);
 
-  // ISO 7730 standard thermal balance equation
+  const metToWm2 = getMethodParam(MethodId.FANGER, 'metToWm2', 58.15);
+  const cloToM2KW = getMethodParam(MethodId.FANGER, 'cloToM2KW', 0.155);
+  const catALimit = getMethodParam(MethodId.FANGER, 'catALimit', 0.2);
+  const catBLimit = getMethodParam(MethodId.FANGER, 'catBLimit', 0.5);
+  const catCLimit = getMethodParam(MethodId.FANGER, 'catCLimit', 0.7);
+  const highLimit = getMethodParam(MethodId.FANGER, 'highLimit', 1.5);
+
   const pa = rh * 10 * Math.exp(16.6536 - 4030.183 / (ta + 235));
-  const icl = 0.155 * clo;
-  const m = met * 58.15;
-  const mw = m; // external mechanical work W assumed 0
+  const icl = cloToM2KW * clo;
+  const m = met * metToWm2;
+  const mw = m;
   const fcl = icl <= 0.078 ? 1.0 + 1.29 * icl : 1.05 + 0.645 * icl;
   const hcf = 12.1 * Math.sqrt(vel);
   const taa = ta + 273;
   const tra = tr + 273;
 
-  let tcla = taa + (35.5 - ta) / (3.5 * icl + 0.1);
+  const tcla = taa + (35.5 - ta) / (3.5 * icl + 0.1);
   const p1 = icl * fcl;
   const p2 = p1 * 3.96;
   const p3 = p1 * 100;
@@ -1519,35 +1799,51 @@ export function evaluateFanger(data: FangerData): MethodEvaluationResult {
   const tcl = 100 * xn - 273;
 
   const hl1 = 3.05 * 0.001 * (5733 - 6.99 * mw - pa);
-  const hl2 = mw > 58.15 ? 0.42 * (mw - 58.15) : 0;
+  const hl2 = mw > metToWm2 ? 0.42 * (mw - metToWm2) : 0;
   const hl3 = 1.7 * 0.00001 * m * (5867 - pa);
   const hl4 = 0.0014 * m * (34 - ta);
   const hl5 = 3.96 * fcl * (Math.pow(xn, 4) - Math.pow(tra / 100, 4));
   const hl6 = fcl * hc * (tcl - ta);
 
-  const ts = 0.303 * Math.exp(-0.036 * m) + 0.028;
-  const pmv = clamp(ts * (mw - hl1 - hl2 - hl3 - hl4 - hl5 - hl6), -3, 3);
-  const ppd = clamp(100 - 95 * Math.exp(-0.03353 * Math.pow(pmv, 4) - 0.2179 * Math.pow(pmv, 2)), 5, 100);
+  const thermalLoad = mw - hl1 - hl2 - hl3 - hl4 - hl5 - hl6;
+  const ts = evalMethodExpr(
+    MethodId.FANGER,
+    'ts',
+    { M: m, met },
+    0.303 * Math.exp(-0.036 * m) + 0.028,
+  );
+  const pmv = evalMethodExpr(
+    MethodId.FANGER,
+    'pmv',
+    { ts, thermalLoad, M: m, ta, tr },
+    clamp(ts * thermalLoad, -3, 3),
+  );
+  const ppd = evalMethodExpr(
+    MethodId.FANGER,
+    'ppd',
+    { PMV: pmv },
+    clamp(100 - 95 * Math.exp(-0.03353 * Math.pow(pmv, 4) - 0.2179 * Math.pow(pmv, 2)), 5, 100),
+  );
 
   const absPmv = Math.abs(pmv);
   let categoryThermal = 'Categoría A (Alta calidad térmica)';
   let severity: RiskSeverity = 'bajo';
   let deadline: MethodEvaluationResult['recommendedDeadline'] = 'Sin plazo específico';
 
-  if (absPmv <= 0.2) {
+  if (absPmv <= catALimit) {
     categoryThermal = 'Categoría A — Alta calidad térmica (PPD < 6%)';
     severity = 'bajo';
-  } else if (absPmv <= 0.5) {
+  } else if (absPmv <= catBLimit) {
     categoryThermal = 'Categoría B — Ambiente aceptable (PPD < 10%)';
     severity = 'bajo';
-  } else if (absPmv <= 0.7) {
+  } else if (absPmv <= catCLimit) {
     categoryThermal = 'Categoría C — Aceptable con reservas (PPD < 15%)';
     severity = 'moderado';
     deadline = 'Medio plazo';
   } else {
     categoryThermal = pmv > 0 ? 'Fuera de criterio — Disconfort por calor' : 'Fuera de criterio — Disconfort por frío';
-    severity = absPmv > 1.5 ? 'alto' : 'moderado';
-    deadline = absPmv > 1.5 ? 'Corto plazo' : 'Medio plazo';
+    severity = absPmv > highLimit ? 'alto' : 'moderado';
+    deadline = absPmv > highLimit ? 'Corto plazo' : 'Medio plazo';
   }
 
   const sensation =
@@ -1576,12 +1872,15 @@ export function evaluateFanger(data: FangerData): MethodEvaluationResult {
     secondaryScoreText: `PPD = ${ppd.toFixed(1)}% · ${sensation}`,
     severity,
     riskLabel: categoryThermal,
-    actionLevelText: absPmv <= 0.5 ? 'Confort térmico aceptable (−0,5 a +0,5)' : 'Fuera del intervalo óptimo (−0,5 a +0,5)',
+    actionLevelText:
+      absPmv <= catBLimit
+        ? `Confort térmico aceptable (−${catBLimit.toFixed(2)} a +${catBLimit.toFixed(2)})`
+        : `Fuera del intervalo óptimo (−${catBLimit.toFixed(2)} a +${catBLimit.toFixed(2)})`,
     recommendedDeadline: deadline,
     interpretation:
-      absPmv <= 0.5
-        ? `El Voto Medio Estimado (${pmv.toFixed(2)}) se ubica dentro del rango de aceptabilidad (−0,5 a +0,5) de la Tabla 7.7, con un ${ppd.toFixed(1)}% de insatisfechos.`
-        : `El PMV (${pmv.toFixed(2)}) y el PPD (${ppd.toFixed(1)}%) superan el umbral de confort del 10%, indicando ${pmv > 0 ? 'exceso térmico cálido' : 'ambiente frío'}.`,
+      absPmv <= catBLimit
+        ? `El Voto Medio Estimado (${pmv.toFixed(2)}) se ubica dentro del rango de aceptabilidad (±${catBLimit.toFixed(2)}) de la Tabla 7.7, con un ${ppd.toFixed(1)}% de insatisfechos.`
+        : `El PMV (${pmv.toFixed(2)}) y el PPD (${ppd.toFixed(1)}%) superan el umbral de confort, indicando ${pmv > 0 ? 'exceso térmico cálido' : 'ambiente frío'}.`,
     breakdownRows: [
       { parameter: 'Temperaturas (Aire ta / Radiante tr)', value: `${ta.toFixed(1)} °C / ${tr.toFixed(1)} °C`, reference: `HR: ${rh}% · va: ${vel.toFixed(2)} m/s` },
       { parameter: 'Variables personales (M / Ropa)', value: `${met.toFixed(1)} met (${Math.round(m)} W/m²) · ${clo.toFixed(2)} clo`, reference: 'Tablas 7.3 y 7.4' },
@@ -1589,12 +1888,12 @@ export function evaluateFanger(data: FangerData): MethodEvaluationResult {
       { parameter: 'Porcentaje de Insatisfechos (PPD)', value: `${ppd.toFixed(1)} %`, reference: categoryThermal },
     ],
     suggestedMeasures:
-      pmv > 0.5
+      pmv > catBLimit
         ? [
             'Aislar superficies radiantes calientes y mejorar el caudal de impulsión de aire climatizado.',
             'Permitir atuendo más ligero (menor resistencia clo) y regulación térmica local.',
           ]
-        : pmv < -0.5
+        : pmv < -catBLimit
           ? [
               'Reducir corrientes de aire frío, elevar la temperatura de climatización y adecuar el aislamiento térmico del vestuario.',
             ]
@@ -1607,7 +1906,9 @@ export function evaluateFanger(data: FangerData): MethodEvaluationResult {
 // ============================================================================
 export function evaluateWbgt(data: WbgtData): MethodEvaluationResult {
   const calcSingle = (tbh: number, tg: number, ta: number, solar: boolean) =>
-    solar ? 0.7 * tbh + 0.2 * tg + 0.1 * ta : 0.7 * tbh + 0.3 * tg;
+    solar
+      ? evalMethodExpr(MethodId.WBGT, 'wbgtSolar', { Tbh: tbh, Tg: tg, Ta: ta }, 0.7 * tbh + 0.2 * tg + 0.1 * ta)
+      : evalMethodExpr(MethodId.WBGT, 'wbgtIndoor', { Tbh: tbh, Tg: tg, Ta: ta }, 0.7 * tbh + 0.3 * tg);
 
   let wbgtWorkplace = calcSingle(data.tbhC, data.tgC, data.taC, data.solarLoad);
   if (data.useMultiZone && data.multiZoneSamples.length > 0) {
@@ -1619,7 +1920,6 @@ export function evaluateWbgt(data: WbgtData): MethodEvaluationResult {
       ) / totMin;
   }
 
-  // Metabolic band (Tablas 7.8 y 7.9)
   const w = data.metabolicWatts;
   const bandLabel =
     w <= 200 ? 'Ligero (≤ 200 W)' : w <= 350 ? 'Moderado (200–350 W)' : w <= 500 ? 'Pesado (350–500 W)' : 'Muy pesado (> 500 W)';
@@ -1638,11 +1938,14 @@ export function evaluateWbgt(data: WbgtData): MethodEvaluationResult {
     else [limitCycle, limitCont] = [24.5, 21.5];
   }
 
-  const activeLimit = data.workRegime === 'continuo' ? limitCont : limitCycle;
-  const weightedCycleWbgt =
-    (wbgtWorkplace * data.workMinutesPerHour + data.restWbgtC * (60 - data.workMinutesPerHour)) / 60;
+  const weightedCycleWbgt = evalMethodExpr(
+    MethodId.WBGT,
+    'wbgtCycle',
+    { wbgtWork: wbgtWorkplace, tWork: data.workMinutesPerHour, wbgtRest: data.restWbgtC },
+    (wbgtWorkplace * data.workMinutesPerHour + data.restWbgtC * (60 - data.workMinutesPerHour)) / 60,
+  );
+  const criticalDeltaC = getMethodParam(MethodId.WBGT, 'criticalDeltaC', 2.0);
 
-  // Régimen recomendado Tabla 7.11
   let recommendedRegime = 'Trabajo continuo';
   if (wbgtWorkplace > limitCont) {
     if (w <= 200) {
@@ -1689,7 +1992,7 @@ export function evaluateWbgt(data: WbgtData): MethodEvaluationResult {
   let deadline: MethodEvaluationResult['recommendedDeadline'] = 'Sin plazo específico';
 
   if (wbgtWorkplace > limitCycle) {
-    severity = wbgtWorkplace > limitCycle + 2 ? 'muy_alto' : 'alto';
+    severity = wbgtWorkplace > limitCycle + criticalDeltaC ? 'muy_alto' : 'alto';
     riskLabel = 'Exposición NO admisible — Estrés térmico';
     deadline = severity === 'muy_alto' ? 'Inmediato' : 'Corto plazo';
   } else if (wbgtWorkplace > limitCont) {
@@ -1716,7 +2019,7 @@ export function evaluateWbgt(data: WbgtData): MethodEvaluationResult {
         ? `El índice WBGT (${wbgtWorkplace.toFixed(1)} °C) es inferior al valor límite para trabajo continuo (${limitCont.toFixed(1)} °C). Exposición admisible.`
         : `El índice WBGT (${wbgtWorkplace.toFixed(1)} °C) supera el valor límite de trabajo continuo (${limitCont.toFixed(1)} °C). Régimen de referencia (Tabla 7.11): ${recommendedRegime}.`,
     breakdownRows: [
-      { parameter: 'Modalidad de radiación', value: data.solarLoad ? 'Exterior con carga solar' : 'Interior o exterior sin carga solar', reference: data.solarLoad ? '0,7·Tbh + 0,2·Tg + 0,1·Ta' : '0,7·Tbh + 0,3·Tg' },
+      { parameter: 'Modalidad de radiación', value: data.solarLoad ? 'Exterior con carga solar' : 'Interior o exterior sin carga solar', reference: data.solarLoad ? 'WBGT_sol' : 'WBGT_int' },
       { parameter: 'Índice WBGT del puesto', value: `${wbgtWorkplace.toFixed(2)} °C`, reference: `Tbh=${data.tbhC}°C · Tg=${data.tgC}°C · Ta=${data.taC}°C` },
       { parameter: 'Consumo metabólico y aclimatación', value: `${w} W (${bandLabel})`, reference: data.acclimatized ? 'Aclimatado (Tabla 7.8)' : 'No aclimatado (Tabla 7.9)' },
       { parameter: 'Valores límite WBGT', value: `Continuo: ${limitCont.toFixed(1)} °C | Ciclo: ${limitCycle.toFixed(1)} °C`, reference: `Ponderado actual: ${weightedCycleWbgt.toFixed(1)} °C` },
@@ -1735,36 +2038,54 @@ export function evaluateWbgt(data: WbgtData): MethodEvaluationResult {
 // ============================================================================
 export function evaluateIso2631(data: Iso2631Data): MethodEvaluationResult {
   const periods = data.periods.length > 0 ? data.periods : [];
+  const kxSeated = getMethodParam(MethodId.ISO_2631, 'kxSeated', 1.4);
+  const kySeated = getMethodParam(MethodId.ISO_2631, 'kySeated', 1.4);
+  const kzVal = getMethodParam(MethodId.ISO_2631, 'kz', 1.0);
+  const T0 = Math.max(0.5, getMethodParam(MethodId.ISO_2631, 'T0', 8.0));
+  const actionLower = getMethodParam(MethodId.ISO_2631, 'actionLower', 0.5);
+  const actionUpper = getMethodParam(MethodId.ISO_2631, 'actionUpper', 1.15);
+
   let sumA8Sq = 0;
 
   const pRows = periods.map((p) => {
-    const kx = p.posture === 'sentado' ? 1.4 : 1.0;
-    const ky = p.posture === 'sentado' ? 1.4 : 1.0;
-    const kz = 1.0;
-    const aw = Math.sqrt(Math.pow(kx * p.awx, 2) + Math.pow(ky * p.awy, 2) + Math.pow(kz * p.awz, 2));
-    const a8Partial = aw * Math.sqrt(Math.max(0, p.exposureHours) / 8);
+    const kx = p.posture === 'sentado' ? kxSeated : 1.0;
+    const ky = p.posture === 'sentado' ? kySeated : 1.0;
+    const kz = kzVal;
+    const aw = evalMethodExpr(
+      MethodId.ISO_2631,
+      'aw',
+      { kx, ky, kz, awx: p.awx, awy: p.awy, awz: p.awz },
+      Math.sqrt(Math.pow(kx * p.awx, 2) + Math.pow(ky * p.awy, 2) + Math.pow(kz * p.awz, 2)),
+    );
+    const expH = Math.max(0, p.exposureHours);
+    const a8Partial = evalMethodExpr(
+      MethodId.ISO_2631,
+      'a8Partial',
+      { aw, T: expH, T0 },
+      aw * Math.sqrt(expH / T0),
+    );
     sumA8Sq += Math.pow(a8Partial, 2);
     return {
       parameter: `${p.equipmentName} (${p.posture === 'sentado' ? 'Sentado' : 'De pie'})`,
       value: `aw = ${aw.toFixed(2)} m/s² → A(8) parcial = ${a8Partial.toFixed(2)} m/s²`,
-      reference: `X:${p.awx} (×${kx}) · Y:${p.awy} (×${ky}) · Z:${p.awz} (×1,0) · T=${p.exposureHours}h`,
+      reference: `X:${p.awx} (×${kx}) · Y:${p.awy} (×${ky}) · Z:${p.awz} (×${kz}) · T=${p.exposureHours}h`,
     };
   });
 
   const a8 = Math.sqrt(sumA8Sq);
   let severity: RiskSeverity = 'bajo';
   let riskLabel = 'Debajo del Nivel de Acción Inferior';
-  let actionLevelText = 'A(8) ≤ 0,50 m/s² — Exposición admisible';
+  let actionLevelText = `A(8) ≤ ${actionLower.toFixed(2)} m/s² — Exposición admisible`;
   let deadline: MethodEvaluationResult['recommendedDeadline'] = 'Sin plazo específico';
 
-  if (a8 > 1.15) {
+  if (a8 > actionUpper) {
     severity = 'muy_alto';
-    riskLabel = 'Supera Nivel de Acción Superior (1,15 m/s²)';
-    actionLevelText = 'A(8) > 1,15 m/s² — Prohibido superar / Reducción prioritaria';
+    riskLabel = `Supera Nivel de Acción Superior (${actionUpper.toFixed(2)} m/s²)`;
+    actionLevelText = `A(8) > ${actionUpper.toFixed(2)} m/s² — Prohibido superar / Reducción prioritaria`;
     deadline = 'Inmediato';
-  } else if (a8 > 0.5) {
+  } else if (a8 > actionLower) {
     severity = 'moderado';
-    riskLabel = 'Entre Niveles de Acción (0,50 a 1,15 m/s²)';
+    riskLabel = `Entre Niveles de Acción (${actionLower.toFixed(2)} a ${actionUpper.toFixed(2)} m/s²)`;
     actionLevelText = 'Medidas técnicas, organizativas y vigilancia de salud';
     deadline = 'Corto plazo';
   }
@@ -1777,20 +2098,20 @@ export function evaluateIso2631(data: Iso2631Data): MethodEvaluationResult {
     categoryLabel: meta.categoryLabel,
     hierarchyOrder: meta.hierarchyOrder,
     primaryScoreText: `A(8) = ${a8.toFixed(2)} m/s²`,
-    secondaryScoreText: 'Límites: 0,50 / 1,15 m/s²',
+    secondaryScoreText: `Límites: ${actionLower.toFixed(2)} / ${actionUpper.toFixed(2)} m/s²`,
     severity,
     riskLabel,
     actionLevelText,
     recommendedDeadline: deadline,
     interpretation:
-      a8 <= 0.5
-        ? `El valor de exposición diaria A(8) = ${a8.toFixed(2)} m/s² no supera el nivel de acción inferior (0,50 m/s², Tabla 8.3).`
-        : a8 <= 1.15
-          ? `El valor diario A(8) = ${a8.toFixed(2)} m/s² supera el nivel de acción inferior (0,50 m/s²) sin exceder el límite superior (1,15 m/s²). Exige medidas técnicas, organizativas y vigilancia médica lumbar.`
-          : `El valor diario A(8) = ${a8.toFixed(2)} m/s² supera el Nivel de Acción Superior (1,15 m/s²). Debe reducirse la exposición de inmediato.`,
+      a8 <= actionLower
+        ? `El valor de exposición diaria A(8) = ${a8.toFixed(2)} m/s² no supera el nivel de acción inferior (${actionLower.toFixed(2)} m/s², Tabla 8.3).`
+        : a8 <= actionUpper
+          ? `El valor diario A(8) = ${a8.toFixed(2)} m/s² supera el nivel de acción inferior (${actionLower.toFixed(2)} m/s²) sin exceder el límite superior (${actionUpper.toFixed(2)} m/s²). Exige medidas técnicas, organizativas y vigilancia médica lumbar.`
+          : `El valor diario A(8) = ${a8.toFixed(2)} m/s² supera el Nivel de Acción Superior (${actionUpper.toFixed(2)} m/s²). Debe reducirse la exposición de inmediato.`,
     breakdownRows: [
       ...pRows,
-      { parameter: 'Exposición Diaria Total A(8)', value: `${a8.toFixed(2)} m/s²`, reference: 'NAI: 0,50 m/s² · NAS: 1,15 m/s² (Tabla 8.3)' },
+      { parameter: 'Exposición Diaria Total A(8)', value: `${a8.toFixed(2)} m/s²`, reference: `NAI: ${actionLower.toFixed(2)} m/s² · NAS: ${actionUpper.toFixed(2)} m/s² (T0=${T0}h)` },
     ],
     suggestedMeasures: [
       'Verificar amortiguación y regulación antropométrica del asiento con soporte lumbar.',
@@ -1805,12 +2126,28 @@ export function evaluateIso2631(data: Iso2631Data): MethodEvaluationResult {
 // ============================================================================
 export function evaluateIso5349(data: Iso5349Data): MethodEvaluationResult {
   const periods = data.periods.length > 0 ? data.periods : [];
-  let sumEnergy = 0;
+  const T0 = Math.max(0.5, getMethodParam(MethodId.ISO_5349, 'T0', 8.0));
+  const actionLower = getMethodParam(MethodId.ISO_5349, 'actionLower', 2.5);
+  const highThreshold = getMethodParam(MethodId.ISO_5349, 'highThreshold', 4.0);
+  const actionUpper = getMethodParam(MethodId.ISO_5349, 'actionUpper', 5.0);
+
+  let sumA8Sq = 0;
 
   const pRows = periods.map((p) => {
-    const ahv = Math.sqrt(Math.pow(p.ahwx, 2) + Math.pow(p.ahwy, 2) + Math.pow(p.ahwz, 2));
-    const a8Part = ahv * Math.sqrt(Math.max(0, p.exposureHours) / 8);
-    sumEnergy += Math.pow(ahv, 2) * Math.max(0, p.exposureHours);
+    const ahv = evalMethodExpr(
+      MethodId.ISO_5349,
+      'ahv',
+      { ahwx: p.ahwx, ahwy: p.ahwy, ahwz: p.ahwz },
+      Math.sqrt(Math.pow(p.ahwx, 2) + Math.pow(p.ahwy, 2) + Math.pow(p.ahwz, 2)),
+    );
+    const expH = Math.max(0, p.exposureHours);
+    const a8Part = evalMethodExpr(
+      MethodId.ISO_5349,
+      'a8Partial',
+      { ahv, T: expH, T0 },
+      ahv * Math.sqrt(expH / T0),
+    );
+    sumA8Sq += Math.pow(a8Part, 2);
     return {
       parameter: p.toolName,
       value: `ahv = ${ahv.toFixed(2)} m/s² → A(8) parcial = ${a8Part.toFixed(2)} m/s²`,
@@ -1818,31 +2155,33 @@ export function evaluateIso5349(data: Iso5349Data): MethodEvaluationResult {
     };
   });
 
-  const a8 = Math.sqrt(sumEnergy / 8);
+  const a8 = Math.sqrt(sumA8Sq);
+  const dyYears = evalMethodExpr(
+    MethodId.ISO_5349,
+    'latencyYears',
+    { A8: Math.max(0.1, a8) },
+    31.8 * Math.pow(Math.max(0.1, a8), -1.06),
+  );
 
-  // Tabla 8.5 Latencia vascular estimada
   let latencyText = 'No previsible (> 20 años)';
-  if (a8 >= 12) latencyText = 'En torno a 5 años o menos';
-  else if (a8 >= 8) latencyText = 'En torno a 6 años';
-  else if (a8 >= 5) latencyText = 'En torno a 8 años';
-  else if (a8 >= 4) latencyText = 'En torno a 10 años';
-  else if (a8 >= 3) latencyText = 'En torno a 15 años';
-  else if (a8 >= 2.5) latencyText = 'Más de 20 años';
+  if (a8 >= actionLower) {
+    latencyText = dyYears > 25 ? '> 25 años' : `${dyYears.toFixed(1)} años`;
+  }
 
   let severity: RiskSeverity = 'bajo';
   let riskLabel = 'Debajo del Nivel de Acción Inferior';
-  let actionLevelText = 'A(8) ≤ 2,50 m/s² — Exposición admisible';
+  let actionLevelText = `A(8) ≤ ${actionLower.toFixed(2)} m/s² — Exposición admisible`;
   let deadline: MethodEvaluationResult['recommendedDeadline'] = 'Sin plazo específico';
 
-  if (a8 > 5.0) {
+  if (a8 > actionUpper) {
     severity = 'muy_alto';
-    riskLabel = 'Supera Nivel de Acción Superior (5,0 m/s²)';
-    actionLevelText = 'A(8) > 5,00 m/s² — Reducción inmediata obligatoria';
+    riskLabel = `Supera Nivel de Acción Superior (${actionUpper.toFixed(2)} m/s²)`;
+    actionLevelText = `A(8) > ${actionUpper.toFixed(2)} m/s² — Reducción inmediata obligatoria`;
     deadline = 'Inmediato';
-  } else if (a8 > 2.5) {
-    severity = a8 >= 4.0 ? 'alto' : 'moderado';
-    riskLabel = 'Entre Niveles de Acción (2,50 a 5,00 m/s²)';
-    actionLevelText = `Vigilancia médica y reducción técnica (Latencia: ${latencyText})`;
+  } else if (a8 > actionLower) {
+    severity = a8 >= highThreshold ? 'alto' : 'moderado';
+    riskLabel = `Entre Niveles de Acción (${actionLower.toFixed(2)} a ${actionUpper.toFixed(2)} m/s²)`;
+    actionLevelText = `Vigilancia médica y reducción técnica (Latencia Dy: ${latencyText})`;
     deadline = 'Corto plazo';
   }
 
@@ -1860,15 +2199,15 @@ export function evaluateIso5349(data: Iso5349Data): MethodEvaluationResult {
     actionLevelText,
     recommendedDeadline: deadline,
     interpretation:
-      a8 <= 2.5
-        ? `El valor diario A(8) = ${a8.toFixed(2)} m/s² se sitúa por debajo del Nivel de Acción Inferior (2,50 m/s², Tabla 8.4).`
-        : a8 <= 5.0
-          ? `El valor diario A(8) = ${a8.toFixed(2)} m/s² supera el Nivel de Acción Inferior (2,50 m/s²). Tiempo estimado de aparición de manifestaciones vasculares (Tabla 8.5): ${latencyText}.`
-          : `El valor diario A(8) = ${a8.toFixed(2)} m/s² excede el Nivel de Acción Superior (5,00 m/s²). Alto riesgo de síndrome de vibración mano-brazo; exige intervención inmediata.`,
+      a8 <= actionLower
+        ? `El valor diario A(8) = ${a8.toFixed(2)} m/s² se sitúa por debajo del Nivel de Acción Inferior (${actionLower.toFixed(2)} m/s², Tabla 8.4).`
+        : a8 <= actionUpper
+          ? `El valor diario A(8) = ${a8.toFixed(2)} m/s² supera el Nivel de Acción Inferior (${actionLower.toFixed(2)} m/s²). Tiempo estimado de aparición de manifestaciones vasculares (ISO 5349-1): ${latencyText}.`
+          : `El valor diario A(8) = ${a8.toFixed(2)} m/s² excede el Nivel de Acción Superior (${actionUpper.toFixed(2)} m/s²). Alto riesgo de síndrome de vibración mano-brazo; exige intervención inmediata.`,
     breakdownRows: [
       ...pRows,
-      { parameter: 'Exposición Diaria Total A(8)', value: `${a8.toFixed(2)} m/s²`, reference: 'NAI: 2,50 m/s² · NAS: 5,00 m/s² (Tabla 8.4)' },
-      { parameter: 'Latencia estimada manifestaciones vasculares', value: latencyText, reference: 'Tabla 8.5 — Fenómeno de Raynaud ocupacional' },
+      { parameter: 'Exposición Diaria Total A(8)', value: `${a8.toFixed(2)} m/s²`, reference: `NAI: ${actionLower.toFixed(2)} m/s² · NAS: ${actionUpper.toFixed(2)} m/s² (T0=${T0}h)` },
+      { parameter: 'Latencia estimada manifestaciones vasculares (Dy)', value: latencyText, reference: 'ISO 5349-1 — Fenómeno de Raynaud (10%)' },
     ],
     suggestedMeasures: [
       'Seleccionar herramientas con menor emisión vibratoria y mantener útiles de corte/percusión equilibrados.',
@@ -1878,41 +2217,72 @@ export function evaluateIso5349(data: Iso5349Data): MethodEvaluationResult {
   };
 }
 
+function makeFallbackResult(method: MethodId, interpretation: string): MethodEvaluationResult {
+  return {
+    methodId: method,
+    methodName: 'Método en Evaluación',
+    category: 'posturas_forzadas',
+    categoryLabel: 'Ergonomía',
+    hierarchyOrder: 3,
+    primaryScoreText: '-',
+    severity: 'bajo',
+    riskLabel: 'Bajo / Aceptable',
+    actionLevelText: 'Nivel 1 - No requiere acción inmediata',
+    recommendedDeadline: 'Sin plazo específico',
+    interpretation,
+    breakdownRows: [],
+    suggestedMeasures: [],
+  };
+}
+
 // ============================================================================
-// DISPATCHER GENERAL POR PESTAÑA
+// DISPATCHER GENERAL POR PESTAÑA (100% Fail-Safe)
 // ============================================================================
 export function evaluateStudyTab(tab: StudyTab): MethodEvaluationResult {
-  const p = tab.payloads;
-  switch (tab.method) {
-    case MethodId.RULA:
-      return evaluateRula(p[MethodId.RULA]);
-    case MethodId.REBA:
-      return evaluateReba(p[MethodId.REBA]);
-    case MethodId.OWAS:
-      return evaluateOwas(p[MethodId.OWAS]);
-    case MethodId.NIOSH:
-      return evaluateNiosh(p[MethodId.NIOSH]);
-    case MethodId.SNOOK:
-      return evaluateSnook(p[MethodId.SNOOK]);
-    case MethodId.LMC_295:
-      return evaluateLmc295(p[MethodId.LMC_295]);
-    case MethodId.OCRA_COMPLETO:
-      return evaluateOcraCompleto(p[MethodId.OCRA_COMPLETO]);
-    case MethodId.OCRA_CHECKLIST:
-      return evaluateOcraChecklist(p[MethodId.OCRA_CHECKLIST]);
-    case MethodId.JSI:
-      return evaluateJsi(p[MethodId.JSI]);
-    case MethodId.NAM_295:
-      return evaluateNam295(p[MethodId.NAM_295]);
-    case MethodId.BIPOLAR:
-      return evaluateBipolar(p[MethodId.BIPOLAR].scores);
-    case MethodId.FANGER:
-      return evaluateFanger(p[MethodId.FANGER]);
-    case MethodId.WBGT:
-      return evaluateWbgt(p[MethodId.WBGT]);
-    case MethodId.ISO_2631:
-      return evaluateIso2631(p[MethodId.ISO_2631]);
-    case MethodId.ISO_5349:
-      return evaluateIso5349(p[MethodId.ISO_5349]);
+  try {
+    if (!tab || !tab.method) {
+      return makeFallbackResult(MethodId.RULA, 'Pestaña sin método asignado');
+    }
+    const defPayloads = createDefaultPayloads();
+    const p = tab.payloads || defPayloads;
+
+    switch (tab.method) {
+      case MethodId.RULA:
+        return evaluateRula(p[MethodId.RULA] || defPayloads[MethodId.RULA]);
+      case MethodId.REBA:
+        return evaluateReba(p[MethodId.REBA] || defPayloads[MethodId.REBA]);
+      case MethodId.OWAS:
+        return evaluateOwas(p[MethodId.OWAS] || defPayloads[MethodId.OWAS]);
+      case MethodId.NIOSH:
+        return evaluateNiosh(p[MethodId.NIOSH] || defPayloads[MethodId.NIOSH]);
+      case MethodId.SNOOK:
+        return evaluateSnook(p[MethodId.SNOOK] || defPayloads[MethodId.SNOOK]);
+      case MethodId.LMC_295:
+        return evaluateLmc295(p[MethodId.LMC_295] || defPayloads[MethodId.LMC_295]);
+      case MethodId.OCRA_COMPLETO:
+        return evaluateOcraCompleto(p[MethodId.OCRA_COMPLETO] || defPayloads[MethodId.OCRA_COMPLETO]);
+      case MethodId.OCRA_CHECKLIST:
+        return evaluateOcraChecklist(p[MethodId.OCRA_CHECKLIST] || defPayloads[MethodId.OCRA_CHECKLIST]);
+      case MethodId.JSI:
+        return evaluateJsi(p[MethodId.JSI] || defPayloads[MethodId.JSI]);
+      case MethodId.NAM_295:
+        return evaluateNam295(p[MethodId.NAM_295] || defPayloads[MethodId.NAM_295]);
+      case MethodId.BIPOLAR:
+        return evaluateBipolar(p[MethodId.BIPOLAR]?.scores || defPayloads[MethodId.BIPOLAR].scores);
+      case MethodId.FANGER:
+        return evaluateFanger(p[MethodId.FANGER] || defPayloads[MethodId.FANGER]);
+      case MethodId.WBGT:
+        return evaluateWbgt(p[MethodId.WBGT] || defPayloads[MethodId.WBGT]);
+      case MethodId.ISO_2631:
+        return evaluateIso2631(p[MethodId.ISO_2631] || defPayloads[MethodId.ISO_2631]);
+      case MethodId.ISO_5349:
+        return evaluateIso5349(p[MethodId.ISO_5349] || defPayloads[MethodId.ISO_5349]);
+      default:
+        return makeFallbackResult(tab.method, 'Método no reconocido');
+    }
+  } catch (err) {
+    console.warn('evaluateStudyTab fallback error:', err);
+    return makeFallbackResult(tab?.method || MethodId.RULA, 'Pendiente de datos');
   }
 }
+

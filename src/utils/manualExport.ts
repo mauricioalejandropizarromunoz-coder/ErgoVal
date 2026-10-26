@@ -1,7 +1,8 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { MethodId } from '../types/ergonomics';
-import { BOOK_METADATA, METHOD_REFERENCES } from './referenceData';
+import { BOOK_METADATA, METHOD_REFERENCES, getEffectiveMethodReference } from './referenceData';
+import { getMethodFormulaProfile, isMethodFormulaModified } from './formulaConfig';
 
 export async function exportUserManualPdf(): Promise<void> {
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
@@ -175,7 +176,14 @@ export async function exportUserManualPdf(): Promise<void> {
 
   for (let i = 0; i < methodKeys.length; i++) {
     const mId = methodKeys[i];
-    const ref = METHOD_REFERENCES[mId];
+    const ref = getEffectiveMethodReference(mId);
+    const fProf = getMethodFormulaProfile(mId);
+    const modifiedFormulaNote = isMethodFormulaModified(mId)
+      ? ' (Personalizada por el evaluador)'
+      : ' (Estándar normativa)';
+    const activeExprLines = fProf
+      ? fProf.expressions.map((e) => `${e.symbol} = ${e.expression}`).join('\n')
+      : ref.formulaSummary;
 
     doc.addPage();
     currentY = 36;
@@ -203,7 +211,8 @@ export async function exportUserManualPdf(): Promise<void> {
       head: [['ASPECTO TÉCNICO', 'DETALLE Y FORMULACIÓN MATEMÁTICA']],
       body: [
         ['Fundamento Conceptual', ref.conceptualBasis],
-        ['Formulación Matemática', ref.formulaSummary],
+        [`Formulación Resumen${modifiedFormulaNote}`, ref.formulaSummary],
+        ['Ecuaciones Algebraicas Activas', activeExprLines],
         ['Tablas del Libro Citadas', ref.tables.map((t) => `${t.tableNumber}: ${t.title}`).join(' | ')],
       ],
       columnStyles: { 0: { cellWidth: 45, fontStyle: 'bold', fillColor: [248, 250, 252] } },

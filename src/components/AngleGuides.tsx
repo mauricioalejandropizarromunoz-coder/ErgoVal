@@ -1,10 +1,26 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { ChevronDown, ChevronUp, Image as ImageIcon } from 'lucide-react';
+import { ASSIGNED_CHAPTER4_PHOTOS } from '../utils/figurePlanCatalog';
+
+export interface AnglePhotoSlice {
+  url: string;
+  totalCols: 1 | 2 | 3 | 4;
+  colIndex: 0 | 1 | 2 | 3;
+  figCode: string;
+}
+
+export interface PlateRefItem {
+  code: string;
+  label: string;
+  url: string;
+}
 
 export interface AngleOption<T extends number> {
   value: T;
   angleText: string;
   title: string;
   subtitle?: string;
+  photoSlice?: AnglePhotoSlice;
   renderSvg: (active: boolean) => React.ReactNode;
 }
 
@@ -15,6 +31,58 @@ interface VisualAngleSelectorProps<T extends number> {
   onSelect: (val: T) => void;
   options: AngleOption<T>[];
   columns?: 2 | 3 | 4 | 5 | 7;
+  plateRefs?: PlateRefItem[];
+}
+
+function SliceThumbnail({
+  slice,
+  fallback,
+}: {
+  slice: AnglePhotoSlice;
+  fallback: React.ReactNode;
+}) {
+  const [failed, setFailed] = useState(false);
+
+  if (failed || !slice.url) {
+    return <>{fallback}</>;
+  }
+
+  if (slice.totalCols === 1) {
+    return (
+      <img
+        src={slice.url}
+        alt={slice.figCode}
+        referrerPolicy="no-referrer"
+        onError={() => setFailed(true)}
+        className="w-full h-full object-contain p-0.5"
+      />
+    );
+  }
+
+  const colW = 100;
+  const totalW = slice.totalCols * colW;
+  const boxH = slice.totalCols === 4 ? 156 : slice.totalCols === 3 ? 174 : 186;
+  const viewY = slice.totalCols === 4 ? 8 : 6;
+  const viewH = boxH - viewY * 2;
+  const viewX = slice.colIndex * colW;
+
+  return (
+    <svg
+      viewBox={`${viewX} ${viewY} ${colW} ${viewH}`}
+      className="w-full h-full"
+      aria-label={slice.figCode}
+    >
+      <image
+        href={slice.url}
+        x="0"
+        y="0"
+        width={totalW}
+        height={boxH}
+        preserveAspectRatio="xMidYMid meet"
+        onError={() => setFailed(true)}
+      />
+    </svg>
+  );
 }
 
 export function VisualAngleSelector<T extends number>({
@@ -24,7 +92,31 @@ export function VisualAngleSelector<T extends number>({
   onSelect,
   options,
   columns = 4,
+  plateRefs,
 }: VisualAngleSelectorProps<T>) {
+  const hasAnyPhotoSlice = options.some((o) => Boolean(o.photoSlice?.url));
+  const [thumbMode, setThumbMode] = useState<'photo' | 'vector'>('photo');
+  const [showFullPlate, setShowFullPlate] = useState<boolean>(false);
+
+  const effectivePlates: PlateRefItem[] =
+    plateRefs && plateRefs.length > 0
+      ? plateRefs
+      : (() => {
+          const seen = new Set<string>();
+          const derived: PlateRefItem[] = [];
+          options.forEach((o) => {
+            if (o.photoSlice?.url && !seen.has(o.photoSlice.url)) {
+              seen.add(o.photoSlice.url);
+              derived.push({
+                code: o.photoSlice.figCode,
+                label: label,
+                url: o.photoSlice.url,
+              });
+            }
+          });
+          return derived;
+        })();
+
   const gridClass =
     columns === 2
       ? 'grid-cols-1 sm:grid-cols-2'
@@ -38,13 +130,85 @@ export function VisualAngleSelector<T extends number>({
 
   return (
     <div className="p-3.5 rounded-lg bg-[#edf3f9] border border-slate-300/80 space-y-2.5">
-      <div className="flex items-baseline justify-between gap-4">
-        <span className="text-sm font-semibold text-slate-900">{label}</span>
-        {figureRef && <span className="text-xs text-slate-600">{figureRef}</span>}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-baseline gap-2.5">
+          <span className="text-sm font-semibold text-slate-900">{label}</span>
+          {figureRef && <span className="text-xs text-slate-600">{figureRef}</span>}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1.5">
+          {hasAnyPhotoSlice && (
+            <div className="inline-flex rounded border border-slate-300 bg-white p-0.5">
+              <button
+                type="button"
+                onClick={() => setThumbMode('photo')}
+                className={`px-2 py-0.5 rounded-xs text-[11px] font-semibold whitespace-nowrap shrink-0 cursor-pointer ${
+                  thumbMode === 'photo'
+                    ? 'bg-sky-700 text-white'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Lámina Cap. 4
+              </button>
+              <button
+                type="button"
+                onClick={() => setThumbMode('vector')}
+                className={`px-2 py-0.5 rounded-xs text-[11px] font-semibold whitespace-nowrap shrink-0 cursor-pointer ${
+                  thumbMode === 'vector'
+                    ? 'bg-slate-800 text-white'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Vectorial
+              </button>
+            </div>
+          )}
+
+          {effectivePlates.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowFullPlate((v) => !v)}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-300 bg-white hover:bg-slate-50 text-[11px] font-medium text-sky-800 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <ImageIcon className="w-3 h-3" />
+              <span>{showFullPlate ? 'Ocultar lámina' : 'Ver lámina completa'}</span>
+              {showFullPlate ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+            </button>
+          )}
+        </div>
       </div>
+
+      {showFullPlate && effectivePlates.length > 0 && (
+        <div className="rounded-md border border-slate-300 bg-white p-3 space-y-2.5">
+          <div
+            className={`grid gap-3 ${
+              effectivePlates.length > 1 ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1'
+            }`}
+          >
+            {effectivePlates.map((pl) => (
+              <div key={pl.code + pl.url} className="space-y-1">
+                <div className="flex items-center justify-between text-[11px] text-slate-600">
+                  <span className="font-mono font-bold text-sky-900">{pl.code}</span>
+                  <span className="truncate">{pl.label}</span>
+                </div>
+                <div className="rounded border border-slate-200 bg-white p-2 flex items-center justify-center">
+                  <img
+                    src={pl.url}
+                    alt={`${pl.code} ${pl.label}`}
+                    referrerPolicy="no-referrer"
+                    className="max-h-56 w-auto object-contain"
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className={`grid ${gridClass} gap-2.5`}>
         {options.map((opt) => {
           const isSelected = selectedValue === opt.value;
+          const usePhoto = thumbMode === 'photo' && Boolean(opt.photoSlice?.url);
           return (
             <button
               key={opt.value}
@@ -57,11 +221,15 @@ export function VisualAngleSelector<T extends number>({
               }`}
             >
               <div
-                className={`w-full h-24 flex items-center justify-center rounded border mb-2 overflow-hidden ${
-                  isSelected ? 'bg-white border-sky-200' : 'bg-slate-50 border-slate-200/70'
+                className={`w-full h-28 flex items-center justify-center rounded border mb-2 overflow-hidden ${
+                  isSelected ? 'bg-white border-sky-200' : 'bg-white border-slate-200/80'
                 }`}
               >
-                {opt.renderSvg(isSelected)}
+                {usePhoto && opt.photoSlice ? (
+                  <SliceThumbnail slice={opt.photoSlice} fallback={opt.renderSvg(isSelected)} />
+                ) : (
+                  opt.renderSvg(isSelected)
+                )}
               </div>
               <div className="w-full flex items-baseline justify-between gap-1">
                 <span className="font-mono text-xs font-semibold tabular-nums text-sky-800">{opt.angleText}</span>
@@ -79,12 +247,63 @@ export function VisualAngleSelector<T extends number>({
   );
 }
 
+export function ModifierPlateBanner({
+  plates,
+  caption,
+}: {
+  plates: PlateRefItem[];
+  caption: string;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+        <span className="text-slate-600">{caption}</span>
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-200 bg-slate-50 hover:bg-slate-100 text-[11px] font-medium text-sky-800 whitespace-nowrap shrink-0 cursor-pointer"
+        >
+          <ImageIcon className="w-3 h-3" />
+          <span>
+            {open
+              ? 'Ocultar guía de modificadores'
+              : `Ver guía anatómica (${plates.map((p) => p.code).join(' / ')})`}
+          </span>
+        </button>
+      </div>
+      {open && (
+        <div
+          className={`grid gap-3 rounded-md border border-slate-200 bg-slate-50 p-2.5 ${
+            plates.length > 1 ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1'
+          }`}
+        >
+          {plates.map((p) => (
+            <div key={p.code} className="bg-white rounded border border-slate-200 p-2 space-y-1">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="font-mono font-bold text-sky-900">{p.code}</span>
+                <span className="text-slate-600">{p.label}</span>
+              </div>
+              <img
+                src={p.url}
+                alt={`${p.code} ${p.label}`}
+                referrerPolicy="no-referrer"
+                className="max-h-44 w-full object-contain"
+              />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ============================================================================
-// ESQUEMAS VECTORIALES ANATÓMICOS DE ÁNGULOS (RULA / REBA / OWAS / JSI)
+// ESQUEMAS VECTORIALES Y LÁMINAS ANATÓMICAS DE ÁNGULOS (RULA / REBA / OWAS)
 // ============================================================================
 
 function ArmSvg({ deg, extDeg, active }: { deg: number; extDeg?: boolean; active: boolean }) {
-  // Shoulder at (45, 28), trunk vertical down to (45, 82)
   const rad = ((extDeg ? -deg : deg) * Math.PI) / 180;
   const len = 42;
   const ex = 45 + Math.sin(rad) * len;
@@ -93,19 +312,15 @@ function ArmSvg({ deg, extDeg, active }: { deg: number; extDeg?: boolean; active
 
   return (
     <svg viewBox="0 0 110 92" className="w-28 h-22">
-      {/* Eje del tronco */}
       <line x1="45" y1="10" x2="45" y2="85" stroke="#94a3b8" strokeWidth="1.5" strokeDasharray="3 3" />
-      {/* Cabeza y Torso */}
       <circle cx="45" cy="15" r="7" fill="#e2e8f0" stroke="#64748b" strokeWidth="1.5" />
       <line x1="45" y1="22" x2="45" y2="76" stroke="#64748b" strokeWidth="6" strokeLinecap="round" />
-      {/* Arco angular */}
       <path
         d={`M 45 50 Q ${45 + (ex - 45) * 0.45} ${50 - Math.abs(deg) * 0.08} ${45 + Math.sin(rad) * 22} ${28 + Math.cos(rad) * 22}`}
         fill="none"
         stroke="#0284c7"
         strokeWidth="1.8"
       />
-      {/* Brazo */}
       <line x1="45" y1="28" x2={ex} y2={ey} stroke={strokeMain} strokeWidth="4.5" strokeLinecap="round" />
       <circle cx="45" cy="28" r="3" fill="#0284c7" />
       <circle cx={ex} cy={ey} r="2.8" fill={strokeMain} />
@@ -119,6 +334,7 @@ export const UPPER_ARM_OPTIONS: AngleOption<1 | 2 | 3 | 4>[] = [
     angleText: '-20° a 20°',
     title: 'Posición neutra',
     subtitle: '20° extensión a 20° flexión',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-04a'], totalCols: 4, colIndex: 0, figCode: 'Fig. 4.4a (1)' },
     renderSvg: (a) => <ArmSvg deg={10} active={a} />,
   },
   {
@@ -126,6 +342,7 @@ export const UPPER_ARM_OPTIONS: AngleOption<1 | 2 | 3 | 4>[] = [
     angleText: '20°–45° / <-20°',
     title: 'Flexión moderada o ext.',
     subtitle: 'Ext. > 20° o flexión 20°–45°',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-04a'], totalCols: 4, colIndex: 1, figCode: 'Fig. 4.4a (2)' },
     renderSvg: (a) => <ArmSvg deg={35} active={a} />,
   },
   {
@@ -133,6 +350,7 @@ export const UPPER_ARM_OPTIONS: AngleOption<1 | 2 | 3 | 4>[] = [
     angleText: '45° a 90°',
     title: 'Flexión elevada',
     subtitle: 'Entre 45° y 90° respecto al tronco',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-04a'], totalCols: 4, colIndex: 2, figCode: 'Fig. 4.4a (3)' },
     renderSvg: (a) => <ArmSvg deg={70} active={a} />,
   },
   {
@@ -140,12 +358,47 @@ export const UPPER_ARM_OPTIONS: AngleOption<1 | 2 | 3 | 4>[] = [
     angleText: '> 90°',
     title: 'Sobre nivel del hombro',
     subtitle: 'Flexión superior a 90°',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-04a'], totalCols: 4, colIndex: 3, figCode: 'Fig. 4.4a (4)' },
+    renderSvg: (a) => <ArmSvg deg={112} active={a} />,
+  },
+];
+
+export const REBA_UPPER_ARM_OPTIONS: AngleOption<1 | 2 | 3 | 4>[] = [
+  {
+    value: 1,
+    angleText: '-20° a 20°',
+    title: 'Posición neutra',
+    subtitle: '20° extensión a 20° flexión',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-22a'], totalCols: 4, colIndex: 0, figCode: 'Fig. 4.22a (1)' },
+    renderSvg: (a) => <ArmSvg deg={10} active={a} />,
+  },
+  {
+    value: 2,
+    angleText: '20°–45° / <-20°',
+    title: 'Flexión moderada o ext.',
+    subtitle: 'Ext. > 20° o flexión 20°–45°',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-22a'], totalCols: 4, colIndex: 1, figCode: 'Fig. 4.22a (2)' },
+    renderSvg: (a) => <ArmSvg deg={35} active={a} />,
+  },
+  {
+    value: 3,
+    angleText: '45° a 90°',
+    title: 'Flexión elevada',
+    subtitle: 'Entre 45° y 90° respecto al tronco',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-22a'], totalCols: 4, colIndex: 2, figCode: 'Fig. 4.22a (3)' },
+    renderSvg: (a) => <ArmSvg deg={70} active={a} />,
+  },
+  {
+    value: 4,
+    angleText: '> 90°',
+    title: 'Sobre nivel del hombro',
+    subtitle: 'Flexión superior a 90°',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-22a'], totalCols: 4, colIndex: 3, figCode: 'Fig. 4.22a (4)' },
     renderSvg: (a) => <ArmSvg deg={112} active={a} />,
   },
 ];
 
 function ForearmSvg({ deg, active }: { deg: number; active: boolean }) {
-  // Shoulder (38, 22), Elbow (38, 54), Forearm from elbow at angle deg from vertical downward
   const rad = (deg * Math.PI) / 180;
   const fx = 38 + Math.sin(rad) * 36;
   const fy = 54 + Math.cos(rad) * 36;
@@ -155,11 +408,8 @@ function ForearmSvg({ deg, active }: { deg: number; active: boolean }) {
     <svg viewBox="0 0 110 92" className="w-28 h-22">
       <circle cx="38" cy="13" r="6.5" fill="#e2e8f0" stroke="#64748b" strokeWidth="1.5" />
       <line x1="38" y1="20" x2="38" y2="78" stroke="#cbd5e1" strokeWidth="5.5" strokeLinecap="round" />
-      {/* Brazo vertical */}
       <line x1="38" y1="24" x2="38" y2="54" stroke="#475569" strokeWidth="4" strokeLinecap="round" />
-      {/* Línea referencia 60-100 */}
       <line x1="38" y1="54" x2="72" y2="54" stroke="#94a3b8" strokeWidth="1.2" strokeDasharray="2 2" />
-      {/* Antebrazo */}
       <line x1="38" y1="54" x2={fx} y2={fy} stroke={strokeMain} strokeWidth="4" strokeLinecap="round" />
       <circle cx="38" cy="54" r="3" fill="#0284c7" />
     </svg>
@@ -172,6 +422,7 @@ export const LOWER_ARM_OPTIONS: AngleOption<1 | 2>[] = [
     angleText: '60° a 100°',
     title: 'Flexión óptima de codo',
     subtitle: 'Rango funcional cercano a 90°',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-07'], totalCols: 2, colIndex: 0, figCode: 'Fig. 4.7 (1)' },
     renderSvg: (a) => <ForearmSvg deg={82} active={a} />,
   },
   {
@@ -179,6 +430,26 @@ export const LOWER_ARM_OPTIONS: AngleOption<1 | 2>[] = [
     angleText: '< 60° ó > 100°',
     title: 'Fuera de rango neutro',
     subtitle: 'Codo muy extendido o muy cerrado',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-07'], totalCols: 2, colIndex: 1, figCode: 'Fig. 4.7 (2)' },
+    renderSvg: (a) => <ForearmSvg deg={125} active={a} />,
+  },
+];
+
+export const REBA_LOWER_ARM_OPTIONS: AngleOption<1 | 2>[] = [
+  {
+    value: 1,
+    angleText: '60° a 100°',
+    title: 'Flexión óptima de codo',
+    subtitle: 'Rango funcional cercano a 90°',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-23'], totalCols: 2, colIndex: 0, figCode: 'Fig. 4.23 (1)' },
+    renderSvg: (a) => <ForearmSvg deg={82} active={a} />,
+  },
+  {
+    value: 2,
+    angleText: '< 60° ó > 100°',
+    title: 'Fuera de rango neutro',
+    subtitle: 'Codo muy extendido o muy cerrado',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-23'], totalCols: 2, colIndex: 1, figCode: 'Fig. 4.23 (2)' },
     renderSvg: (a) => <ForearmSvg deg={125} active={a} />,
   },
 ];
@@ -216,6 +487,7 @@ export const RULA_WRIST_OPTIONS: AngleOption<1 | 2 | 3>[] = [
     angleText: '0° Neutra',
     title: 'Alineada con antebrazo',
     subtitle: 'Sin flexión ni extensión',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-10a'], totalCols: 3, colIndex: 0, figCode: 'Fig. 4.10a (1)' },
     renderSvg: (a) => <WristSvg deg={0} active={a} />,
   },
   {
@@ -223,6 +495,7 @@ export const RULA_WRIST_OPTIONS: AngleOption<1 | 2 | 3>[] = [
     angleText: '0° a 15°',
     title: 'Flexión / extensión leve',
     subtitle: 'Entre 0° y 15° hacia arriba o abajo',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-10a'], totalCols: 3, colIndex: 1, figCode: 'Fig. 4.10a (2)' },
     renderSvg: (a) => <WristSvg deg={13} active={a} />,
   },
   {
@@ -230,6 +503,7 @@ export const RULA_WRIST_OPTIONS: AngleOption<1 | 2 | 3>[] = [
     angleText: '> 15°',
     title: 'Flexión / extensión marcada',
     subtitle: 'Supera los 15° respecto al eje',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-10b'], totalCols: 1, colIndex: 0, figCode: 'Fig. 4.10b (3)' },
     renderSvg: (a) => <WristSvg deg={32} active={a} />,
   },
 ];
@@ -240,6 +514,7 @@ export const REBA_WRIST_OPTIONS: AngleOption<1 | 2>[] = [
     angleText: '0° a 15°',
     title: 'Rango neutro a leve',
     subtitle: 'Flexión o extensión hasta 15°',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-24'], totalCols: 2, colIndex: 0, figCode: 'Fig. 4.24 (1)' },
     renderSvg: (a) => <WristSvg deg={10} active={a} />,
   },
   {
@@ -247,12 +522,12 @@ export const REBA_WRIST_OPTIONS: AngleOption<1 | 2>[] = [
     angleText: '> 15°',
     title: 'Flexión / extensión > 15°',
     subtitle: 'Desviación angular pronunciada',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-24'], totalCols: 2, colIndex: 1, figCode: 'Fig. 4.24 (2)' },
     renderSvg: (a) => <WristSvg deg={32} active={a} />,
   },
 ];
 
 function NeckSvg({ deg, active }: { deg: number; active: boolean }) {
-  // Neck pivot at (50, 42); deg > 0 forward flexion (right), deg < 0 extension (left)
   const rad = (deg * Math.PI) / 180;
   const hx = 50 + Math.sin(rad) * 22;
   const hy = 42 - Math.cos(rad) * 22;
@@ -270,19 +545,60 @@ function NeckSvg({ deg, active }: { deg: number; active: boolean }) {
 }
 
 export const RULA_NECK_OPTIONS: AngleOption<1 | 2 | 3 | 4>[] = [
-  { value: 1, angleText: '0° a 10°', title: 'Flexión mínima', subtitle: '0°–10°', renderSvg: (a) => <NeckSvg deg={6} active={a} /> },
-  { value: 2, angleText: '10° a 20°', title: 'Flexión moderada', subtitle: '10°–20°', renderSvg: (a) => <NeckSvg deg={18} active={a} /> },
-  { value: 3, angleText: '> 20°', title: 'Flexión pronunciada', subtitle: 'Mayor a 20°', renderSvg: (a) => <NeckSvg deg={36} active={a} /> },
-  { value: 4, angleText: 'Extensión', title: 'Cuello extendido', subtitle: 'Hacia atrás (< 0°)', renderSvg: (a) => <NeckSvg deg={-24} active={a} /> },
+  {
+    value: 1,
+    angleText: '0° a 10°',
+    title: 'Flexión mínima',
+    subtitle: '0°–10°',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-13a'], totalCols: 4, colIndex: 0, figCode: 'Fig. 4.13a (1)' },
+    renderSvg: (a) => <NeckSvg deg={6} active={a} />,
+  },
+  {
+    value: 2,
+    angleText: '10° a 20°',
+    title: 'Flexión moderada',
+    subtitle: '10°–20°',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-13a'], totalCols: 4, colIndex: 1, figCode: 'Fig. 4.13a (2)' },
+    renderSvg: (a) => <NeckSvg deg={18} active={a} />,
+  },
+  {
+    value: 3,
+    angleText: '> 20°',
+    title: 'Flexión pronunciada',
+    subtitle: 'Mayor a 20°',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-13a'], totalCols: 4, colIndex: 2, figCode: 'Fig. 4.13a (3)' },
+    renderSvg: (a) => <NeckSvg deg={36} active={a} />,
+  },
+  {
+    value: 4,
+    angleText: 'Extensión',
+    title: 'Cuello extendido',
+    subtitle: 'Hacia atrás (< 0°)',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-13a'], totalCols: 4, colIndex: 3, figCode: 'Fig. 4.13a (4)' },
+    renderSvg: (a) => <NeckSvg deg={-24} active={a} />,
+  },
 ];
 
 export const REBA_NECK_OPTIONS: AngleOption<1 | 2>[] = [
-  { value: 1, angleText: '0° a 20°', title: 'Flexión neutra/leve', subtitle: 'Entre 0° y 20°', renderSvg: (a) => <NeckSvg deg={12} active={a} /> },
-  { value: 2, angleText: '> 20° ó Ext.', title: 'Flexión > 20° o extensión', subtitle: 'Flexión alta o hacia atrás', renderSvg: (a) => <NeckSvg deg={35} active={a} /> },
+  {
+    value: 1,
+    angleText: '0° a 20°',
+    title: 'Flexión neutra/leve',
+    subtitle: 'Entre 0° y 20°',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-20'], totalCols: 2, colIndex: 0, figCode: 'Fig. 4.20 (+1)' },
+    renderSvg: (a) => <NeckSvg deg={12} active={a} />,
+  },
+  {
+    value: 2,
+    angleText: '> 20° ó Ext.',
+    title: 'Flexión > 20° o extensión',
+    subtitle: 'Flexión alta o hacia atrás',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-20'], totalCols: 2, colIndex: 1, figCode: 'Fig. 4.20 (+2)' },
+    renderSvg: (a) => <NeckSvg deg={35} active={a} />,
+  },
 ];
 
 function TrunkSvg({ deg, seated, active }: { deg: number; seated?: boolean; active: boolean }) {
-  // Hip at (42, 68)
   const rad = (deg * Math.PI) / 180;
   const sx = 42 + Math.sin(rad) * 38;
   const sy = 68 - Math.cos(rad) * 38;
@@ -308,28 +624,99 @@ function TrunkSvg({ deg, seated, active }: { deg: number; seated?: boolean; acti
 }
 
 export const RULA_TRUNK_OPTIONS: AngleOption<1 | 2 | 3 | 4>[] = [
-  { value: 1, angleText: 'Sentado >90°', title: 'Sentado bien apoyado', subtitle: 'Tronco-caderas > 90°', renderSvg: (a) => <TrunkSvg deg={0} seated active={a} /> },
-  { value: 2, angleText: '0° a 20°', title: 'Flexión leve (de pie)', subtitle: 'Entre 0° y 20°', renderSvg: (a) => <TrunkSvg deg={14} active={a} /> },
-  { value: 3, angleText: '20° a 60°', title: 'Flexión moderada', subtitle: 'Entre 20° y 60°', renderSvg: (a) => <TrunkSvg deg={40} active={a} /> },
-  { value: 4, angleText: '> 60°', title: 'Flexión severa', subtitle: 'Superior a 60°', renderSvg: (a) => <TrunkSvg deg={72} active={a} /> },
+  {
+    value: 1,
+    angleText: 'Sentado >90°',
+    title: 'Sentado bien apoyado',
+    subtitle: 'Tronco-caderas > 90°',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-15a'], totalCols: 4, colIndex: 0, figCode: 'Fig. 4.15a (1)' },
+    renderSvg: (a) => <TrunkSvg deg={0} seated active={a} />,
+  },
+  {
+    value: 2,
+    angleText: '0° a 20°',
+    title: 'Flexión leve (de pie)',
+    subtitle: 'Entre 0° y 20°',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-15a'], totalCols: 4, colIndex: 1, figCode: 'Fig. 4.15a (2)' },
+    renderSvg: (a) => <TrunkSvg deg={14} active={a} />,
+  },
+  {
+    value: 3,
+    angleText: '20° a 60°',
+    title: 'Flexión moderada',
+    subtitle: 'Entre 20° y 60°',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-15a'], totalCols: 4, colIndex: 2, figCode: 'Fig. 4.15a (3)' },
+    renderSvg: (a) => <TrunkSvg deg={40} active={a} />,
+  },
+  {
+    value: 4,
+    angleText: '> 60°',
+    title: 'Flexión severa',
+    subtitle: 'Superior a 60°',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-15a'], totalCols: 4, colIndex: 3, figCode: 'Fig. 4.15a (4)' },
+    renderSvg: (a) => <TrunkSvg deg={72} active={a} />,
+  },
 ];
 
 export const REBA_TRUNK_OPTIONS: AngleOption<1 | 2 | 3 | 4>[] = [
-  { value: 1, angleText: '0° Erguido', title: 'Tronco vertical', subtitle: 'Sin flexión ni extensión', renderSvg: (a) => <TrunkSvg deg={0} active={a} /> },
-  { value: 2, angleText: '0° a 20°', title: 'Flexión / ext. leve', subtitle: '0°–20° flex. o ext.', renderSvg: (a) => <TrunkSvg deg={15} active={a} /> },
-  { value: 3, angleText: '20°–60° / >20° ext', title: 'Flexión media', subtitle: '20°–60° flex. o >20° ext.', renderSvg: (a) => <TrunkSvg deg={42} active={a} /> },
-  { value: 4, angleText: '> 60°', title: 'Flexión pronunciada', subtitle: 'Flexión mayor a 60°', renderSvg: (a) => <TrunkSvg deg={72} active={a} /> },
+  {
+    value: 1,
+    angleText: '0° Erguido',
+    title: 'Tronco vertical',
+    subtitle: 'Sin flexión ni extensión',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-19a'], totalCols: 4, colIndex: 0, figCode: 'Fig. 4.19a (1)' },
+    renderSvg: (a) => <TrunkSvg deg={0} active={a} />,
+  },
+  {
+    value: 2,
+    angleText: '0° a 20°',
+    title: 'Flexión / ext. leve',
+    subtitle: '0°–20° flex. o ext.',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-19a'], totalCols: 4, colIndex: 1, figCode: 'Fig. 4.19a (2)' },
+    renderSvg: (a) => <TrunkSvg deg={15} active={a} />,
+  },
+  {
+    value: 3,
+    angleText: '20°–60° / >20° ext',
+    title: 'Flexión media',
+    subtitle: '20°–60° flex. o >20° ext.',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-19a'], totalCols: 4, colIndex: 2, figCode: 'Fig. 4.19a (3)' },
+    renderSvg: (a) => <TrunkSvg deg={42} active={a} />,
+  },
+  {
+    value: 4,
+    angleText: '> 60°',
+    title: 'Flexión pronunciada',
+    subtitle: 'Flexión mayor a 60°',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-19a'], totalCols: 4, colIndex: 3, figCode: 'Fig. 4.19a (4)' },
+    renderSvg: (a) => <TrunkSvg deg={72} active={a} />,
+  },
 ];
 
-// OWAS Visual Cards
+// OWAS Visual Cards con láminas Cap. 4
 export const OWAS_BACK_OPTIONS: AngleOption<1 | 2 | 3 | 4>[] = [
-  { value: 1, angleText: 'Código 1', title: 'Espalda recta', subtitle: 'Sin flexión (<20°) ni giro', renderSvg: (a) => <TrunkSvg deg={0} active={a} /> },
-  { value: 2, angleText: 'Código 2', title: 'Espalda flexionada', subtitle: 'Inclinada ≥ 20° sin torsión', renderSvg: (a) => <TrunkSvg deg={40} active={a} /> },
+  {
+    value: 1,
+    angleText: 'Código 1',
+    title: 'Espalda recta',
+    subtitle: 'Sin flexión (<20°) ni giro',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-27a'], totalCols: 1, colIndex: 0, figCode: 'Fig. 4.27a' },
+    renderSvg: (a) => <TrunkSvg deg={0} active={a} />,
+  },
+  {
+    value: 2,
+    angleText: 'Código 2',
+    title: 'Espalda flexionada',
+    subtitle: 'Inclinada ≥ 20° sin torsión',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-27b'], totalCols: 3, colIndex: 0, figCode: 'Fig. 4.27b (2)' },
+    renderSvg: (a) => <TrunkSvg deg={40} active={a} />,
+  },
   {
     value: 3,
     angleText: 'Código 3',
     title: 'Con torsión / ladeada',
     subtitle: 'Giro axial o inclinación lateral',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-27b'], totalCols: 3, colIndex: 1, figCode: 'Fig. 4.27b (3)' },
     renderSvg: (a) => (
       <svg viewBox="0 0 110 92" className="w-28 h-22">
         <circle cx="55" cy="18" r="7" fill="#e2e8f0" stroke={a ? '#0284c7' : '#334155'} strokeWidth="1.8" />
@@ -346,6 +733,7 @@ export const OWAS_BACK_OPTIONS: AngleOption<1 | 2 | 3 | 4>[] = [
     angleText: 'Código 4',
     title: 'Flexionada + torsión',
     subtitle: 'Doble carga compresión/cizalla',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-27b'], totalCols: 3, colIndex: 2, figCode: 'Fig. 4.27b (4)' },
     renderSvg: (a) => (
       <svg viewBox="0 0 110 92" className="w-28 h-22">
         <line x1="42" y1="68" x2="72" y2="38" stroke={a ? '#dc2626' : '#334155'} strokeWidth="5" strokeLinecap="round" />
@@ -363,6 +751,7 @@ export const OWAS_ARMS_OPTIONS: AngleOption<1 | 2 | 3>[] = [
     angleText: 'Código 1',
     title: 'Ambos bajo hombros',
     subtitle: '2 brazos < nivel hombro',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-28a'], totalCols: 1, colIndex: 0, figCode: 'Fig. 4.28a' },
     renderSvg: (a) => (
       <svg viewBox="0 0 110 92" className="w-28 h-22">
         <circle cx="55" cy="18" r="6.5" fill="#e2e8f0" stroke="#475569" strokeWidth="1.5" />
@@ -378,6 +767,7 @@ export const OWAS_ARMS_OPTIONS: AngleOption<1 | 2 | 3>[] = [
     angleText: 'Código 2',
     title: 'Un brazo elevado',
     subtitle: '1 brazo ≥ nivel hombro',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-28b'], totalCols: 2, colIndex: 0, figCode: 'Fig. 4.28b (2)' },
     renderSvg: (a) => (
       <svg viewBox="0 0 110 92" className="w-28 h-22">
         <circle cx="55" cy="22" r="6.5" fill="#e2e8f0" stroke="#475569" strokeWidth="1.5" />
@@ -392,6 +782,7 @@ export const OWAS_ARMS_OPTIONS: AngleOption<1 | 2 | 3>[] = [
     angleText: 'Código 3',
     title: 'Ambos elevados',
     subtitle: '2 brazos ≥ nivel hombro',
+    photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-28b'], totalCols: 2, colIndex: 1, figCode: 'Fig. 4.28b (3)' },
     renderSvg: (a) => (
       <svg viewBox="0 0 110 92" className="w-28 h-22">
         <circle cx="55" cy="24" r="6.5" fill="#e2e8f0" stroke="#475569" strokeWidth="1.5" />
