@@ -1,4 +1,8 @@
-api/biomech/extract-video.js
+export const config = {
+  maxDuration: 60,
+};
+
+const MODEL = 'gemini-1.5-flash';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -18,7 +22,6 @@ export default async function handler(req, res) {
     workerHeightCm = 172,
     videoDurationSec = 10,
     movementModeHint = 'auto',
-    customSystemInstruction = '',
   } = body || {};
 
   if (!frames.length) return res.status(400).json({ error: 'Sin fotogramas' });
@@ -26,9 +29,10 @@ export default async function handler(req, res) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return res.status(500).json({ error: 'Falta GEMINI_API_KEY en Vercel' });
 
-  // Reducir fotogramas a máximo 8 para evitar superar el límite de tamaño en Vercel/Gemini
-  const step = Math.max(1, Math.floor(frames.length / 8));
-  const selectedFrames = frames.filter((_, idx) => idx % step === 0).slice(0, 8);
+  // Tomar solo 4 fotogramas clave (inicio, medio, final) para máxima velocidad
+  const count = frames.length;
+  const indices = [0, Math.floor(count * 0.33), Math.floor(count * 0.66), count - 1];
+  const selectedFrames = [...new Set(indices)].map((i) => frames[i]).filter(Boolean);
 
   const parts = selectedFrames.map((f) => ({
     inline_data: {
@@ -38,34 +42,33 @@ export default async function handler(req, res) {
   }));
 
   parts.push({
-    text: `Analiza la tarea ergonómica en estos fotogramas.
-Estatura operario: ${workerHeightCm} cm. Duración video: ${videoDurationSec} s. Sentido: ${movementModeHint}.
-Devuelve obligatoriamente un JSON válido con esta estructura exacta:
+    text: `Analiza esta maniobra ergonómica (Estatura: ${workerHeightCm}cm, Duración: ${videoDurationSec}s).
+Devuelve estrictamente este JSON:
 {
   "status": "processed",
   "critical_events": {
-    "origen_timestamp": "00:01.000",
-    "destino_timestamp": "00:03.000"
+    "origen_timestamp": "${selectedFrames[0]?.timestamp || '00:00.500'}",
+    "destino_timestamp": "${selectedFrames[selectedFrames.length - 1]?.timestamp || '00:03.000'}"
   },
   "movement_analysis": {
     "direction": "levantamiento_suelo_a_estanteria",
-    "v_origen_cm": 35.0,
-    "v_destino_cm": 115.0,
-    "h_origen_cm": 30.0,
+    "v_origen_cm": 30.0,
+    "v_destino_cm": 110.0,
+    "h_origen_cm": 35.0,
     "h_destino_cm": 40.0,
-    "trajectory_note": "Levantamiento desde cota baja hacia plano medio-alto"
+    "trajectory_note": "Movimiento vertical de carga"
   },
   "niosh_inputs": {
     "H_cm": 35.0,
-    "V_cm": 35.0,
+    "V_cm": 30.0,
     "D_cm": 80.0,
-    "A_deg": 15.0
+    "A_deg": 10.0
   },
   "postural_angles_deg": {
-    "trunk_flexion": 45.0,
-    "knee_flexion": 40.0,
-    "right_elbow": 80.0,
-    "left_elbow": 80.0
+    "trunk_flexion": 40.0,
+    "knee_flexion": 35.0,
+    "right_elbow": 75.0,
+    "left_elbow": 75.0
   }
 }`,
   });
@@ -80,7 +83,7 @@ Devuelve obligatoriamente un JSON válido con esta estructura exacta:
           contents: [{ role: 'user', parts }],
           generationConfig: {
             temperature: 0.1,
-            responseMimeType: 'application/json', // Fuerza salida JSON estricta
+            responseMimeType: 'application/json',
           },
         }),
       }
@@ -96,17 +99,12 @@ Devuelve obligatoriamente un JSON válido con esta estructura exacta:
 
     const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!text) {
-      return res.status(500).json({ error: 'Gemini devolvió respuesta vacía', raw: data });
+      return res.status(500).json({ error: 'Sin respuesta de IA' });
     }
 
-    // Limpieza segura del JSON
-    const cleanJson = text.replace(/```json/g, '').replace(/```/g, '').trim();
-    const parsed = JSON.parse(cleanJson);
-
-    return res.status(200).json(parsed);
+    const clean = text.replace(/```json/g, '').replace(/```/g, '').trim();
+    return res.status(200).json(JSON.parse(clean));
   } catch (err) {
-    return res.status(500).json({
-      error: `Fallo procesando JSON: ${err.message}`,
-    });
+    return res.status(500).json({ error: `Fallo: ${err.message}` });
   }
 }
