@@ -1,4 +1,4 @@
-const MODEL = 'gemini-2.0-flash';
+api/biomech/extract-video.js
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
