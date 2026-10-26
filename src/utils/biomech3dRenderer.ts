@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import {
   BookFigureFileSpec,
   CameraPreset,
@@ -55,6 +56,7 @@ interface StudioEngine3D {
   perspCam: THREE.PerspectiveCamera;
   rig: GlbAvatarRig;
   isSoftwareRenderer: boolean;
+  isProceduralFallback: boolean;
 }
 
 let sharedEngine: StudioEngine3D | null = null;
@@ -64,9 +66,9 @@ export function isAvatarGlbReady(): boolean {
   return Boolean(sharedEngine?.rig.isReady);
 }
 
-export function subscribeAvatarGlbloaded(_callback: () => void): () => void {
+export function subscribeAvatarGlbloaded(callback: () => void): () => void {
   if (isAvatarGlbReady()) {
-    try { _callback(); } catch {}
+    try { callback(); } catch {}
   }
   return () => {};
 }
@@ -145,6 +147,7 @@ function buildProceduralFallbackAvatar(engine: StudioEngine3D): void {
   rig.joints.hipL = legL;
 
   rig.isReady = true;
+  engine.isProceduralFallback = true;
 }
 
 function getSharedEngine(): StudioEngine3D | null {
@@ -193,9 +196,11 @@ function getSharedEngine(): StudioEngine3D | null {
       perspCam,
       rig,
       isSoftwareRenderer: false,
+      isProceduralFallback: true,
     };
 
     buildProceduralFallbackAvatar(sharedEngine);
+    ensureAvatarGlbLoaded();
     return sharedEngine;
   } catch (err) {
     console.warn('WebGL init failed:', err);
@@ -206,10 +211,32 @@ function getSharedEngine(): StudioEngine3D | null {
 
 export function ensureAvatarGlbLoaded(): Promise<void> {
   const engine = getSharedEngine();
-  if (engine && !engine.isReady) {
-    buildProceduralFallbackAvatar(engine);
-  }
-  return Promise.resolve();
+  if (!engine) return Promise.resolve();
+  if (engine.rig.isReady && !engine.isProceduralFallback) return Promise.resolve();
+
+  return new Promise((resolve) => {
+    const loader = new GLTFLoader();
+    loader.load(
+      AVATAR_GLB_URL,
+      (gltf) => {
+        while (engine.rig.avatarContainer.children.length > 0) {
+          engine.rig.avatarContainer.remove(engine.rig.avatarContainer.children[0]);
+        }
+        engine.rig.avatarContainer.add(gltf.scene);
+        engine.rig.isReady = true;
+        engine.isProceduralFallback = false;
+        resolve();
+      },
+      undefined,
+      (err) => {
+        console.warn('GLB load error, using procedural fallback:', err);
+        if (!engine.rig.isReady) {
+          buildProceduralFallbackAvatar(engine);
+        }
+        resolve();
+      }
+    );
+  });
 }
 
 function computeVisibleFocusBounds() {
@@ -307,7 +334,6 @@ export function renderInteractivePose3DToCanvas(
 
   const engine = getSharedEngine();
   if (!engine) return;
-  if (!engine.rig.isReady) buildProceduralFallbackAvatar(engine);
 
   renderSingle3DPanelIntoRect(
     ctx,
@@ -338,7 +364,6 @@ export function renderBookFigureToCanvas(
 
   const engine = sharedEngine;
   if (!engine) return;
-  if (!engine.rig.isReady) buildProceduralFallbackAvatar(engine);
 
   renderSingle3DPanelIntoRect(
     ctx,
