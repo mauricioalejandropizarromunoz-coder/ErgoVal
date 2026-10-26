@@ -61,6 +61,7 @@ interface StudioEngine3D {
 
 let sharedEngine: StudioEngine3D | null = null;
 let engineCreationFailed = false;
+const glbListeners: Array<() => void> = [];
 
 export function isAvatarGlbReady(): boolean {
   return Boolean(sharedEngine?.rig.isReady);
@@ -70,11 +71,21 @@ export function subscribeAvatarGlbloaded(callback: () => void): () => void {
   if (isAvatarGlbReady()) {
     try { callback(); } catch {}
   }
-  return () => {};
+  glbListeners.push(callback);
+  return () => {
+    const idx = glbListeners.indexOf(callback);
+    if (idx >= 0) glbListeners.splice(idx, 1);
+  };
 }
 
 export function subscribeAvatarGlbLoaded(callback: () => void): () => void {
   return subscribeAvatarGlbloaded(callback);
+}
+
+function notifyGlbListeners() {
+  for (const cb of glbListeners) {
+    try { cb(); } catch {}
+  }
 }
 
 function createPlaceholderJoints(parent: THREE.Group): Record<JointKey, THREE.Object3D> {
@@ -212,7 +223,6 @@ function getSharedEngine(): StudioEngine3D | null {
 export function ensureAvatarGlbLoaded(): Promise<void> {
   const engine = getSharedEngine();
   if (!engine) return Promise.resolve();
-  if (engine.rig.isReady && !engine.isProceduralFallback) return Promise.resolve();
 
   return new Promise((resolve) => {
     const loader = new GLTFLoader();
@@ -225,11 +235,12 @@ export function ensureAvatarGlbLoaded(): Promise<void> {
         engine.rig.avatarContainer.add(gltf.scene);
         engine.rig.isReady = true;
         engine.isProceduralFallback = false;
+        notifyGlbListeners();
         resolve();
       },
       undefined,
       (err) => {
-        console.warn('GLB load error, using procedural fallback:', err);
+        console.warn('GLB load error:', err);
         if (!engine.rig.isReady) {
           buildProceduralFallbackAvatar(engine);
         }
@@ -390,3 +401,4 @@ export function renderBookFigureToPng(
   }
   return Promise.resolve(exportCanvasToOptimizedPng(offCanvas));
 }
+
