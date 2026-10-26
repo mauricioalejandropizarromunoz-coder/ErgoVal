@@ -340,7 +340,7 @@ export function renderBookFigureToCanvas(
   );
 }
 
-export async function renderBookFigureToPng(
+export function renderBookFigureToPng(
   spec: BookFigureFileSpec,
   orbitOverride: CameraOrbitOverride = DEFAULT_ORBIT_OVERRIDE,
   qualityMode: 'hd_lossless' | 'compact_120kb' = 'hd_lossless',
@@ -350,7 +350,7 @@ export async function renderBookFigureToPng(
   const dpiScale = qualityMode === 'hd_lossless' ? 2 : 1;
   renderBookFigureToCanvas(spec, offCanvas, orbitOverride, dpiScale, options);
   if (qualityMode === 'hd_lossless') {
-    return exportCanvasToHighQualityPng(offCanvas);
+    return Promise.resolve(exportCanvasToHighQualityPng(offCanvas));
   }
-  return exportCanvasToOptimizedPng(offCanvas);
+  return Promise.resolve(exportCanvasToOptimizedPng(offCanvas));
 }
