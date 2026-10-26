@@ -20,7 +20,7 @@ import {
 } from './pngOptimizer';
 import { getEffectiveFigurePhotoUrl } from './figurePlanCatalog';
 
-export const AVATAR_GLB_URL = '/models/ergo_avatar-1.glb';
+export const AVATAR_GLB_URL = '/models/ergo_avatar.glb';
 
 export interface CameraOrbitOverride {
   azimuthDeg: number;
@@ -54,7 +54,7 @@ const DEG2RAD = Math.PI / 180;
 // ----------------------------------------------------------------------------
 // AJUSTES DE LOOK (puedes cambiarlos aquí sin tocar el resto del código)
 // ----------------------------------------------------------------------------
-/** Encuadre de cuerpo completo por defecto (como las fotos de referencia). */
+/** true = cuerpo completo en todas las figuras salvo primeros planos; false = zoom por zona. */
 const DEFAULT_FORCE_FULL_BODY = true;
 
 /**
@@ -62,12 +62,15 @@ const DEFAULT_FORCE_FULL_BODY = true;
  * se usa un mínimo natural, y de pie se adelanta una pierna.
  * Ponlo en false si necesitas ángulos exactos sin ningún offset.
  */
-const NATURAL_REST_POSE = true;
-const REST_SHOULDER_ABDUCTION_DEG = 7;
+const NATURAL_REST_POSE = false;
+const REST_SHOULDER_ABDUCTION_DEG = 5;
 const REST_ELBOW_FLEXION_DEG = 10;
 
+/** Mixamo viene en T-pose: baja los brazos a una pose anatómica neutra de pie (brazos colgando). */
+const DROP_ARMS_FROM_T_POSE = true;
+
 /** Campo de visión de la cámara en perspectiva (grados). Menor = más "fotográfico". */
-const PERSPECTIVE_FOV_DEG = 32;
+const PERSPECTIVE_FOV_DEG = 30;
 
 /**
  * Vistas que usan perspectiva (aspecto de foto). Las vistas de medición
@@ -80,8 +83,8 @@ const PERSPECTIVE_PRESETS: CameraPreset[] = [
   'dorsal',
 ];
 
-/** Zonas de primer plano que NO deben forzarse a cuerpo completo. */
-const CLOSEUP_ZONES: FocusZone[] = ['wrist_hand', 'ankle_foot', 'legs_knees', 'full_body'];
+/** Zonas de primer plano estricto (muñeca, cuello, tobillo) que mantienen zoom dedicado. */
+const CLOSEUP_ZONES: FocusZone[] = ['wrist_hand', 'ankle_foot', 'neck_cervical'];
 
 const PALETTE = {
   bgHex: 0xffffff,
@@ -180,15 +183,7 @@ const ALL_SEGMENTS: SegmentGroupKey[] = [
 const FOCUS_ZONE_SEGMENTS: Record<FocusZone, SegmentGroupKey[]> = {
   wrist_hand: ['forearm_r', 'hand_r'],
   ankle_foot: ['shank_r', 'foot_r'],
-  legs_knees: [
-    'pelvis',
-    'thigh_r',
-    'shank_r',
-    'foot_r',
-    'thigh_l',
-    'shank_l',
-    'foot_l',
-  ],
+  legs_knees: ALL_SEGMENTS,
   elbow_forearm: ALL_SEGMENTS,
   shoulder_arm: ALL_SEGMENTS,
   neck_cervical: ALL_SEGMENTS,
@@ -235,6 +230,7 @@ interface BoneRestState {
   bone: THREE.Bone;
   restPos: THREE.Vector3;
   restQuat: THREE.Quaternion;
+  restWorldQuat: THREE.Quaternion;
 }
 
 interface GlbAvatarRig {
@@ -249,6 +245,7 @@ interface GlbAvatarRig {
   groupATintMaterials: Map<THREE.SkinnedMesh, THREE.MeshStandardMaterial>;
   groupBTintMaterials: Map<THREE.SkinnedMesh, THREE.MeshStandardMaterial>;
   isReady: boolean;
+  skeletonMapped: boolean;
 }
 
 interface StudioEngine3D {
@@ -368,8 +365,12 @@ function configureStudioLighting(
   const keyLight = new THREE.DirectionalLight(0xfffcf8, 1.32);
   keyLight.position.set(-2.6, 3.8, 2.8);
   if (!isSoftwareRenderer) {
+    const isMobileGpu =
+      typeof window !== 'undefined' &&
+      (window.innerWidth < 768 || Boolean(window.matchMedia?.('(pointer: coarse)').matches));
+    const shadowRes = isMobileGpu ? 1024 : 2048;
     keyLight.castShadow = true;
-    keyLight.shadow.mapSize.set(2048, 2048);
+    keyLight.shadow.mapSize.set(shadowRes, shadowRes);
     keyLight.shadow.camera.near = 0.5;
     keyLight.shadow.camera.far = 12;
     keyLight.shadow.camera.left = -1.8;
@@ -379,7 +380,7 @@ function configureStudioLighting(
     keyLight.shadow.bias = -0.0003;
     keyLight.shadow.normalBias = 0.018;
     // `radius` solo tiene efecto con PCFShadowMap (no con PCFSoftShadowMap)
-    keyLight.shadow.radius = 4;
+    keyLight.shadow.radius = isMobileGpu ? 3 : 4;
   }
   scene.add(keyLight);
 
@@ -449,14 +450,18 @@ function bindLoadedGlbToRig(
         bone,
         restPos: bone.position.clone(),
         restQuat: bone.quaternion.clone(),
+        restWorldQuat: new THREE.Quaternion(),
       };
-      // Mixamo: "mixamorigHips" o "mixamorig:Hips" -> "Hips"
-      const clean = bone.name.replace(/^mixamorig[:_]?/i, '');
+      // Soporta prefijos Mixamo con o sin índice ("mixamorig:Hips", "mixamorig1:Hips", "mixamorig_Hips")
+      const clean = bone.name
+        .replace(/^mixamorig\d*[:_]?/i, '')
+        .replace(/[._]?00\d$/, '');
       rig.bones.set(bone.name, entry);
       rig.bones.set(clean, entry);
-      // Mixamo usa HandIndex1/2 donde el código espera HandFingers1/2
       const finger = clean.match(/^(Left|Right)HandIndex(\d)$/);
-      if (finger) rig.bones.set(`${finger[1]}HandFingers${finger[2]}`, entry);
+      if (finger) {
+        rig.bones.set(`${finger[1]}HandFingers${finger[2]}`, entry);
+      }
     }
 
     if ((obj as THREE.SkinnedMesh).isSkinnedMesh) {
@@ -476,14 +481,17 @@ function bindLoadedGlbToRig(
         stdMat.map.anisotropy = maxAniso;
         stdMat.map.needsUpdate = true;
       }
-      stdMat.envMapIntensity = 0.5;
+      if (stdMat.transparent) {
+        stdMat.alphaTest = Math.max(stdMat.alphaTest || 0, 0.08);
+        stdMat.depthWrite = true;
+      }
+      stdMat.envMapIntensity = 0.52;
       stdMat.needsUpdate = true;
       sm.material = stdMat;
 
       rig.skinnedMeshes.push(sm);
       rig.baseMaterials.set(sm, stdMat);
 
-      // Subtle clinical group tint materials ONLY used when figure 4.2 requests RULA Group A/B highlight
       const matA = stdMat.clone();
       matA.emissive = new THREE.Color(0x0284c7);
       matA.emissiveIntensity = 0.14;
@@ -494,7 +502,6 @@ function bindLoadedGlbToRig(
       matB.emissiveIntensity = 0.12;
       rig.groupBTintMaterials.set(sm, matB);
 
-      // Map named avatar meshes to anatomical segment groups for isolated views
       const n = sm.name;
       if (n === 'Avatar_HeadNeck') {
         rig.segmentMeshes.neck_head.push(sm);
@@ -522,7 +529,9 @@ function bindLoadedGlbToRig(
         rig.segmentMeshes.shank_l.push(sm);
         rig.segmentMeshes.foot_l.push(sm);
       } else {
-        rig.segmentMeshes.thorax.push(sm);
+        (Object.keys(rig.segmentMeshes) as SegmentGroupKey[]).forEach((k) => {
+          rig.segmentMeshes[k].push(sm);
+        });
       }
     } else if ((obj as THREE.Mesh).isMesh) {
       const m = obj as THREE.Mesh;
@@ -531,37 +540,101 @@ function bindLoadedGlbToRig(
     }
   });
 
+  rig.avatarContainer.position.set(0, 0, 0);
+  rig.avatarContainer.rotation.set(0, 0, 0);
+  rig.avatarContainer.scale.set(1, 1, 1);
   rig.avatarContainer.add(gltfScene);
 
   // Map JointKeys directly to the GLB's THREE.Bone hierarchy for exact 2D goniometric projection & prop placement
-  const boneOrFallback = (boneName: string): THREE.Object3D =>
-    rig.bones.get(boneName)?.bone || gltfScene;
+  const norm = (n: string) =>
+    n
+      .toLowerCase()
+      .replace(/^mixamorig\d*[:_]?/, '')
+      .replace(/[^a-z0-9]/g, '');
+  const boneOrFallback = (...boneNames: string[]): THREE.Object3D => {
+    for (const boneName of boneNames) {
+      const exact = rig.bones.get(boneName);
+      if (exact) return exact.bone;
+      const target = norm(boneName);
+      for (const [key, entry] of rig.bones) {
+        const nk = norm(key);
+        if (nk === target || nk.endsWith(target)) {
+          rig.bones.set(boneName, entry);
+          return entry.bone;
+        }
+      }
+    }
+    return gltfScene;
+  };
 
   rig.joints = {
     pelvis: boneOrFallback('Hips'),
     l5s1: boneOrFallback('Spine'),
-    t12: boneOrFallback('Spine1'),
+    t12: boneOrFallback('Spine2', 'Spine1'),
     c7: boneOrFallback('Neck'),
     head: boneOrFallback('Head'),
     shoulderR: boneOrFallback('RightArm'),
     elbowR: boneOrFallback('RightForeArm'),
     wristR: boneOrFallback('RightHand'),
-    handR: boneOrFallback('RightHandFingers1'),
+    handR: boneOrFallback('RightHandMiddle1', 'RightHandIndex1', 'RightHandFingers1', 'RightHand'),
     shoulderL: boneOrFallback('LeftArm'),
     elbowL: boneOrFallback('LeftForeArm'),
     wristL: boneOrFallback('LeftHand'),
-    handL: boneOrFallback('LeftHandFingers1'),
+    handL: boneOrFallback('LeftHandMiddle1', 'LeftHandIndex1', 'LeftHandFingers1', 'LeftHand'),
     hipR: boneOrFallback('RightUpLeg'),
     kneeR: boneOrFallback('RightLeg'),
     ankleR: boneOrFallback('RightFoot'),
-    footR: boneOrFallback('RightToeBase'),
+    footR: boneOrFallback('RightToeBase', 'RightFoot'),
     hipL: boneOrFallback('LeftUpLeg'),
     kneeL: boneOrFallback('LeftLeg'),
     ankleL: boneOrFallback('LeftFoot'),
-    footL: boneOrFallback('LeftToeBase'),
+    footL: boneOrFallback('LeftToeBase', 'LeftFoot'),
   };
 
   rig.avatarContainer.updateMatrixWorld(true);
+  rig.skeletonMapped = rig.joints.pelvis !== gltfScene && rig.joints.head !== gltfScene;
+
+  // T-pose -> pose anatómica neutra de pie (brazos verticales junto al torso)
+  if (DROP_ARMS_FROM_T_POSE && rig.skeletonMapped) {
+    const dropArm = (armName: string, foreName: string) => {
+      const arm = rig.bones.get(armName);
+      const fore = rig.bones.get(foreName);
+      if (!arm || !fore || !arm.bone.parent) return;
+      const a = new THREE.Vector3();
+      const f = new THREE.Vector3();
+      arm.bone.getWorldPosition(a);
+      fore.bone.getWorldPosition(f);
+      const dir = f.sub(a).normalize();
+      if (dir.y < -0.75) return; // ya está colgando
+      const outward = dir.x >= 0 ? 1 : -1;
+      const target = new THREE.Vector3(outward * 0.04, -1, 0).normalize();
+      const q = new THREE.Quaternion().setFromUnitVectors(dir, target);
+      const pq = new THREE.Quaternion();
+      arm.bone.parent.getWorldQuaternion(pq);
+      const newLocal = pq
+        .clone()
+        .invert()
+        .multiply(q)
+        .multiply(pq)
+        .multiply(arm.bone.quaternion);
+      arm.bone.quaternion.copy(newLocal);
+      arm.bone.updateMatrixWorld(true);
+    };
+    dropArm('RightArm', 'RightForeArm');
+    dropArm('LeftArm', 'LeftForeArm');
+    rig.avatarContainer.updateMatrixWorld(true);
+  }
+
+  // Capturar pose de reposo local y mundial de TODOS los huesos tras alinear brazos en posición neutra
+  const visitedBones = new Set<BoneRestState>();
+  rig.bones.forEach((entry) => {
+    if (visitedBones.has(entry)) return;
+    visitedBones.add(entry);
+    entry.restPos.copy(entry.bone.position);
+    entry.restQuat.copy(entry.bone.quaternion);
+    entry.bone.getWorldQuaternion(entry.restWorldQuat);
+  });
+
   rig.isReady = true;
 }
 
@@ -635,6 +708,7 @@ function getSharedEngine(): StudioEngine3D | null {
       groupATintMaterials: new Map(),
       groupBTintMaterials: new Map(),
       isReady: false,
+      skeletonMapped: false,
     };
 
     sharedEngine = {
@@ -718,9 +792,24 @@ function buildSceneProp(
     roughness: 0.68,
     metalness: 0.08,
   });
+  const darkMetalMat = new THREE.MeshStandardMaterial({
+    color: 0x334155,
+    roughness: 0.42,
+    metalness: 0.28,
+  });
+  const elastomerMat = new THREE.MeshStandardMaterial({
+    color: 0x1e293b,
+    roughness: 0.78,
+    metalness: 0.04,
+  });
+  const binBlueMat = new THREE.MeshStandardMaterial({
+    color: 0xcbd5e1,
+    roughness: 0.62,
+    metalness: 0.1,
+  });
   const loadMat = new THREE.MeshStandardMaterial({
     color: PALETTE.propLoadHex,
-    roughness: 0.72,
+    roughness: 0.74,
     metalness: 0.02,
   });
 
@@ -734,59 +823,450 @@ function buildSceneProp(
   rig.joints.handR.getWorldPosition(handWorld);
   const handLWorld = new THREE.Vector3();
   rig.joints.handL.getWorldPosition(handLWorld);
+  const wristRWorld = new THREE.Vector3();
+  rig.joints.wristR.getWorldPosition(wristRWorld);
+  const wristLWorld = new THREE.Vector3();
+  rig.joints.wristL.getWorldPosition(wristLWorld);
   const pelvisWorld = new THREE.Vector3();
   rig.joints.pelvis.getWorldPosition(pelvisWorld);
+  const footRWorld = new THREE.Vector3();
+  rig.joints.footR.getWorldPosition(footRWorld);
+
+  const palmR = new THREE.Vector3(
+    (wristRWorld.x + handWorld.x) * 0.5,
+    (wristRWorld.y + handWorld.y) * 0.5,
+    (wristRWorld.z + handWorld.z) * 0.5,
+  );
+  const palmL = new THREE.Vector3(
+    (wristLWorld.x + handLWorld.x) * 0.5,
+    (wristLWorld.y + handLWorld.y) * 0.5,
+    (wristLWorld.z + handLWorld.z) * 0.5,
+  );
 
   switch (prop) {
-    case 'chair':
-    case 'bus_driver_seat': {
+    case 'chair': {
       const seat = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.04, 0.42), structMat);
       seat.position.set(0, pelvisWorld.y - 0.08, pelvisWorld.z + 0.04);
       const back = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.46, 0.04), structMat);
       back.position.set(0, pelvisWorld.y + 0.16, pelvisWorld.z - 0.16);
       const pedH = Math.max(0.18, pelvisWorld.y - 0.1);
-      const ped = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, pedH, 16), structMat);
+      const ped = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, pedH, 16), darkMetalMat);
       ped.position.set(0, pedH / 2, pelvisWorld.z);
+      const basePlate = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.02, 20), darkMetalMat);
+      basePlate.position.set(0, 0.01, pelvisWorld.z);
       addPropMesh(seat);
       addPropMesh(back);
       addPropMesh(ped);
-      if (prop === 'bus_driver_seat') {
-        const wheel = new THREE.Mesh(new THREE.TorusGeometry(0.18, 0.016, 12, 24), loadMat);
-        wheel.rotation.x = Math.PI / 3;
-        wheel.position.set(0, pelvisWorld.y + 0.25, pelvisWorld.z + 0.42);
-        addPropMesh(wheel);
+      addPropMesh(basePlate);
+      break;
+    }
+    case 'bus_driver_seat': {
+      // Diseño automotriz real según SAE J1100 / ISO 16121 / VDV 234:
+      // 1. Butaca automotriz ergonómica con pétalos laterales, inclinación antideslizamiento (-5°),
+      //    respaldo reclinado (-10°), apoyacabezas de doble vástago y correderas sobre el piso.
+      const seatY = pelvisWorld.y - 0.085;
+      const seatZ = pelvisWorld.z + 0.065;
+      const seatPan = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.06, 0.45), structMat);
+      seatPan.position.set(0, seatY, seatZ);
+      seatPan.rotation.x = -5 * DEG2RAD;
+      addPropMesh(seatPan);
+
+      for (const bx of [-0.215, 0.215]) {
+        const thighBolster = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.078, 0.43), darkMetalMat);
+        thighBolster.position.set(bx, seatY + 0.022, seatZ);
+        thighBolster.rotation.x = -5 * DEG2RAD;
+        addPropMesh(thighBolster);
       }
+
+      const backY = pelvisWorld.y + 0.205;
+      const backZ = pelvisWorld.z - 0.175;
+      const backrest = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.53, 0.055), structMat);
+      backrest.position.set(0, backY, backZ);
+      backrest.rotation.x = -10 * DEG2RAD;
+      addPropMesh(backrest);
+
+      for (const bx of [-0.205, 0.205]) {
+        const sideBolster = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.46, 0.08), darkMetalMat);
+        sideBolster.position.set(bx, backY - 0.01, backZ + 0.018);
+        sideBolster.rotation.x = -10 * DEG2RAD;
+        addPropMesh(sideBolster);
+      }
+
+      for (const px of [-0.065, 0.065]) {
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.007, 0.1, 10), darkMetalMat);
+        post.position.set(px, pelvisWorld.y + 0.485, pelvisWorld.z - 0.222);
+        post.rotation.x = -10 * DEG2RAD;
+        addPropMesh(post);
+      }
+      const headrest = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.165, 0.065), elastomerMat);
+      headrest.position.set(0, pelvisWorld.y + 0.56, pelvisWorld.z - 0.232);
+      headrest.rotation.x = -6 * DEG2RAD;
+      addPropMesh(headrest);
+
+      const suspH = Math.max(0.14, seatY - 0.04);
+      const suspPedestal = new THREE.Mesh(new THREE.BoxGeometry(0.26, suspH, 0.28), darkMetalMat);
+      suspPedestal.position.set(0, suspH * 0.5 + 0.022, pelvisWorld.z + 0.02);
+      addPropMesh(suspPedestal);
+
+      for (const rx of [-0.155, 0.155]) {
+        const slideRail = new THREE.Mesh(new THREE.BoxGeometry(0.036, 0.024, 0.48), elastomerMat);
+        slideRail.position.set(rx, 0.012, pelvisWorld.z + 0.04);
+        addPropMesh(slideRail);
+      }
+
+      // 2. Volante automotriz real (SAE J1100 ángulo A18 = 25° respecto a la horizontal de columna,
+      //    aro verticalizado a 25° frente al pecho del conductor, centro cóncavo "dished" con módulo airbag,
+      //    3 rayos anatómicos 9-3-6 y apoyos de pulgar).
+      const wheelCenter = new THREE.Vector3(
+        (palmR.x + palmL.x) * 0.5,
+        (palmR.y + palmL.y) * 0.5,
+        (palmR.z + palmL.z) * 0.5 + 0.012,
+      );
+      const wheelRadius = Math.max(0.165, Math.min(0.195, Math.abs(palmL.x - palmR.x) * 0.5));
+      const wheelTiltRad = 25 * DEG2RAD; // Inclinación automotriz real (25° respecto a la vertical)
+      const hubDishDepth = 0.036; // Profundidad cóncava del núcleo airbag respecto al plano del aro
+
+      const wheelAssembly = new THREE.Group();
+      wheelAssembly.position.copy(wheelCenter);
+      wheelAssembly.rotation.x = wheelTiltRad;
+
+      // Aro circular forrado en elastómero con engrosamientos ergonómicos en 10-2 / 9-3
+      const wheelRim = new THREE.Mesh(
+        new THREE.TorusGeometry(wheelRadius, 0.0175, 20, 56),
+        elastomerMat,
+      );
+      wheelRim.castShadow = !isSoftwareRenderer;
+      wheelRim.receiveShadow = !isSoftwareRenderer;
+      wheelAssembly.add(wheelRim);
+
+      for (const gripArcStart of [0.12, Math.PI - 0.54]) {
+        const thumbBolster = new THREE.Mesh(
+          new THREE.TorusGeometry(wheelRadius, 0.0215, 14, 18, 0.42),
+          elastomerMat,
+        );
+        thumbBolster.rotation.z = gripArcStart;
+        thumbBolster.castShadow = !isSoftwareRenderer;
+        wheelAssembly.add(thumbBolster);
+      }
+
+      // Módulo central de airbag / bocina desplazado hacia adelante (+Z local) para concavidad automotriz real
+      const airbagPad = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.06, 0.052, 0.038, 24),
+        darkMetalMat,
+      );
+      airbagPad.rotation.x = Math.PI / 2;
+      airbagPad.position.set(0, 0, hubDishDepth);
+      airbagPad.castShadow = !isSoftwareRenderer;
+      wheelAssembly.add(airbagPad);
+
+      const emblemRing = new THREE.Mesh(
+        new THREE.TorusGeometry(0.022, 0.0028, 10, 24),
+        binBlueMat,
+      );
+      emblemRing.position.set(0, 0, hubDishDepth - 0.02);
+      wheelAssembly.add(emblemRing);
+
+      // 3 rayos automotrices esculpidos (izquierdo 9h, derecho 3h e inferior doble 6h) desde el cubo cóncavo hasta el aro
+      const spokeSpan = Math.max(0.08, wheelRadius - 0.046);
+      const dishAngle = Math.atan2(hubDishDepth, spokeSpan);
+      const spokeLen = Math.hypot(spokeSpan, hubDishDepth);
+
+      for (const sideSign of [-1, 1]) {
+        const sideSpoke = new THREE.Mesh(
+          new THREE.BoxGeometry(spokeLen, 0.026, 0.014),
+          darkMetalMat,
+        );
+        sideSpoke.position.set(sideSign * (0.044 + spokeSpan * 0.5), -0.006, hubDishDepth * 0.5);
+        sideSpoke.rotation.y = sideSign * dishAngle;
+        sideSpoke.castShadow = !isSoftwareRenderer;
+        wheelAssembly.add(sideSpoke);
+      }
+
+      for (const bottomOffset of [-0.018, 0.018]) {
+        const bottomSpoke = new THREE.Mesh(
+          new THREE.BoxGeometry(0.015, spokeLen, 0.014),
+          darkMetalMat,
+        );
+        bottomSpoke.position.set(bottomOffset, -(0.044 + spokeSpan * 0.5), hubDishDepth * 0.5);
+        bottomSpoke.rotation.x = -dishAngle;
+        bottomSpoke.castShadow = !isSoftwareRenderer;
+        wheelAssembly.add(bottomSpoke);
+      }
+
+      // Carcasa envolvente superior de la columna de dirección + palancas de luces/limpiaparabrisas
+      const columnShroud = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.044, 0.056, 0.13, 18),
+        darkMetalMat,
+      );
+      columnShroud.rotation.x = Math.PI / 2;
+      columnShroud.position.set(0, 0, hubDishDepth + 0.078);
+      columnShroud.castShadow = !isSoftwareRenderer;
+      wheelAssembly.add(columnShroud);
+
+      for (const stalkSign of [-1, 1]) {
+        const stalk = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.0045, 0.006, 0.115, 10),
+          elastomerMat,
+        );
+        stalk.rotation.z = (Math.PI / 2) - stalkSign * 0.18;
+        stalk.position.set(stalkSign * 0.085, 0.014, hubDishDepth + 0.062);
+        wheelAssembly.add(stalk);
+      }
+
+      rig.propsRoot.add(wheelAssembly);
+
+      // 3. Columna telescópica proyectada hacia adelante (+Z) e inclinada -25° hacia el torpedo/tablero automotriz
+      const colDir = new THREE.Vector3(
+        0,
+        -Math.sin(wheelTiltRad),
+        Math.cos(wheelTiltRad),
+      ).normalize();
+      const colLen = 0.34;
+      const shaftStart = wheelCenter.clone().addScaledVector(colDir, 0.12);
+      const steeringShaft = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.022, 0.026, colLen, 16),
+        darkMetalMat,
+      );
+      steeringShaft.position.copy(shaftStart).addScaledVector(colDir, colLen * 0.5);
+      steeringShaft.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), colDir.clone().negate());
+      addPropMesh(steeringShaft);
+
+      // 4. Tablero frontal automotriz (torpedo + visera curva de cuadro de instrumentos / velocímetro)
+      const dashEntry = shaftStart.clone().addScaledVector(colDir, colLen);
+      const dashFrontZ = Math.max(dashEntry.z + 0.08, footRWorld.z + 0.06);
+      const dashTopY = Math.max(wheelCenter.y + 0.035, dashEntry.y + 0.16);
+
+      const dashUpperCowl = new THREE.Mesh(
+        new THREE.BoxGeometry(0.62, 0.16, 0.24),
+        structMat,
+      );
+      dashUpperCowl.position.set(0, dashTopY - 0.06, dashFrontZ);
+      dashUpperCowl.rotation.x = -8 * DEG2RAD;
+      addPropMesh(dashUpperCowl);
+
+      // Visera superior del cuadro de instrumentos (cúpula de relojes frente al conductor)
+      const clusterHood = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.135, 0.145, 0.18, 20, 1, false, 0, Math.PI),
+        darkMetalMat,
+      );
+      clusterHood.rotation.z = Math.PI / 2;
+      clusterHood.rotation.y = Math.PI / 2;
+      clusterHood.position.set(0, dashTopY + 0.015, dashFrontZ - 0.03);
+      addPropMesh(clusterHood);
+
+      // Pared cortafuegos (firewall) inclinada + piso de pedalera y pedales suspendidos de acelerador y freno
+      const firewallH = Math.max(0.32, dashTopY - 0.12);
+      const firewall = new THREE.Mesh(
+        new THREE.BoxGeometry(0.6, firewallH, 0.06),
+        structMat,
+      );
+      firewall.position.set(0, firewallH * 0.5, dashFrontZ + 0.1);
+      firewall.rotation.x = 18 * DEG2RAD;
+      addPropMesh(firewall);
+
+      const footLWorld = new THREE.Vector3();
+      rig.joints.footL.getWorldPosition(footLWorld);
+
+      // Pedal de acelerador bajo pie derecho (Ángulo C: 100°–115°) y pedal de freno junto al pie izquierdo
+      const accelPad = new THREE.Mesh(new THREE.BoxGeometry(0.065, 0.014, 0.17), elastomerMat);
+      accelPad.position.set(footRWorld.x, Math.max(0.042, footRWorld.y - 0.014), footRWorld.z + 0.015);
+      accelPad.rotation.x = -34 * DEG2RAD;
+      addPropMesh(accelPad);
+
+      const accelArm = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.007, 0.22, 10), darkMetalMat);
+      accelArm.position.set(footRWorld.x, Math.max(0.15, footRWorld.y + 0.09), footRWorld.z + 0.065);
+      accelArm.rotation.x = -22 * DEG2RAD;
+      addPropMesh(accelArm);
+
+      const brakePad = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.016, 0.075), elastomerMat);
+      brakePad.position.set(0.02, Math.max(0.085, footLWorld.y + 0.025), footRWorld.z + 0.01);
+      brakePad.rotation.x = -38 * DEG2RAD;
+      addPropMesh(brakePad);
       break;
     }
     case 'work_desk_support':
     case 'office_desk_corner_monitor':
     case 'office_desk_lateral':
     case 'high_scanner_desk': {
-      const deskH = prop === 'high_scanner_desk' ? 1.04 : Math.max(0.55, handWorld.y - 0.03);
-      const top = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.03, 0.52), structMat);
-      top.position.set(0, deskH, handWorld.z + 0.16);
+      const deskH = prop === 'high_scanner_desk' ? 0.99 : Math.max(0.68, handWorld.y - 0.035);
+      const deskW = 0.78;
+      const deskD = 0.52;
+      const deskZ = handWorld.z + 0.2;
+
+      const top = new THREE.Mesh(new THREE.BoxGeometry(deskW, 0.032, deskD), structMat);
+      top.position.set(0, deskH, deskZ);
       addPropMesh(top);
-      if (prop === 'office_desk_corner_monitor' || prop === 'office_desk_lateral') {
-        const mon = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.24, 0.025), loadMat);
-        mon.position.set(
-          prop === 'office_desk_corner_monitor' ? -0.22 : 0,
-          deskH + 0.22,
-          handWorld.z + 0.3,
+
+      if (prop === 'high_scanner_desk') {
+        // Mueble cerrado de 99 cm sin hueco para piernas (Fig. 12.7) + terminal de escaneo
+        const cabinetBody = new THREE.Mesh(
+          new THREE.BoxGeometry(deskW - 0.04, Math.max(0.2, deskH - 0.02), deskD - 0.04),
+          binBlueMat,
         );
-        if (prop === 'office_desk_corner_monitor') mon.rotation.y = 0.55;
+        cabinetBody.position.set(0, (deskH - 0.02) * 0.5, deskZ + 0.01);
+        addPropMesh(cabinetBody);
+
+        const scannerScreen = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.2, 0.024), darkMetalMat);
+        scannerScreen.position.set(0, deskH + 0.14, deskZ + 0.1);
+        scannerScreen.rotation.x = -18 * DEG2RAD;
+        addPropMesh(scannerScreen);
+      } else {
+        // 4 patas estructurales apoyadas en suelo (y = 0) + travesaño posterior para realismo físico
+        const legH = Math.max(0.2, deskH - 0.016);
+        for (const [lx, lz] of [
+          [-deskW * 0.44, deskZ - deskD * 0.42],
+          [deskW * 0.44, deskZ - deskD * 0.42],
+          [-deskW * 0.44, deskZ + deskD * 0.42],
+          [deskW * 0.44, deskZ + deskD * 0.42],
+        ]) {
+          const leg = new THREE.Mesh(new THREE.BoxGeometry(0.036, legH, 0.036), darkMetalMat);
+          leg.position.set(lx, legH * 0.5, lz);
+          addPropMesh(leg);
+        }
+        const rearCrossbar = new THREE.Mesh(new THREE.BoxGeometry(deskW - 0.08, 0.03, 0.03), darkMetalMat);
+        rearCrossbar.position.set(0, 0.18, deskZ + deskD * 0.42);
+        addPropMesh(rearCrossbar);
+      }
+
+      if (prop === 'office_desk_corner_monitor' || prop === 'office_desk_lateral') {
+        const monX = prop === 'office_desk_corner_monitor' ? -0.22 : 0;
+        const monZ = deskZ + 0.12;
+        const monStand = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.024, 0.12, 14), darkMetalMat);
+        monStand.position.set(monX, deskH + 0.075, monZ);
+        const monBase = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.012, 0.12), darkMetalMat);
+        monBase.position.set(monX, deskH + 0.02, monZ);
+        const mon = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.24, 0.024), elastomerMat);
+        mon.position.set(monX, deskH + 0.23, monZ);
+        if (prop === 'office_desk_corner_monitor') {
+          mon.rotation.y = 0.52;
+        }
+        addPropMesh(monStand);
+        addPropMesh(monBase);
         addPropMesh(mon);
       }
       break;
     }
-    case 'box_load':
-    case 'pallet_cooler':
-    case 'bin_to_cart': {
-      const midX = (handWorld.x + handLWorld.x) * 0.5;
-      const midY = (handWorld.y + handLWorld.y) * 0.5;
-      const midZ = Math.max(handWorld.z, handLWorld.z);
+    case 'box_load': {
+      const midX = (palmR.x + palmL.x) * 0.5;
+      const midY = Math.max(0.115, (palmR.y + palmL.y) * 0.5);
+      const midZ = Math.max(palmR.z, palmL.z) + 0.045;
       const box = new THREE.Mesh(new THREE.BoxGeometry(0.31, 0.22, 0.26), loadMat);
-      box.position.set(midX * 0.4, midY + 0.03, midZ + 0.09);
+      box.position.set(midX, midY, midZ);
       addPropMesh(box);
+      break;
+    }
+    case 'pallet_cooler': {
+      const midX = (palmR.x + palmL.x) * 0.5;
+      const midY = Math.max(0.24, (palmR.y + palmL.y) * 0.5);
+      const midZ = Math.max(palmR.z, palmL.z) + 0.06;
+
+      // Nevera térmica de pedidos (40x50x50 cm escalada proporcionalmente + tapa aislante)
+      const coolerBody = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.26, 0.3), binBlueMat);
+      coolerBody.position.set(midX, midY - 0.01, midZ);
+      const coolerLid = new THREE.Mesh(new THREE.BoxGeometry(0.365, 0.04, 0.315), darkMetalMat);
+      coolerLid.position.set(midX, midY + 0.13, midZ);
+      addPropMesh(coolerBody);
+      addPropMesh(coolerLid);
+
+      // Pallet industrial de madera/plástico apoyado a ras de suelo (y = 0..0.12 m)
+      const palletTop = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.028, 0.54), loadMat);
+      palletTop.position.set(0, 0.106, midZ + 0.02);
+      addPropMesh(palletTop);
+      for (const sx of [-0.26, 0, 0.26]) {
+        const block = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.092, 0.54), darkMetalMat);
+        block.position.set(sx, 0.046, midZ + 0.02);
+        addPropMesh(block);
+      }
+      break;
+    }
+    case 'bin_to_cart': {
+      // Fig. 12.3: Operador extrayendo bulto de 10 kg desde el interior de un contenedor BIN hacia un CARRO plataforma
+      const midX = (palmR.x + palmL.x) * 0.5;
+      const midY = Math.max(0.34, (palmR.y + palmL.y) * 0.5);
+      const midZ = Math.max(palmR.z, palmL.z) + 0.045;
+
+      // 1. Bulto de 10 kg sujetado bimanualmente en plena extracción desde el interior del bin
+      const activeParcel = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.19, 0.24), loadMat);
+      activeParcel.position.set(midX, midY, midZ);
+      addPropMesh(activeParcel);
+
+      // 2. Contenedor industrial BIN (con pared derecha -X rebajada en corte técnico para ver manos y bultos en el interior)
+      const binZ = midZ + 0.03;
+      const binW = 0.62;
+      const binD = 0.52;
+      const wallT = 0.028;
+
+      const binSkid = new THREE.Mesh(new THREE.BoxGeometry(binW, 0.09, binD), darkMetalMat);
+      binSkid.position.set(0, 0.045, binZ);
+      addPropMesh(binSkid);
+
+      // Pared frontal alejada del operador (+Z), pared posterior próxima (-Z, rebajada bajo antebrazos), pared izquierda (+X) y corte derecho (-X)
+      const binFrontWall = new THREE.Mesh(new THREE.BoxGeometry(binW, 0.58, wallT), binBlueMat);
+      binFrontWall.position.set(0, 0.09 + 0.29, binZ + binD * 0.5 - wallT * 0.5);
+      addPropMesh(binFrontWall);
+
+      const nearWallH = Math.max(0.28, Math.min(0.46, midY - 0.1));
+      const binNearWall = new THREE.Mesh(new THREE.BoxGeometry(binW, nearWallH, wallT), binBlueMat);
+      binNearWall.position.set(0, 0.09 + nearWallH * 0.5, binZ - binD * 0.5 + wallT * 0.5);
+      addPropMesh(binNearWall);
+
+      const binLeftWall = new THREE.Mesh(new THREE.BoxGeometry(wallT, 0.58, binD), binBlueMat);
+      binLeftWall.position.set(binW * 0.5 - wallT * 0.5, 0.09 + 0.29, binZ);
+      addPropMesh(binLeftWall);
+
+      const binRightCutaway = new THREE.Mesh(new THREE.BoxGeometry(wallT, 0.2, binD), binBlueMat);
+      binRightCutaway.position.set(-binW * 0.5 + wallT * 0.5, 0.09 + 0.1, binZ);
+      addPropMesh(binRightCutaway);
+
+      // Bulto remanente en el fondo del bin para evidenciar extracción interna
+      const innerParcel = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.16, 0.2), loadMat);
+      innerParcel.position.set(0.1, 0.17, binZ + 0.1);
+      addPropMesh(innerParcel);
+
+      // 3. Carro plataforma receptor (cota de depósito V₂ ≈ 35 cm según apartado 12.4.2 / Fig. 12.4)
+      const cartX = 0.22;
+      const cartZ = binZ + 0.56;
+      const cartDeckY = 0.33;
+      const cartDeck = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.04, 0.44), structMat);
+      cartDeck.position.set(cartX, cartDeckY, cartZ);
+      addPropMesh(cartDeck);
+
+      for (const [wx, wz] of [
+        [-0.18, -0.16],
+        [0.18, -0.16],
+        [-0.18, 0.16],
+        [0.18, 0.16],
+      ]) {
+        const wheel = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.055, 0.055, 0.032, 16),
+          elastomerMat,
+        );
+        wheel.rotation.z = Math.PI / 2;
+        wheel.position.set(cartX + wx, 0.055, cartZ + wz);
+        const fork = new THREE.Mesh(new THREE.BoxGeometry(0.04, cartDeckY - 0.11, 0.05), darkMetalMat);
+        fork.position.set(cartX + wx, 0.11 + (cartDeckY - 0.11) * 0.5, cartZ + wz);
+        addPropMesh(wheel);
+        addPropMesh(fork);
+      }
+
+      // Baranda/asa tubular del carro receptor + bulto ya depositado sobre el carro
+      const handlePostH = 0.56;
+      for (const hx of [-0.2, 0.2]) {
+        const post = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.014, 0.014, handlePostH, 12),
+          darkMetalMat,
+        );
+        post.position.set(cartX + hx, cartDeckY + handlePostH * 0.5, cartZ + 0.2);
+        addPropMesh(post);
+      }
+      const crossBar = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.42, 12), darkMetalMat);
+      crossBar.rotation.z = Math.PI / 2;
+      crossBar.position.set(cartX, cartDeckY + handlePostH, cartZ + 0.2);
+      addPropMesh(crossBar);
+
+      const cartParcel = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.18, 0.22), loadMat);
+      cartParcel.position.set(cartX, cartDeckY + 0.11, cartZ - 0.04);
+      addPropMesh(cartParcel);
       break;
     }
     case 'floor_pouches': {
@@ -856,36 +1336,205 @@ function buildSceneProp(
       addPropMesh(step);
       break;
     }
+    case 'conveyor_veg_line': {
+      // Línea de cinta transportadora industrial (Caso Verduras / OCRA industria alimenticia)
+      const beltY = 0.86;
+      const beltZ = Math.max(0.36, Math.max(palmR.z, palmL.z) + 0.18);
+      const beltFrame = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.07, 0.48), structMat);
+      beltFrame.position.set(0, beltY, beltZ);
+      addPropMesh(beltFrame);
+
+      const beltSurface = new THREE.Mesh(new THREE.BoxGeometry(1.12, 0.018, 0.4), elastomerMat);
+      beltSurface.position.set(0, beltY + 0.042, beltZ);
+      addPropMesh(beltSurface);
+
+      for (const lx of [-0.48, 0.48]) {
+        for (const lz of [beltZ - 0.19, beltZ + 0.19]) {
+          const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, beltY, 12), darkMetalMat);
+          leg.position.set(lx, beltY * 0.5, lz);
+          addPropMesh(leg);
+        }
+      }
+
+      // Cajas agrícolas sobre la línea + bandeja/caja en manipulación
+      const crateSide = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.14, 0.24), binBlueMat);
+      crateSide.position.set(0.34, beltY + 0.12, beltZ);
+      addPropMesh(crateSide);
+
+      const heldCrate = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.16, 0.24), loadMat);
+      heldCrate.position.set(
+        (palmR.x + palmL.x) * 0.5,
+        Math.max(0.14, (palmR.y + palmL.y) * 0.5),
+        Math.max(palmR.z, palmL.z) + 0.04,
+      );
+      addPropMesh(heldCrate);
+      break;
+    }
+    case 'hopper_sack_pour': {
+      // Tolva de formulación industrial PFM (vaciado de sacos en boca de carga a ~98 cm)
+      const hopperZ = Math.max(0.42, Math.max(palmR.z, palmL.z) + 0.22);
+      const rimY = 0.98;
+      const funnel = new THREE.Mesh(new THREE.CylinderGeometry(0.31, 0.13, 0.42, 20), structMat);
+      funnel.position.set(0, rimY - 0.21, hopperZ);
+      addPropMesh(funnel);
+
+      const hopperRim = new THREE.Mesh(new THREE.TorusGeometry(0.31, 0.018, 12, 28), darkMetalMat);
+      hopperRim.rotation.x = Math.PI / 2;
+      hopperRim.position.set(0, rimY, hopperZ);
+      addPropMesh(hopperRim);
+
+      const lowerChute = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.56, 16), binBlueMat);
+      lowerChute.position.set(0, 0.28, hopperZ);
+      addPropMesh(lowerChute);
+
+      for (const [lx, lz] of [
+        [-0.24, hopperZ - 0.22],
+        [0.24, hopperZ - 0.22],
+        [-0.24, hopperZ + 0.22],
+        [0.24, hopperZ + 0.22],
+      ]) {
+        const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, rimY - 0.04, 10), darkMetalMat);
+        leg.position.set(lx, (rimY - 0.04) * 0.5, lz);
+        addPropMesh(leg);
+      }
+
+      // Saco de materia prima sostenido bimanualmente
+      const sack = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.19, 0.25), loadMat);
+      sack.position.set(
+        (palmR.x + palmL.x) * 0.5,
+        Math.max(0.12, (palmR.y + palmL.y) * 0.5),
+        Math.max(palmR.z, palmL.z) + 0.045,
+      );
+      sack.rotation.x = palmR.y > 0.85 ? 24 * DEG2RAD : 0;
+      addPropMesh(sack);
+      break;
+    }
+    case 'pallet_jack_rack': {
+      // Tarima/pallet industrial en piso + estantería de almacén + caja bimanual (Casos MMC Almacén)
+      const rackZ = 0.56;
+      const pallet = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.12, 0.48), structMat);
+      pallet.position.set(0, 0.06, 0.34);
+      addPropMesh(pallet);
+
+      // Estantería frontal de estiba (niveles a 1.05 m y 1.52 m)
+      for (const [px, pz] of [
+        [-0.36, rackZ - 0.14],
+        [0.36, rackZ - 0.14],
+        [-0.36, rackZ + 0.16],
+        [0.36, rackZ + 0.16],
+      ]) {
+        const post = new THREE.Mesh(new THREE.BoxGeometry(0.032, 1.68, 0.032), darkMetalMat);
+        post.position.set(px, 0.84, pz);
+        addPropMesh(post);
+      }
+      for (const shelfY of [1.06, 1.54]) {
+        const shelf = new THREE.Mesh(new THREE.BoxGeometry(0.74, 0.03, 0.32), binBlueMat);
+        shelf.position.set(0, shelfY, rackZ + 0.01);
+        addPropMesh(shelf);
+      }
+
+      const heldBox = new THREE.Mesh(new THREE.BoxGeometry(0.31, 0.22, 0.26), loadMat);
+      heldBox.position.set(
+        (palmR.x + palmL.x) * 0.5,
+        Math.max(0.13, (palmR.y + palmL.y) * 0.5),
+        Math.max(palmR.z, palmL.z) + 0.045,
+      );
+      addPropMesh(heldBox);
+      break;
+    }
   }
 }
 
 // ============================================================================
-// BIOMECHANICAL JOINT ROTATION MAPPING ONTO GLB THREE.BONES
+// BIOMECHANICAL JOINT ROTATION MAPPING ONTO GLB THREE.BONES (CHARACTER SPACE)
 // ============================================================================
-const _deltaEuler = new THREE.Euler();
-const _deltaQuat = new THREE.Quaternion();
+// Ejes anatómicos del avatar en reposo:
+//   +X = Izquierda anatómica | -X = Derecha anatómica
+//   +Y = Vertical arriba     | -Y = Vertical abajo
+//   +Z = Anterior (frente)   | -Z = Posterior (espalda)
+// Para cualquier rotación anatómica R_char relativa al segmento padre:
+//   Q_local(B) = Q_restLocal(B) * (Q_restWorld(B)^-1 * R_char * Q_restWorld(B))
+// Esto garantiza cinemática 100% invariante al roll local de cada hueso Mixamo/GLTF.
+const _axisX = new THREE.Vector3(1, 0, 0);
+const _axisY = new THREE.Vector3(0, 1, 0);
+const _axisZ = new THREE.Vector3(0, 0, 1);
+const _qRotX = new THREE.Quaternion();
+const _qRotY = new THREE.Quaternion();
+const _qRotZ = new THREE.Quaternion();
+const _charQuat = new THREE.Quaternion();
+const _invRestWorld = new THREE.Quaternion();
+const _localDelta = new THREE.Quaternion();
 const _tmpWorldVec = new THREE.Vector3();
 
-function setBoneDeltaEuler(
+function setBoneCharRotation(
   rig: GlbAvatarRig,
   boneName: string,
-  rxRad: number,
-  ryRad: number,
-  rzRad: number,
-  order: THREE.EulerOrder = 'XYZ',
+  charQuat: THREE.Quaternion,
 ): void {
   const entry = rig.bones.get(boneName);
   if (!entry) return;
-  _deltaEuler.set(rxRad, ryRad, rzRad, order);
-  _deltaQuat.setFromEuler(_deltaEuler);
-  entry.bone.quaternion.copy(entry.restQuat).multiply(_deltaQuat);
+  _invRestWorld.copy(entry.restWorldQuat).invert();
+  _localDelta.copy(_invRestWorld).multiply(charQuat).multiply(entry.restWorldQuat);
+  entry.bone.quaternion.copy(entry.restQuat).multiply(_localDelta);
+}
+
+function makeCharEulerQuat(
+  rxRad: number,
+  ryRad: number,
+  rzRad: number,
+  order: 'XYZ' | 'YXZ' | 'ZXY' | 'ZYX' = 'YXZ',
+): THREE.Quaternion {
+  _qRotX.setFromAxisAngle(_axisX, rxRad);
+  _qRotY.setFromAxisAngle(_axisY, ryRad);
+  _qRotZ.setFromAxisAngle(_axisZ, rzRad);
+  _charQuat.identity();
+  if (order === 'YXZ') {
+    _charQuat.multiply(_qRotY).multiply(_qRotX).multiply(_qRotZ);
+  } else if (order === 'ZXY') {
+    _charQuat.multiply(_qRotZ).multiply(_qRotX).multiply(_qRotY);
+  } else if (order === 'ZYX') {
+    _charQuat.multiply(_qRotZ).multiply(_qRotY).multiply(_qRotX);
+  } else {
+    _charQuat.multiply(_qRotX).multiply(_qRotY).multiply(_qRotZ);
+  }
+  return _charQuat;
 }
 
 function resetAllBonesToRest(rig: GlbAvatarRig): void {
+  rig.avatarContainer.position.set(0, 0, 0);
+  const visited = new Set<BoneRestState>();
   rig.bones.forEach((entry) => {
+    if (visited.has(entry)) return;
+    visited.add(entry);
     entry.bone.position.copy(entry.restPos);
     entry.bone.quaternion.copy(entry.restQuat);
   });
+}
+
+function curlHandFingers(
+  rig: GlbAvatarRig,
+  side: 'Right' | 'Left',
+  curlProxRad: number,
+  curlMidRad: number,
+  thumbCurlRad: number,
+): void {
+  const sign = side === 'Right' ? 1 : -1;
+  const fingers = ['Index', 'Middle', 'Ring', 'Pinky'];
+  for (const fg of fingers) {
+    setBoneCharRotation(rig, `${side}Hand${fg}1`, makeCharEulerQuat(0, 0, sign * curlProxRad, 'XYZ'));
+    setBoneCharRotation(rig, `${side}Hand${fg}2`, makeCharEulerQuat(0, 0, sign * curlMidRad, 'XYZ'));
+    setBoneCharRotation(rig, `${side}Hand${fg}3`, makeCharEulerQuat(0, 0, sign * curlMidRad * 0.65, 'XYZ'));
+  }
+  setBoneCharRotation(
+    rig,
+    `${side}HandThumb1`,
+    makeCharEulerQuat(thumbCurlRad * 0.55, 0, sign * thumbCurlRad * 0.75, 'ZXY'),
+  );
+  setBoneCharRotation(
+    rig,
+    `${side}HandThumb2`,
+    makeCharEulerQuat(thumbCurlRad * 0.45, 0, sign * thumbCurlRad * 0.65, 'ZXY'),
+  );
 }
 
 function applyPoseToGlbBones(
@@ -895,19 +1544,39 @@ function applyPoseToGlbBones(
   const { rig, isSoftwareRenderer } = engine;
   if (!rig.isReady) return;
 
-  const { pose, focusZone } = panel;
+  const { pose, focusZone, cameraPreset } = panel;
   resetAllBonesToRest(rig);
 
-  // Pose relajada: si el valor viene en 0 se usa un mínimo natural (evita brazos rígidos)
   const rest = (value: number, fallback: number): number =>
     NATURAL_REST_POSE && Math.abs(value) < 0.01 ? fallback : value;
 
+  let shRFlexDeg = pose.shoulderRFlexionDeg;
+  let shLFlexDeg = pose.shoulderLFlexionDeg;
   const shRAbdDeg = rest(pose.shoulderRAbductionDeg, REST_SHOULDER_ABDUCTION_DEG);
   const shLAbdDeg = rest(pose.shoulderLAbductionDeg, REST_SHOULDER_ABDUCTION_DEG);
-  const elbRFlexDeg = rest(pose.elbowRFlexionDeg, REST_ELBOW_FLEXION_DEG);
-  const elbLFlexDeg = rest(pose.elbowLFlexionDeg, REST_ELBOW_FLEXION_DEG);
+  let elbRFlexDeg = rest(pose.elbowRFlexionDeg, REST_ELBOW_FLEXION_DEG);
+  let elbLFlexDeg = rest(pose.elbowLFlexionDeg, REST_ELBOW_FLEXION_DEG);
 
-  // De pie y sin ninguna flexión de piernas: adelantar levemente la pierna izquierda
+  // En postura sentada con brazos en neutro por defecto, apoyar manos naturalmente sobre muslos
+  if (pose.stanceMode === 'seated') {
+    if (Math.abs(shRFlexDeg) <= 6 && elbRFlexDeg <= 16) {
+      shRFlexDeg = 22;
+      elbRFlexDeg = 54;
+    }
+    if (Math.abs(shLFlexDeg) <= 6 && elbLFlexDeg <= 16) {
+      shLFlexDeg = 22;
+      elbLFlexDeg = 54;
+    }
+  }
+
+  // En primer plano de muñeca/mano, proyectar levemente el húmero hacia adelante conservando
+  // exactamente el ángulo horizontal del antebrazo para evitar oclusión con el torso o casco
+  if (focusZone === 'wrist_hand' && shRFlexDeg < 26 && elbRFlexDeg >= 65) {
+    const deltaAdvance = 28 - shRFlexDeg;
+    shRFlexDeg += deltaAdvance;
+    elbRFlexDeg = Math.max(25, elbRFlexDeg - deltaAdvance);
+  }
+
   const isStanding = pose.stanceMode !== 'seated' && pose.stanceMode !== 'kneeling';
   const legsAtRest =
     Math.abs(pose.hipRFlexionDeg) < 0.01 &&
@@ -915,150 +1584,241 @@ function applyPoseToGlbBones(
     Math.abs(pose.kneeRFlexionDeg) < 0.01 &&
     Math.abs(pose.kneeLFlexionDeg) < 0.01;
   const stepLegs = NATURAL_REST_POSE && isStanding && legsAtRest;
-  const hipRDeg = stepLegs ? -3 : pose.hipRFlexionDeg;
-  const hipLDeg = stepLegs ? 6 : pose.hipLFlexionDeg;
+  let hipRDeg = stepLegs ? -3 : pose.hipRFlexionDeg;
+  let hipLDeg = stepLegs ? 6 : pose.hipLFlexionDeg;
   const kneeRDeg = pose.kneeRFlexionDeg;
   const kneeLDeg = stepLegs ? 4 : pose.kneeLFlexionDeg;
+  let ankleRDeg = pose.ankleRDorsiflexionDeg;
+  let ankleLDeg = pose.ankleLDorsiflexionDeg;
 
-  // 1. Trunk & Lumbar/Thoracic Spine (Spine + Spine1)
-  const trunkFlex = pose.trunkFlexionDeg * DEG2RAD;
+  // En postura arrodillada (`kneeling`), garantizar que la tibia apoyada quede horizontal (paralela al suelo y = 0)
+  // y el empeine en flexión plantar para que las rodillas descansen físicamente sobre el suelo sin flotar en el aire.
+  if (pose.stanceMode === 'kneeling') {
+    if (hipRDeg < 45 && kneeRDeg >= 70) {
+      if (kneeRDeg - hipRDeg < 89) hipRDeg = kneeRDeg - 90;
+      ankleRDeg = Math.min(ankleRDeg, -36);
+    }
+    if (hipLDeg < 45 && kneeLDeg >= 70) {
+      if (kneeLDeg - hipLDeg < 89) hipLDeg = kneeLDeg - 90;
+      ankleLDeg = Math.min(ankleLDeg, -36);
+    }
+  }
+
+  // 1. Ritmo Lumbo-Pélvico:
+  // - En levantamiento higiénico en cuclillas (rodillas flexionadas >= 55° y tronco <= 32°),
+  //   la inclinación ocurre casi íntegramente por bisagra coxofemoral (80%) manteniendo la ESPALDA RECTA sin cifosis.
+  // - En flexión de tronco con piernas extendidas (stoop), se distribuye entre pelvis (38%) y curvatura vertebral.
+  const isHygienicStraightBackSquat =
+    pose.stanceMode !== 'seated' &&
+    Math.max(kneeRDeg, kneeLDeg) >= 55 &&
+    pose.trunkFlexionDeg >= 0 &&
+    pose.trunkFlexionDeg <= 32;
+
+  const pelvicTiltDeg =
+    pose.stanceMode === 'seated'
+      ? 0
+      : isHygienicStraightBackSquat
+        ? pose.trunkFlexionDeg * 0.80
+        : pose.trunkFlexionDeg > 0
+          ? pose.trunkFlexionDeg * 0.38
+          : pose.trunkFlexionDeg * 0.18;
+  const pelvicTwistDeg = pose.stanceMode === 'seated' ? 0 : pose.trunkTwistDeg * 0.22;
+
+  setBoneCharRotation(
+    rig,
+    'Hips',
+    makeCharEulerQuat(pelvicTiltDeg * DEG2RAD, -pelvicTwistDeg * DEG2RAD, 0, 'YXZ'),
+  );
+
+  const spinalCurveDeg = isHygienicStraightBackSquat
+    ? pose.trunkFlexionDeg * 0.26
+    : pose.trunkFlexionDeg * 1.24 - pelvicTiltDeg;
+  const trunkFlex = spinalCurveDeg * DEG2RAD;
   const trunkLat = pose.trunkLateralDeg * DEG2RAD;
-  const trunkTwist = pose.trunkTwistDeg * DEG2RAD;
+  const trunkTwist = (pose.trunkTwistDeg - pelvicTwistDeg) * DEG2RAD;
+  const hasSpine2 = rig.bones.has('Spine2');
 
-  setBoneDeltaEuler(rig, 'Spine', trunkFlex * 0.58, -trunkTwist * 0.45, trunkLat * 0.58, 'YXZ');
-  setBoneDeltaEuler(rig, 'Spine1', trunkFlex * 0.42, -trunkTwist * 0.55, trunkLat * 0.42, 'YXZ');
+  if (hasSpine2) {
+    setBoneCharRotation(rig, 'Spine', makeCharEulerQuat(trunkFlex * 0.42, -trunkTwist * 0.34, trunkLat * 0.40, 'YXZ'));
+    setBoneCharRotation(rig, 'Spine1', makeCharEulerQuat(trunkFlex * 0.33, -trunkTwist * 0.33, trunkLat * 0.33, 'YXZ'));
+    setBoneCharRotation(rig, 'Spine2', makeCharEulerQuat(trunkFlex * 0.25, -trunkTwist * 0.33, trunkLat * 0.27, 'YXZ'));
+  } else {
+    setBoneCharRotation(rig, 'Spine', makeCharEulerQuat(trunkFlex * 0.56, -trunkTwist * 0.48, trunkLat * 0.55, 'YXZ'));
+    setBoneCharRotation(rig, 'Spine1', makeCharEulerQuat(trunkFlex * 0.44, -trunkTwist * 0.52, trunkLat * 0.45, 'YXZ'));
+  }
 
-  // 2. Cervical Spine & Head (Neck + Head)
+  // 2. Columna Cervical y Cabeza (Neck + Head)
   const neckFlex = pose.neckFlexionDeg * DEG2RAD;
   const neckLat = pose.neckLateralDeg * DEG2RAD;
   const neckTwist = pose.neckTwistDeg * DEG2RAD;
 
-  setBoneDeltaEuler(rig, 'Neck', neckFlex * 0.74, -neckTwist * 0.65, neckLat * 0.72, 'YXZ');
-  setBoneDeltaEuler(rig, 'Head', neckFlex * 0.26, -neckTwist * 0.35, neckLat * 0.28, 'YXZ');
+  setBoneCharRotation(rig, 'Neck', makeCharEulerQuat(neckFlex * 0.68, -neckTwist * 0.60, neckLat * 0.65, 'YXZ'));
+  setBoneCharRotation(rig, 'Head', makeCharEulerQuat(neckFlex * 0.32, -neckTwist * 0.40, neckLat * 0.35, 'YXZ'));
 
-  // 3. Clavicular / Scapular Girdle + Glenohumeral Shoulders
-  const rShEntry = rig.bones.get('RightShoulder');
-  if (rShEntry) {
-    rShEntry.bone.position.set(
-      rShEntry.restPos.x,
-      rShEntry.restPos.y + (pose.shoulderRElevated ? 0.032 : 0),
-      rShEntry.restPos.z,
-    );
-  }
-  const scapUpR = Math.max(0, Math.max(pose.shoulderRFlexionDeg, shRAbdDeg) - 55) * 0.16 * DEG2RAD;
-  const scapUpL = Math.max(0, Math.max(pose.shoulderLFlexionDeg, shLAbdDeg) - 55) * 0.16 * DEG2RAD;
-  setBoneDeltaEuler(rig, 'RightShoulder', 0, 0, -scapUpR);
-  setBoneDeltaEuler(rig, 'LeftShoulder', 0, 0, scapUpL);
+  // 3. Cintura Escapular y Hombros (RightShoulder/LeftShoulder + RightArm/LeftArm)
+  // Compensar el exceso de inclinación de `Spine2` respecto a la cuerda L5/S1->C7 (`pose.trunkFlexionDeg`)
+  // para que `shoulderRFlexionDeg` y `shoulderLFlexionDeg` representen con exactitud el ángulo respecto al tronco:
+  const spine2WorldPitchDeg = pelvicTiltDeg + spinalCurveDeg;
+  const spineExcessOverChordDeg = spine2WorldPitchDeg - pose.trunkFlexionDeg;
+  const compensatedShRFlexDeg = shRFlexDeg + spineExcessOverChordDeg;
+  const compensatedShLFlexDeg = shLFlexDeg + spineExcessOverChordDeg;
 
-  const crossMidR = pose.forearmRCrossMidline ? 26 * DEG2RAD : 0;
-  setBoneDeltaEuler(
+  const elevClavR =
+    (pose.shoulderRElevated ? 14 * DEG2RAD : 0) +
+    Math.max(0, Math.max(shRFlexDeg, shRAbdDeg) - 60) * 0.22 * DEG2RAD;
+  const elevClavL = Math.max(0, Math.max(shLFlexDeg, shLAbdDeg) - 60) * 0.22 * DEG2RAD;
+
+  setBoneCharRotation(rig, 'RightShoulder', makeCharEulerQuat(0, 0, -elevClavR, 'XYZ'));
+  setBoneCharRotation(rig, 'LeftShoulder', makeCharEulerQuat(0, 0, elevClavL, 'XYZ'));
+
+  const intRotR = pose.forearmRCrossMidline
+    ? 42 * DEG2RAD
+    : shRAbdDeg > 28 && elbRFlexDeg > 55
+      ? -18 * DEG2RAD
+      : 0;
+
+  setBoneCharRotation(
     rig,
     'RightArm',
-    -(pose.shoulderRFlexionDeg * DEG2RAD) * 0.92,
-    crossMidR,
-    -(shRAbdDeg * DEG2RAD) * 0.92 + (pose.forearmRCrossMidline ? 0.30 : 0),
-    'ZXY',
+    makeCharEulerQuat(-compensatedShRFlexDeg * DEG2RAD, intRotR, -shRAbdDeg * DEG2RAD, 'ZXY'),
   );
-  setBoneDeltaEuler(
+  setBoneCharRotation(
     rig,
     'LeftArm',
-    -(pose.shoulderLFlexionDeg * DEG2RAD) * 0.92,
-    0,
-    (shLAbdDeg * DEG2RAD) * 0.92,
-    'ZXY',
+    makeCharEulerQuat(-compensatedShLFlexDeg * DEG2RAD, 0, shLAbdDeg * DEG2RAD, 'ZXY'),
   );
 
-  // 4. Elbow Flexion & Distributed Forearm Pronation/Supination
-  const pronoR = pose.forearmRPronationDeg * DEG2RAD;
-  setBoneDeltaEuler(rig, 'RightForeArm', -elbRFlexDeg * DEG2RAD, pronoR * 0.35, 0, 'XYZ');
-  setBoneDeltaEuler(rig, 'RightForeArmTwist', 0, pronoR * 0.65, 0, 'XYZ');
+  // 4. Codos y Pronosupinación de Antebrazo (RightForeArm / LeftForeArm)
+  const autoPalmDownWristView =
+    focusZone === 'wrist_hand' &&
+    Math.abs(pose.forearmRPronationDeg) < 1 &&
+    (cameraPreset === 'sagittal_right' || cameraPreset === 'sagittal_left' || cameraPreset === 'top');
 
-  setBoneDeltaEuler(rig, 'LeftForeArm', -elbLFlexDeg * DEG2RAD, 0, 0, 'XYZ');
-  setBoneDeltaEuler(rig, 'LeftForeArmTwist', 0, 0, 0, 'XYZ');
+  const isBimanualBoxLikeProp =
+    pose.prop === 'box_load' ||
+    pose.prop === 'bin_to_cart' ||
+    pose.prop === 'pallet_cooler' ||
+    pose.prop === 'conveyor_veg_line' ||
+    pose.prop === 'hopper_sack_pour' ||
+    pose.prop === 'pallet_jack_rack';
 
-  // 5. Wrist Flexion/Extension & Radial/Ulnar Deviation
-  setBoneDeltaEuler(
+  const effectivePronoRDeg = autoPalmDownWristView
+    ? 88
+    : isBimanualBoxLikeProp && Math.abs(pose.forearmRPronationDeg) < 1
+      ? 20
+      : pose.prop === 'bus_driver_seat' && Math.abs(pose.forearmRPronationDeg) < 1
+        ? 18
+        : pose.forearmRPronationDeg;
+
+  const isSymmetricForearmProp =
+    isBimanualBoxLikeProp ||
+    pose.prop === 'bus_driver_seat' ||
+    pose.prop === 'cart_push_dynamo' ||
+    pose.prop === 'cart_pull_dynamo' ||
+    pose.prop === 'office_desk_lateral' ||
+    pose.prop === 'work_desk_support';
+
+  const effectivePronoLDeg = isSymmetricForearmProp ? -effectivePronoRDeg : 0;
+
+  setBoneCharRotation(
+    rig,
+    'RightForeArm',
+    makeCharEulerQuat(-elbRFlexDeg * DEG2RAD, effectivePronoRDeg * DEG2RAD, 0, 'XYZ'),
+  );
+  setBoneCharRotation(
+    rig,
+    'LeftForeArm',
+    makeCharEulerQuat(-elbLFlexDeg * DEG2RAD, effectivePronoLDeg * DEG2RAD, 0, 'XYZ'),
+  );
+
+  // 5. Muñeca: Flexión/Extensión Palmar-Dorsal y Desviación Radial/Cubital (RightHand / LeftHand)
+  setBoneCharRotation(
     rig,
     'RightHand',
-    pose.wristRFlexionDeg * DEG2RAD,
-    0,
-    pose.wristRDeviationDeg * DEG2RAD,
-    'XYZ',
+    makeCharEulerQuat(
+      pose.wristRDeviationDeg * DEG2RAD,
+      0,
+      pose.wristRFlexionDeg * DEG2RAD,
+      'ZXY',
+    ),
   );
-  setBoneDeltaEuler(rig, 'LeftHand', (pose.wristLFlexionDeg ?? 0) * DEG2RAD, 0, 0, 'XYZ');
+  setBoneCharRotation(
+    rig,
+    'LeftHand',
+    makeCharEulerQuat(0, 0, -(pose.wristLFlexionDeg ?? 0) * DEG2RAD, 'ZXY'),
+  );
 
-  // 6. Articulated Hand Grip (Thumb + Fingers Bones)
+  // 6. Dedos de la Mano (Thumb + Index, Middle, Ring, Pinky)
   const gripMode =
     pose.handGripMode ||
     (pose.prop && propUsesGrip(pose.prop) ? 'power_grip' : 'relaxed');
 
-  if (gripMode === 'pinch') {
-    setBoneDeltaEuler(rig, 'RightHandThumb1', -0.45, 0.12, 0.38);
-    setBoneDeltaEuler(rig, 'RightHandThumb2', -0.25, 0, 0.35);
-    setBoneDeltaEuler(rig, 'RightHandFingers1', 0, 0, 0.62);
-    setBoneDeltaEuler(rig, 'RightHandFingers2', 0, 0, 0.72);
+  if (focusZone === 'wrist_hand' && !pose.handGripMode) {
+    curlHandFingers(rig, 'Right', 0.08, 0.06, 0.10);
+    curlHandFingers(rig, 'Left', 0.16, 0.14, 0.16);
+  } else if (gripMode === 'pinch') {
+    curlHandFingers(rig, 'Right', 0.55, 0.65, 0.52);
+    curlHandFingers(rig, 'Left', 0.18, 0.16, 0.18);
   } else if (gripMode === 'power_grip') {
-    setBoneDeltaEuler(rig, 'RightHandThumb1', -0.42, 0.15, 0.45);
-    setBoneDeltaEuler(rig, 'RightHandThumb2', -0.22, 0, 0.42);
-    setBoneDeltaEuler(rig, 'RightHandFingers1', 0, 0, 0.92);
-    setBoneDeltaEuler(rig, 'RightHandFingers2', 0, 0, 1.05);
-    setBoneDeltaEuler(rig, 'LeftHandThumb1', -0.42, -0.15, -0.45);
-    setBoneDeltaEuler(rig, 'LeftHandThumb2', -0.22, 0, -0.42);
-    setBoneDeltaEuler(rig, 'LeftHandFingers1', 0, 0, -0.92);
-    setBoneDeltaEuler(rig, 'LeftHandFingers2', 0, 0, -1.05);
+    curlHandFingers(rig, 'Right', 0.85, 0.95, 0.58);
+    curlHandFingers(rig, 'Left', 0.85, 0.95, 0.58);
   } else {
-    setBoneDeltaEuler(rig, 'RightHandThumb1', -0.14, 0, 0.12);
-    setBoneDeltaEuler(rig, 'RightHandThumb2', -0.08, 0, 0.10);
-    setBoneDeltaEuler(rig, 'RightHandFingers1', 0, 0, 0.18);
-    setBoneDeltaEuler(rig, 'RightHandFingers2', 0, 0, 0.16);
-    setBoneDeltaEuler(rig, 'LeftHandThumb1', -0.14, 0, -0.12);
-    setBoneDeltaEuler(rig, 'LeftHandThumb2', -0.08, 0, -0.10);
-    setBoneDeltaEuler(rig, 'LeftHandFingers1', 0, 0, -0.18);
-    setBoneDeltaEuler(rig, 'LeftHandFingers2', 0, 0, -0.16);
+    curlHandFingers(rig, 'Right', 0.18, 0.16, 0.18);
+    curlHandFingers(rig, 'Left', 0.18, 0.16, 0.18);
   }
 
-  // 7. Lower Limbs (Hips, Knees, Ankles)
-  setBoneDeltaEuler(rig, 'RightUpLeg', -hipRDeg * DEG2RAD, 0, 0);
-  setBoneDeltaEuler(rig, 'RightLeg', kneeRDeg * DEG2RAD, 0, 0);
-  setBoneDeltaEuler(rig, 'RightFoot', -pose.ankleRDorsiflexionDeg * DEG2RAD, 0, 0);
+  // 7. Miembros Inferiores: Caderas, Rodillas y Tobillos
+  // En cuclillas profundas, ligera abducción fisiológica de caderas (~9°) para abrir espacio entre rodillas a los brazos/carga:
+  const squatHipAbdRDeg =
+    pose.stanceMode === 'seated' || pose.stanceMode === 'kneeling'
+      ? 0
+      : Math.min(10, Math.max(0, (kneeRDeg - 48) * 0.13));
+  const squatHipAbdLDeg =
+    pose.stanceMode === 'seated' || pose.stanceMode === 'kneeling'
+      ? 0
+      : Math.min(10, Math.max(0, (kneeLDeg - 48) * 0.13));
 
-  setBoneDeltaEuler(rig, 'LeftUpLeg', -hipLDeg * DEG2RAD, 0, 0);
-  setBoneDeltaEuler(rig, 'LeftLeg', kneeLDeg * DEG2RAD, 0, 0);
-  setBoneDeltaEuler(rig, 'LeftFoot', -pose.ankleLDorsiflexionDeg * DEG2RAD, 0, 0);
+  const localHipRDeg = hipRDeg + pelvicTiltDeg;
+  const localHipLDeg = hipLDeg + pelvicTiltDeg;
+  setBoneCharRotation(
+    rig,
+    'RightUpLeg',
+    makeCharEulerQuat(-localHipRDeg * DEG2RAD, 0, -squatHipAbdRDeg * DEG2RAD, 'ZXY'),
+  );
+  setBoneCharRotation(rig, 'RightLeg', makeCharEulerQuat(kneeRDeg * DEG2RAD, 0, 0, 'XYZ'));
+  setBoneCharRotation(rig, 'RightFoot', makeCharEulerQuat(-ankleRDeg * DEG2RAD, 0, 0, 'XYZ'));
 
-  // 8. Grounding Pelvis Height on Studio Floor (y = 0)
-  const hipsEntry = rig.bones.get('Hips');
-  if (hipsEntry) {
-    rig.avatarContainer.updateMatrixWorld(true);
-    if (pose.stanceMode === 'seated') {
-      hipsEntry.bone.position.set(0, 0.56, 0);
-    } else {
-      const groundCandidates: THREE.Object3D[] = [
-        rig.joints.ankleR,
-        rig.joints.footR,
-        rig.joints.ankleL,
-        rig.joints.footL,
-      ];
-      if (pose.stanceMode === 'kneeling') {
-        groundCandidates.push(rig.joints.kneeR, rig.joints.kneeL);
-      }
-      let minJointY = Infinity;
-      for (const obj of groundCandidates) {
-        obj.getWorldPosition(_tmpWorldVec);
-        if (_tmpWorldVec.y < minJointY) minJointY = _tmpWorldVec.y;
-      }
-      if (Number.isFinite(minJointY)) {
-        // Foot sole thickness below RightToeBase is ~0.014m
-        const desiredLowestJointY = 0.014;
-        const deltaY = desiredLowestJointY - minJointY;
-        hipsEntry.bone.position.set(0, hipsEntry.restPos.y + deltaY, 0);
-      }
-    }
+  setBoneCharRotation(
+    rig,
+    'LeftUpLeg',
+    makeCharEulerQuat(-localHipLDeg * DEG2RAD, 0, squatHipAbdLDeg * DEG2RAD, 'ZXY'),
+  );
+  setBoneCharRotation(rig, 'LeftLeg', makeCharEulerQuat(kneeLDeg * DEG2RAD, 0, 0, 'XYZ'));
+  setBoneCharRotation(rig, 'LeftFoot', makeCharEulerQuat(-ankleLDeg * DEG2RAD, 0, 0, 'XYZ'));
+
+  // 8. Apoyo Podal / de Rodillas sobre el Suelo del Estudio (y = 0)
+  rig.avatarContainer.updateMatrixWorld(true);
+  const groundCandidates: THREE.Object3D[] = [
+    rig.joints.ankleR,
+    rig.joints.footR,
+    rig.joints.ankleL,
+    rig.joints.footL,
+  ];
+  if (pose.stanceMode === 'kneeling') {
+    groundCandidates.push(rig.joints.kneeR, rig.joints.kneeL);
   }
-
+  let minJointY = Infinity;
+  for (const obj of groundCandidates) {
+    obj.getWorldPosition(_tmpWorldVec);
+    if (_tmpWorldVec.y < minJointY) minJointY = _tmpWorldVec.y;
+  }
+  if (Number.isFinite(minJointY)) {
+    const desiredSoleClearanceY = pose.stanceMode === 'kneeling' ? 0.026 : 0.022;
+    rig.avatarContainer.position.y = desiredSoleClearanceY - minJointY;
+  }
   rig.avatarContainer.updateMatrixWorld(true);
 
-  // 9. Update Segment Visibility & Material State
+  // 9. Visibilidad por Segmento y Materiales PBR Limpios
   const activeSegments = new Set<SegmentGroupKey>(FOCUS_ZONE_SEGMENTS[focusZone]);
   const visibleMeshSet = new Set<THREE.SkinnedMesh>();
   (Object.keys(rig.segmentMeshes) as SegmentGroupKey[]).forEach((segKey) => {
@@ -1069,7 +1829,8 @@ function applyPoseToGlbBones(
     }
   });
 
-  const isRulaGroups = pose.highlightGroup === 'rula_groups';
+  const hasSegmentedAvatarMeshes = rig.skinnedMeshes.some((m) => m.name.startsWith('Avatar_'));
+  const isRulaGroups = pose.highlightGroup === 'rula_groups' && hasSegmentedAvatarMeshes;
   for (const sm of rig.skinnedMeshes) {
     sm.visible = visibleMeshSet.has(sm);
     if (!sm.visible) continue;
@@ -1091,7 +1852,7 @@ function applyPoseToGlbBones(
   }
 
   rig.groundShadowMesh.visible =
-    focusZone === 'full_body' || focusZone === 'legs_knees' || focusZone === 'ankle_foot';
+    focusZone !== 'wrist_hand' && focusZone !== 'neck_cervical';
 
   buildSceneProp(rig, pose.prop || 'none', isSoftwareRenderer);
   rig.propsRoot.updateMatrixWorld(true);
@@ -1119,6 +1880,29 @@ function computeVisibleFocusBounds(
     return { center: new THREE.Vector3(0, 0.92, 0), halfExtent: 0.96 };
   }
 
+  if (focusZone === 'full_body' || !rig.skeletonMapped) {
+    const meshBox = new THREE.Box3();
+    for (const sm of rig.skinnedMeshes) {
+      if (!sm.visible) continue;
+      sm.computeBoundingBox();
+      if (sm.boundingBox) {
+        meshBox.union(sm.boundingBox.clone().applyMatrix4(sm.matrixWorld));
+      }
+    }
+    if (rig.propsRoot.children.length > 0) {
+      const propBox = new THREE.Box3().setFromObject(rig.propsRoot);
+      if (!propBox.isEmpty()) meshBox.union(propBox);
+    }
+    if (!meshBox.isEmpty()) {
+      meshBox.min.y = Math.min(meshBox.min.y, 0);
+      const c = new THREE.Vector3();
+      const sz = new THREE.Vector3();
+      meshBox.getCenter(c);
+      meshBox.getSize(sz);
+      return { center: c, halfExtent: Math.max(0.6, Math.max(sz.x, sz.y, sz.z) * 0.54) };
+    }
+  }
+
   const box = new THREE.Box3();
   const jointList = FOCUS_ZONE_JOINTS[focusZone] || FOCUS_ZONE_JOINTS.full_body;
   const pt = new THREE.Vector3();
@@ -1140,29 +1924,19 @@ function computeVisibleFocusBounds(
     const topExtra = jk === 'head' ? 0.20 : padRadius;
     box.expandByPoint(new THREE.Vector3(pt.x + padRadius, pt.y + topExtra, pt.z + padRadius));
   }
-  if (focusZone === 'full_body') {
-    const meshBox = new THREE.Box3();
-    for (const sm of rig.skinnedMeshes) {
-      if (!sm.visible) continue;
-      sm.computeBoundingBox();
-      if (sm.boundingBox) {
-        meshBox.union(sm.boundingBox.clone().applyMatrix4(sm.matrixWorld));
-      }
-    }
-    if (rig.propsRoot.children.length > 0) {
-      const propBox = new THREE.Box3().setFromObject(rig.propsRoot);
-      if (!propBox.isEmpty()) meshBox.union(propBox);
-    }
-    if (!meshBox.isEmpty()) {
-      meshBox.min.y = Math.min(meshBox.min.y, 0);
-      const c = new THREE.Vector3();
-      const s = new THREE.Vector3();
-      meshBox.getCenter(c);
-      meshBox.getSize(s);
-      return { center: c, halfExtent: Math.max(0.6, Math.max(s.x, s.y, s.z) * 0.54) };
-    }
+
+  if (focusZone === 'full_body' && rig.propsRoot.children.length > 0) {
+    const propBox = new THREE.Box3().setFromObject(rig.propsRoot);
+    if (!propBox.isEmpty()) box.union(propBox);
   }
 
+  if (focusZone === 'full_body' || focusZone === 'legs_knees') {
+    box.min.y = Math.min(box.min.y, 0);
+  }
+
+  if (box.isEmpty()) {
+    return { center: new THREE.Vector3(0, 0.92, 0), halfExtent: 0.95 };
+  }
 
   const center = new THREE.Vector3();
   box.getCenter(center);
@@ -1831,7 +2605,14 @@ function renderSingle3DPanelIntoRect(
   engine.scene.background = transparentBg ? null : new THREE.Color(PALETTE.bgHex);
   engine.renderer.setClearColor(PALETTE.bgHex, transparentBg ? 0 : 1);
 
-  const glScale = engine.isSoftwareRenderer ? Math.max(1, dpiScale) : Math.max(2, dpiScale * 1.5);
+  const isMobileViewport =
+    typeof window !== 'undefined' &&
+    (window.innerWidth < 768 || Boolean(window.matchMedia?.('(pointer: coarse)').matches));
+  const glScale = engine.isSoftwareRenderer
+    ? Math.max(1, dpiScale)
+    : isMobileViewport && dpiScale < 1.95
+      ? Math.min(1.55, Math.max(1.15, dpiScale * 1.25))
+      : Math.max(2, dpiScale * 1.5);
   engine.renderer.setSize(Math.round(viewW * glScale), Math.round(viewH * glScale), false);
 
   try {

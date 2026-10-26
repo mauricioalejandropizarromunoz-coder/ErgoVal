@@ -7,6 +7,7 @@ import {
   Eye,
   FileText,
   Sparkles,
+  Thermometer,
   Trash2,
   Video,
   X,
@@ -27,6 +28,7 @@ interface StudyTabWorkspaceProps {
   onOpenReference?: (methodId: MethodId, query?: string) => void;
   onOpenFormulaEditor?: (methodId: MethodId) => void;
   onOpenVideoExtractor?: () => void;
+  onOpenEnvironmentalWorkspace?: (methodId: MethodId) => void;
 }
 
 export function getSeverityStyles(severity: RiskSeverity) {
@@ -67,6 +69,7 @@ export function StudyTabWorkspace({
   onOpenReference,
   onOpenFormulaEditor,
   onOpenVideoExtractor,
+  onOpenEnvironmentalWorkspace,
 }: StudyTabWorkspaceProps) {
   const [showRefPoster, setShowRefPoster] = useState(false);
 
@@ -185,7 +188,13 @@ export function StudyTabWorkspace({
             <span>·</span>
             <span>{catalogItem.chapterRef}</span>
             <span>·</span>
-            <span>Jerarquía Biomecánica Cap. 10: Prioridad {catalogItem.hierarchyOrder}°</span>
+            <span>
+              {catalogItem.category === 'ambiente_termico'
+                ? 'Confort / Estrés Térmico Ambiental (Cap. 7 · No evalúa carga postural)'
+                : catalogItem.category === 'vibraciones'
+                  ? 'Agentes Físicos / Vibraciones Mecánicas (Cap. 8 · No evalúa carga postural)'
+                  : `Jerarquía Biomecánica Cap. 10: Prioridad ${catalogItem.hierarchyOrder}°`}
+            </span>
             {isCustomFormula && (
               <>
                 <span>·</span>
@@ -195,6 +204,19 @@ export function StudyTabWorkspace({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {onOpenEnvironmentalWorkspace &&
+              (catalogItem.category === 'ambiente_termico' || catalogItem.category === 'vibraciones') && (
+                <button
+                  type="button"
+                  onClick={() => onOpenEnvironmentalWorkspace(tab.method)}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded border border-amber-700 bg-amber-700 hover:bg-amber-800 text-xs font-semibold text-white whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                  title="Abrir la pestaña especializada de Confort Térmico (Fanger / WBGT) y Vibraciones con curvas ISO 7730"
+                >
+                  <Thermometer className="w-3.5 h-3.5" />
+                  Abrir Pestaña Térmico · Fanger / Físicos
+                </button>
+              )}
+
             {onOpenVideoExtractor &&
               (tab.method === MethodId.NIOSH ||
                 tab.method === MethodId.REBA ||
@@ -288,11 +310,13 @@ export function StudyTabWorkspace({
           <LoadRepetitiveSwitch tab={tab} namPoints={result.namPoints} onChange={onChange} />
           <EnvironmentFormsSwitch tab={tab} onChange={onChange} />
 
-          {/* Registro Fotográfico y Goniómetro Digital de 3 puntos */}
-          <PhotoGoniometer
-            photos={tab.photos}
-            onChange={(photos) => onChange({ ...tab, photos })}
-          />
+          {/* Registro Fotográfico y Goniómetro Digital de 3 puntos (solo para métodos biomecánicos/posturales) */}
+          {catalogItem.category !== 'ambiente_termico' && catalogItem.category !== 'vibraciones' && (
+            <PhotoGoniometer
+              photos={tab.photos}
+              onChange={(photos) => onChange({ ...tab, photos })}
+            />
+          )}
         </div>
 
         {/* Panel Lateral Adherente de Resultados y Desglose Matemático */}

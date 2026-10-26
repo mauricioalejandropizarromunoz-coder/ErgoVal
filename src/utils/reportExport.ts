@@ -42,6 +42,87 @@ interface NormalizedImageAsset {
   heightPx: number;
 }
 
+const SUBSCRIPT_MAP: Record<string, string> = {
+  '₀': '0',
+  '₁': '1',
+  '₂': '2',
+  '₃': '3',
+  '₄': '4',
+  '₅': '5',
+  '₆': '6',
+  '₇': '7',
+  '₈': '8',
+  '₉': '9',
+};
+
+/**
+ * Normaliza cualquier cadena a caracteres WinAnsi / Latin-1 (charCode <= 255) compatibles con
+ * la fuente Helvetica nativa de jsPDF (evitando que símbolos Unicode > 255 como '—', '↔', '→', '≤', '≥'
+ * activen codificación UTF-16BE y dupliquen el ancho provocando desborde fuera de las tablas)
+ * e inserta puntos de corte seguros en identificadores largos sin espacios.
+ */
+function sanitizePdfText(raw: unknown): string {
+  if (raw === null || raw === undefined) return '';
+  let text = String(raw)
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/\t/g, '  ')
+    .replace(/\u2194/g, '<->')
+    .replace(/\u2192/g, '->')
+    .replace(/\u2190/g, '<-')
+    .replace(/\u2191/g, '^')
+    .replace(/\u2193/g, 'v')
+    .replace(/\u2264/g, '<=')
+    .replace(/\u2265/g, '>=')
+    .replace(/\u2260/g, '!=')
+    .replace(/\u2248/g, '~')
+    .replace(/[\u2212\u2013\u2014\u2015]/g, '-')
+    .replace(/[\u2022\u25cf\u25aa\u25e6]/g, '\u00b7')
+    .replace(/\u25b8/g, '>')
+    .replace(/\u2026/g, '...')
+    .replace(/[\u201c\u201d\u201e]/g, '"')
+    .replace(/[\u2018\u2019\u201a]/g, "'")
+    .replace(/\u03b1/g, 'alfa')
+    .replace(/\u03b2/g, 'beta')
+    .replace(/\u0394/g, 'Delta')
+    .replace(/[\u03a3\u2211]/g, 'Suma')
+    .replace(/\u221a/g, 'sqrt')
+    .replace(/[₀₁₂₃₄₅₆₇₈₉]/g, (m) => SUBSCRIPT_MAP[m] || '');
+
+  // Garantizar charCode <= 255 (conserva acentos españoles áéíóúñü¿¡°±²³·×©)
+  let clean = '';
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code === 10 || (code >= 32 && code <= 255)) {
+      clean += text[i];
+    } else if (code > 255) {
+      const decomp = text[i].normalize('NFKD');
+      for (let j = 0; j < decomp.length; j++) {
+        const dc = decomp.charCodeAt(j);
+        if (dc >= 32 && dc <= 255) clean += decomp[j];
+      }
+    }
+  }
+
+  // Evitar palabras/identificadores larguísimos sin espacios (ej. nombres de archivo o fórmulas compactas)
+  return clean
+    .split('\n')
+    .map((line) =>
+      line
+        .split(' ')
+        .map((token) => {
+          if (token.length <= 26) return token;
+          const withBreaks = token.replace(/([_/|])/g, '$1 ');
+          return withBreaks
+            .split(' ')
+            .map((sub) => (sub.length > 30 ? sub.replace(/(.{26})/g, '$1 ') : sub))
+            .join(' ');
+        })
+        .join(' '),
+    )
+    .join('\n');
+}
+
 async function normalizeDataUrlToPng(dataUrl: string, maxWidthPx = 900): Promise<NormalizedImageAsset | null> {
   return new Promise((resolve) => {
     const img = new Image();
@@ -257,44 +338,162 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
     return (anyDoc.lastAutoTable?.finalY ?? currentY) + 6;
   };
 
-  // SECCIÓN 1: IDENTIFICACIÓN INSTITUCIONAL Y DEL EVALUADOR
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(12.5);
-  doc.setTextColor(15, 23, 42);
-  doc.text('INFORME TÉCNICO DE EVALUACIÓN ERGONÓMICA DE PUESTO DE TRABAJO', margin, currentY);
-  currentY += 5.5;
+  const runBoundedTable = (options: Parameters<typeof autoTable>[1]) => {
+    const cleanRows = (rows: unknown): string[][] | undefined => {
+      if (!Array.isArray(rows)) return undefined;
+      return rows.map((row) =>
+        Array.isArray(row) ? row.map((cell) => sanitizePdfText(cell)) : [sanitizePdfText(row)],
+      );
+    };
 
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8.8);
-  doc.setTextColor(71, 85, 105);
+    autoTable(doc, {
+      ...options,
+      margin: safeTableMargin,
+      tableWidth: contentWidth,
+      styles: {
+        overflow: 'linebreak',
+        cellWidth: 'wrap',
+        valign: 'top',
+        ...(options.styles || {}),
+        // Forzar linebreak y ancho automático acotado por columnStyles/tableWidth
+      },
+      head: cleanRows(options.head),
+      body: cleanRows(options.body) || [],
+    });
+    currentY = getLastAutoTableY();
+  };
+
+  // Sobrescribir cellWidth: 'auto' por defecto dentro de styles para nunca expandir fuera de contentWidth
+  const runPdfTable = (options: Parameters<typeof autoTable>[1]) => {
+    const cleanRows = (rows: unknown): string[][] | undefined => {
+      if (!Array.isArray(rows)) return undefined;
+      return rows.map((row) =>
+        Array.isArray(row) ? row.map((cell) => sanitizePdfText(cell)) : [sanitizePdfText(row)],
+      );
+    };
+
+    autoTable(doc, {
+      ...options,
+      margin: safeTableMargin,
+      tableWidth: contentWidth,
+      styles: {
+        overflow: 'linebreak',
+        cellWidth: 'auto',
+        valign: 'top',
+        ...(options.styles || {}),
+      },
+      head: cleanRows(options.head),
+      body: cleanRows(options.body) || [],
+    });
+    currentY = getLastAutoTableY();
+  };
+  void runBoundedTable;
+
+  // ALERTA ROJA SUPERIOR DE GRAVEDAD EVALUADA (ARRIBA DEL TÍTULO PRINCIPAL DEL INFORME)
+  const topStudy = prioritized[0];
+  const topSeverity: RiskSeverity = topStudy?.result.severity || 'bajo';
+  const isCriticalOrHigh =
+    trafficSummary.immediateAlerts.length > 0 ||
+    trafficSummary.redCount > 0 ||
+    topSeverity === 'muy_alto' ||
+    topSeverity === 'alto';
+  const isModerate = !isCriticalOrHigh && (trafficSummary.amberCount > 0 || topSeverity === 'moderado');
+
+  const topAlertHeaderText = isCriticalOrHigh
+    ? `ALERTA CRÍTICA DE RIESGO ERGONÓMICO - GRAVEDAD: ${(topStudy?.result.riskLabel || 'MUY ALTA / ALTA').toUpperCase()} (ACCIÓN INMEDIATA)`
+    : isModerate
+      ? `ALERTA PREVENTIVA DE GRAVEDAD ERGONÓMICA - NIVEL: ${(topStudy?.result.riskLabel || 'MODERADO').toUpperCase()}`
+      : 'ESTADO ERGONÓMICO DEL PUESTO EVALUADO - GRAVEDAD BAJA / RIESGO CONTROLADO';
+
+  const topAlertSummaryText = isCriticalOrHigh
+    ? [
+        topStudy
+          ? `Hallazgo de mayor gravedad: ${topStudy.tab.tabLabel} -> ${topStudy.result.primaryScoreText} (${topStudy.result.riskLabel} - ${topStudy.result.actionLevelText}).`
+          : '',
+        trafficSummary.immediateAlerts.length > 0
+          ? `Indicadores críticos fuera de norma (${trafficSummary.immediateAlerts.length} en Semáforo Rojo): ${trafficSummary.immediateAlerts
+              .slice(0, 3)
+              .map((a) => `${a.indicator} [${a.measuredValue}]`)
+              .join(' | ')}. Plazo de intervención exigido: ${topStudy?.tab.implementationDeadline || 'Inmediato'}.`
+          : 'Se superan los umbrales admisibles de carga biomecánica; se requiere rediseño técnico prioritario del puesto.',
+      ]
+        .filter(Boolean)
+        .join('\n')
+    : isModerate
+      ? `Gravedad máxima relevada: ${topStudy?.result.primaryScoreText || 'Moderada'} (${topStudy?.result.riskLabel || 'Riesgo Moderado'}). Se registran ${trafficSummary.amberCount} indicador(es) en Semáforo Ámbar que requieren mejoras programadas en ingeniería u organización.`
+      : 'Todos los factores biomecánicos y métodos normativos evaluados se encuentran dentro de rangos seguros (Semáforo Verde).';
+
+  runPdfTable({
+    startY: currentY,
+    theme: 'grid',
+    columnStyles: { 0: { cellWidth: contentWidth } },
+    headStyles: {
+      fillColor: isCriticalOrHigh || isModerate ? [185, 28, 28] : [21, 128, 61],
+      textColor: [255, 255, 255],
+      fontSize: 8.6,
+      fontStyle: 'bold',
+      cellPadding: 2.2,
+    },
+    bodyStyles: {
+      fillColor: isCriticalOrHigh || isModerate ? [254, 226, 226] : [240, 253, 244],
+      textColor: isCriticalOrHigh || isModerate ? [127, 29, 29] : [20, 83, 45],
+      fontSize: 8.0,
+      fontStyle: 'bold',
+      cellPadding: 2.3,
+      lineColor: isCriticalOrHigh || isModerate ? [220, 38, 38] : [134, 239, 172],
+      lineWidth: 0.35,
+    },
+    head: [[topAlertHeaderText]],
+    body: [[topAlertSummaryText]],
+  });
+
+  // SECCIÓN 1: IDENTIFICACIÓN INSTITUCIONAL Y DEL EVALUADOR
+  ensureSpace(22);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(12.2);
+  doc.setTextColor(15, 23, 42);
   doc.text(
-    'Desarrollado conforme a metodologías ergonómicas validadas (Capítulos 4 a 10 — Protocolo de Evaluación Integral)',
+    sanitizePdfText('INFORME TÉCNICO DE EVALUACIÓN ERGONÓMICA DE PUESTO DE TRABAJO'),
     margin,
     currentY,
   );
-  currentY += 4.5;
+  currentY += 5.2;
 
-  autoTable(doc, {
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.6);
+  doc.setTextColor(71, 85, 105);
+  doc.text(
+    sanitizePdfText(
+      'Desarrollado conforme a metodologías ergonómicas validadas (Capítulos 4 a 10 - Protocolo de Evaluación Integral)',
+    ),
+    margin,
+    currentY,
+  );
+  currentY += 4.2;
+
+  runPdfTable({
     startY: currentY,
-    margin: safeTableMargin,
     theme: 'grid',
-    headStyles: { fillColor: [15, 23, 42], textColor: 255, fontSize: 8.5, fontStyle: 'bold' },
-    bodyStyles: { fontSize: 8.3, textColor: [30, 41, 59], cellPadding: 2.3 },
+    columnStyles: {
+      0: { cellWidth: contentWidth / 2 },
+      1: { cellWidth: contentWidth / 2 },
+    },
+    headStyles: { fillColor: [15, 23, 42], textColor: 255, fontSize: 8.4, fontStyle: 'bold' },
+    bodyStyles: { fontSize: 8.1, textColor: [30, 41, 59], cellPadding: 2.2 },
     head: [['1. DATOS DE LA EMPRESA EVALUADA', '2. DATOS DEL PROFESIONAL EVALUADOR']],
     body: [
       [
-        `Razón Social: ${general.companyName || '—'}\nCUIT / ID Fiscal: ${general.companyTaxId || '—'}\nActividad: ${general.companyActivity || '—'}\nDomicilio: ${general.companyAddress || '—'}\nDotación Total: ${general.companyTotalWorkers} trabajadores`,
-        `Evaluador: ${general.evaluatorName || '—'}\nTítulo: ${general.evaluatorTitle || '—'}\nMatrícula: ${general.evaluatorLicense || '—'}\nRegistro Ergonomía: ${general.evaluatorRegistry || '—'}\nRelevamiento: ${general.evaluationDate} | Emisión: ${general.reportDate}`,
+        `Razón Social: ${general.companyName || '-'}\nCUIT / ID Fiscal: ${general.companyTaxId || '-'}\nActividad: ${general.companyActivity || '-'}\nDomicilio: ${general.companyAddress || '-'}\nDotación Total: ${general.companyTotalWorkers} trabajadores`,
+        `Evaluador: ${general.evaluatorName || '-'}\nTítulo: ${general.evaluatorTitle || '-'}\nMatrícula: ${general.evaluatorLicense || '-'}\nRegistro Ergonomía: ${general.evaluatorRegistry || '-'}\nRelevamiento: ${general.evaluationDate} | Emisión: ${general.reportDate}`,
       ],
     ],
   });
-  currentY = getLastAutoTableY();
 
   // ADVERTENCIA DE RESPONSABILIDAD PROFESIONAL Y COPYRIGHT
-  autoTable(doc, {
+  runPdfTable({
     startY: currentY,
-    margin: safeTableMargin,
     theme: 'plain',
+    columnStyles: { 0: { cellWidth: contentWidth } },
     styles: {
       fillColor: [248, 250, 252],
       textColor: [71, 85, 105],
@@ -305,11 +504,10 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
     },
     body: [
       [
-        `AVISO DE RESPONSABILIDAD TÉCNICA Y COPYRIGHT:\n${PROFESSIONAL_DISCLAIMER_TEXT}\n© Mauricio Alejandro Pizarro Muñoz — Software ErgoEval. Todos los derechos reservados.`,
+        `AVISO DE RESPONSABILIDAD TÉCNICA Y COPYRIGHT:\n${PROFESSIONAL_DISCLAIMER_TEXT}\n© Mauricio Alejandro Pizarro Muñoz - Software ErgoEval. Todos los derechos reservados.`,
       ],
     ],
   });
-  currentY = getLastAutoTableY();
 
   // SECCIÓN 2: DESCRIPCIÓN DEL PUESTO Y PELIGROS IDENTIFICADOS
   const activeHazardsList = [
@@ -322,88 +520,88 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
     .filter(Boolean)
     .join(' · ');
 
-  autoTable(doc, {
+  runPdfTable({
     startY: currentY,
-    margin: safeTableMargin,
     theme: 'grid',
-    headStyles: { fillColor: [2, 132, 199], textColor: 255, fontSize: 8.5, fontStyle: 'bold' },
-    bodyStyles: { fontSize: 8.3, textColor: [30, 41, 59], cellPadding: 2.2 },
-    head: [['3. DESCRIPCIÓN TÉCNICA DEL PUESTO DE TRABAJO EVALUADO', 'DETALLE RELEVADO']],
-    columnStyles: { 0: { cellWidth: 52, fontStyle: 'bold' } },
+    headStyles: { fillColor: [2, 132, 199], textColor: 255, fontSize: 8.4, fontStyle: 'bold' },
+    bodyStyles: { fontSize: 8.1, textColor: [30, 41, 59], cellPadding: 2.2 },
+    head: [['3. DESCRIPCIÓN TÉCNICA DEL PUESTO', 'DETALLE RELEVADO']],
+    columnStyles: {
+      0: { cellWidth: 50, fontStyle: 'bold' },
+      1: { cellWidth: contentWidth - 50 },
+    },
     body: [
-      ['Puesto de Trabajo', `${general.workstationName || '—'} (Sector: ${general.department || '—'})`],
+      ['Puesto de Trabajo', `${general.workstationName || '-'} (Sector: ${general.department || '-'})`],
       [
         'Personal y Jornada',
-        `${general.exposedWorkersCount} trabajador(es) expuesto(s) · Jornada: ${general.shiftDurationHours} h/día · Supervisor: ${general.supervisorName || '—'}`,
+        `${general.exposedWorkersCount} trabajador(es) expuesto(s) · Jornada: ${general.shiftDurationHours} h/día · Supervisor: ${general.supervisorName || '-'}`,
       ],
-      ['Turnos y Pausas', general.workScheduleAndBreaks || '—'],
-      ['Descripción del Puesto', general.workstationDescription || '—'],
-      ['Tareas del Ciclo', general.mainTasks || '—'],
-      ['Equipos y Mobiliario', general.equipmentAndFurniture || '—'],
+      ['Turnos y Pausas', general.workScheduleAndBreaks || '-'],
+      ['Descripción del Puesto', general.workstationDescription || '-'],
+      ['Tareas del Ciclo', general.mainTasks || '-'],
+      ['Equipos y Mobiliario', general.equipmentAndFurniture || '-'],
       [
         'Antecedentes / Lesiones',
         general.previousInjuriesOrSymptoms
-          ? `SÍ — ${general.previousInjuriesDetail || 'Sintomatología osteomuscular registrada'}`
+          ? `SÍ - ${general.previousInjuriesDetail || 'Sintomatología osteomuscular registrada'}`
           : 'Sin antecedentes de lesiones o manifestaciones clínicas reportadas',
       ],
       ['Factores Identificados (Paso 1)', activeHazardsList || 'Evaluación preventiva general'],
     ],
   });
-  currentY = getLastAutoTableY();
 
   // SECCIÓN 3: ALERTA DE ATENCIÓN INMEDIATA + TABLA SEMÁFORO DE COLORES
   ensureSpace(42);
   if (trafficSummary.immediateAlerts.length > 0) {
-    autoTable(doc, {
+    runPdfTable({
       startY: currentY,
-      margin: safeTableMargin,
       theme: 'grid',
+      columnStyles: { 0: { cellWidth: contentWidth } },
       headStyles: {
         fillColor: [185, 28, 28],
         textColor: [255, 255, 255],
-        fontSize: 8.8,
+        fontSize: 8.6,
         fontStyle: 'bold',
       },
       bodyStyles: {
         fillColor: [254, 242, 242],
         textColor: [127, 29, 29],
-        fontSize: 8.1,
-        cellPadding: 2.3,
+        fontSize: 8.0,
+        cellPadding: 2.2,
         lineColor: [252, 165, 165],
       },
       head: [
         [
-          `ALERTA ERGONÓMICA DE ATENCIÓN INMEDIATA — ${trafficSummary.immediateAlerts.length} HALLAZGO(S) EN ZONA CRÍTICA (SEMÁFORO ROJO)`,
+          `ALERTA ERGONÓMICA DE ATENCIÓN INMEDIATA - ${trafficSummary.immediateAlerts.length} HALLAZGO(S) EN ZONA CRÍTICA (SEMÁFORO ROJO)`,
         ],
       ],
       body: trafficSummary.immediateAlerts.map((al, idx) => [
-        `${idx + 1}. ${al.indicator} — Medido: ${al.measuredValue} (Límite normativo: ${al.normativeThreshold}).\nAcción inmediata requerida (${al.deadline}): ${al.actionRequired}`,
+        `${idx + 1}. ${al.indicator} - Medido: ${al.measuredValue} (Límite normativo: ${al.normativeThreshold}).\nAcción inmediata requerida (${al.deadline}): ${al.actionRequired}`,
       ]),
     });
-    currentY = getLastAutoTableY();
   } else {
     const isAmber = trafficSummary.amberCount > 0;
-    autoTable(doc, {
+    runPdfTable({
       startY: currentY,
-      margin: safeTableMargin,
       theme: 'grid',
+      columnStyles: { 0: { cellWidth: contentWidth } },
       headStyles: {
         fillColor: isAmber ? [180, 83, 9] : [21, 128, 61],
         textColor: [255, 255, 255],
-        fontSize: 8.5,
+        fontSize: 8.4,
         fontStyle: 'bold',
       },
       bodyStyles: {
         fillColor: isAmber ? [254, 252, 232] : [240, 253, 244],
         textColor: isAmber ? [120, 53, 15] : [20, 83, 45],
-        fontSize: 8.1,
+        fontSize: 8.0,
         cellPadding: 2.2,
       },
       head: [
         [
           isAmber
-            ? `AVISO PREVENTIVO — SIN ALERTAS ROJAS INMEDIATAS (${trafficSummary.amberCount} INDICADOR(ES) EN ÁMBAR)`
-            : 'ESTADO DE CONTROL ERGONÓMICO — SIN ALERTAS DE ATENCIÓN INMEDIATA (TODOS LOS INDICADORES EN VERDE)',
+            ? `AVISO PREVENTIVO - SIN ALERTAS ROJAS INMEDIATAS (${trafficSummary.amberCount} INDICADOR(ES) EN ÁMBAR)`
+            : 'ESTADO DE CONTROL ERGONÓMICO - SIN ALERTAS DE ATENCIÓN INMEDIATA (TODOS LOS INDICADORES EN VERDE)',
         ],
       ],
       body: [
@@ -414,7 +612,6 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
         ],
       ],
     });
-    currentY = getLastAutoTableY();
   }
 
   ensureSpace(44);
@@ -422,24 +619,25 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
   doc.setFontSize(10);
   doc.setTextColor(15, 23, 42);
   doc.text(
-    `4. TABLA SEMÁFORO DE CONTROL ERGONÓMICO (Rojo: ${trafficSummary.redCount} · Ámbar: ${trafficSummary.amberCount} · Verde: ${trafficSummary.greenCount})`,
+    sanitizePdfText(
+      `4. TABLA SEMÁFORO DE CONTROL ERGONÓMICO (Rojo: ${trafficSummary.redCount} · Ámbar: ${trafficSummary.amberCount} · Verde: ${trafficSummary.greenCount})`,
+    ),
     margin,
     currentY,
   );
   currentY += 3.5;
 
-  autoTable(doc, {
+  runPdfTable({
     startY: currentY,
-    margin: safeTableMargin,
     theme: 'grid',
-    headStyles: { fillColor: [15, 23, 42], textColor: 255, fontSize: 7.8, fontStyle: 'bold' },
-    bodyStyles: { fontSize: 7.6, textColor: [30, 41, 59], cellPadding: 2 },
+    headStyles: { fillColor: [15, 23, 42], textColor: 255, fontSize: 7.7, fontStyle: 'bold' },
+    bodyStyles: { fontSize: 7.5, textColor: [30, 41, 59], cellPadding: 2 },
     columnStyles: {
-      0: { cellWidth: 28, fontStyle: 'bold' },
+      0: { cellWidth: 26, fontStyle: 'bold' },
       1: { cellWidth: 42 },
-      2: { cellWidth: 34, fontStyle: 'bold' },
-      3: { cellWidth: 30 },
-      4: { cellWidth: contentWidth - 134 },
+      2: { cellWidth: 32, fontStyle: 'bold' },
+      3: { cellWidth: 28 },
+      4: { cellWidth: contentWidth - 128 },
     },
     head: [['Semáforo', 'Dimensión / Método', 'Valor Medido', 'Límite Normativo', 'Acción Requerida y Plazo']],
     body: trafficSummary.rows.map((r) => [
@@ -465,28 +663,38 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
         if (rowData) {
           const pal = trafficLightPalette(rowData.color);
           doc.setFillColor(pal.dotRgb[0], pal.dotRgb[1], pal.dotRgb[2]);
-          doc.circle(hookData.cell.x + 3.6, hookData.cell.y + hookData.cell.height / 2, 1.5, 'F');
+          doc.circle(hookData.cell.x + 3.4, hookData.cell.y + hookData.cell.height / 2, 1.4, 'F');
         }
       }
     },
   });
-  currentY = getLastAutoTableY();
 
   // SECCIÓN 4: RESUMEN EJECUTIVO Y TABLA DE PRIORIZACIÓN (CAPÍTULO 10)
   ensureSpace(42);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(10);
   doc.setTextColor(15, 23, 42);
-  doc.text('5. RESUMEN EJECUTIVO Y JERARQUIZACIÓN BIOMECÁNICA DE INTERVENCIONES', margin, currentY);
+  doc.text(
+    sanitizePdfText('5. RESUMEN EJECUTIVO Y JERARQUIZACIÓN BIOMECÁNICA DE INTERVENCIONES'),
+    margin,
+    currentY,
+  );
   currentY += 3.5;
 
-  autoTable(doc, {
+  runPdfTable({
     startY: currentY,
-    margin: safeTableMargin,
     theme: 'grid',
-    headStyles: { fillColor: [30, 41, 59], textColor: 255, fontSize: 7.9, fontStyle: 'bold' },
-    bodyStyles: { fontSize: 7.9, textColor: [30, 41, 59], cellPadding: 2 },
-    head: [['Prioridad', 'Pestaña / Subtarea', 'Método', 'Resultado', 'Nivel de Riesgo', 'Plazo Propuesto']],
+    headStyles: { fillColor: [30, 41, 59], textColor: 255, fontSize: 7.7, fontStyle: 'bold' },
+    bodyStyles: { fontSize: 7.6, textColor: [30, 41, 59], cellPadding: 2 },
+    columnStyles: {
+      0: { cellWidth: 15, fontStyle: 'bold' },
+      1: { cellWidth: 50 },
+      2: { cellWidth: 29 },
+      3: { cellWidth: 34, fontStyle: 'bold' },
+      4: { cellWidth: 28 },
+      5: { cellWidth: contentWidth - 156 },
+    },
+    head: [['Prior.', 'Pestaña / Subtarea', 'Método', 'Resultado', 'Nivel de Riesgo', 'Plazo Propuesto']],
     body: prioritized.map((p) => [
       `#${p.rank}`,
       `${p.tab.tabLabel}\n${p.tab.taskEvaluated || ''}`,
@@ -496,12 +704,13 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
       p.tab.implementationDeadline,
     ]),
   });
-  currentY = getLastAutoTableY();
 
   // Síntesis ejecutiva escrita con control estricto de salto de página por párrafo
-  const execParagraphs = executiveSummary.split('\n\n').filter((p) => p.trim().length > 0);
+  const execParagraphs = sanitizePdfText(executiveSummary)
+    .split('\n\n')
+    .filter((p) => p.trim().length > 0);
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8.6);
+  doc.setFontSize(8.5);
   doc.setTextColor(30, 41, 59);
   for (const para of execParagraphs) {
     const lines = doc.splitTextToSize(para.trim(), contentWidth - 4);
@@ -528,18 +737,22 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
     doc.setFillColor(241, 245, 249);
     doc.rect(margin, currentY - 4, contentWidth, 14, 'F');
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(10.5);
+    doc.setFontSize(10.2);
     doc.setTextColor(15, 23, 42);
     const studyTitleLine = doc.splitTextToSize(
-      `ESTUDIO ${i + 1} DE ${tabs.length}: ${tab.tabLabel.toUpperCase()}`,
+      sanitizePdfText(`ESTUDIO ${i + 1} DE ${tabs.length}: ${tab.tabLabel.toUpperCase()}`),
       contentWidth - 6,
     )[0];
     doc.text(studyTitleLine, margin + 3, currentY + 1.5);
 
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8.3);
+    doc.setFontSize(8.2);
     doc.setTextColor(71, 85, 105);
-    doc.text(`${catalog.fullName} (${catalog.chapterRef})`, margin + 3, currentY + 7);
+    const studySubtitleLine = doc.splitTextToSize(
+      sanitizePdfText(`${catalog.fullName} (${catalog.chapterRef})`),
+      contentWidth - 6,
+    )[0];
+    doc.text(studySubtitleLine, margin + 3, currentY + 7);
     currentY += 14;
 
     const summaryBodyRows: string[][] = [
@@ -548,7 +761,7 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
       ['Instrumental / Relevamiento', tab.instrumentsUsed || 'Observación directa y medición angular'],
       [
         'Formulación Aplicada',
-        `${getMethodFormulaProfile(tab.method).expressions.map((e) => `${e.symbol} = ${e.expression}`).join('  |  ')}${
+        `${getMethodFormulaProfile(tab.method).expressions.map((e) => `${e.symbol} = ${e.expression}`).join(' | ')}${
           isMethodFormulaModified(tab.method) ? ' (Fórmula personalizada activa)' : ''
         }`,
       ],
@@ -556,20 +769,22 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
         'Resultado Principal',
         `${res.primaryScoreText}${res.secondaryScoreText ? ` (${res.secondaryScoreText})` : ''}`,
       ],
-      ['Nivel de Riesgo y Acción', `${res.riskLabel.toUpperCase()} — ${res.actionLevelText}`],
+      ['Nivel de Riesgo y Acción', `${res.riskLabel.toUpperCase()} - ${res.actionLevelText}`],
     ];
 
     if (trajectoryNote) {
-      summaryBodyRows.push(['Sentido y Dualidad Origen ↔ Destino', trajectoryNote]);
+      summaryBodyRows.push(['Sentido Origen <-> Destino', trajectoryNote]);
     }
 
     // Ficha resumen de la pestaña
-    autoTable(doc, {
+    runPdfTable({
       startY: currentY,
-      margin: safeTableMargin,
       theme: 'grid',
-      bodyStyles: { fontSize: 8.3, textColor: [30, 41, 59], cellPadding: 2.2 },
-      columnStyles: { 0: { cellWidth: 48, fontStyle: 'bold', fillColor: [248, 250, 252] } },
+      bodyStyles: { fontSize: 8.1, textColor: [30, 41, 59], cellPadding: 2.1 },
+      columnStyles: {
+        0: { cellWidth: 48, fontStyle: 'bold', fillColor: [248, 250, 252] },
+        1: { cellWidth: contentWidth - 48 },
+      },
       body: summaryBodyRows,
       didParseCell: (hookData) => {
         if (hookData.section === 'body' && hookData.row.index === 5 && hookData.column.index === 1) {
@@ -578,34 +793,41 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
         }
       },
     });
-    currentY = getLastAutoTableY();
 
-    // Tabla de desglose técnico de variables y fórmulas
-    autoTable(doc, {
+    // Tabla de desglose técnico de variables y fórmulas con anchos estrictos por columna
+    runPdfTable({
       startY: currentY,
-      margin: safeTableMargin,
       theme: 'striped',
-      headStyles: { fillColor: [15, 23, 42], textColor: 255, fontSize: 8.1, fontStyle: 'bold' },
-      bodyStyles: { fontSize: 8.0, textColor: [30, 41, 59], cellPadding: 2 },
+      headStyles: { fillColor: [15, 23, 42], textColor: 255, fontSize: 8.0, fontStyle: 'bold' },
+      bodyStyles: { fontSize: 7.8, textColor: [30, 41, 59], cellPadding: 2 },
+      columnStyles: {
+        0: { cellWidth: 60, fontStyle: 'bold' },
+        1: { cellWidth: 42 },
+        2: { cellWidth: contentWidth - 102 },
+      },
       head: [['Parámetro / Factor del Método', 'Valor Calculado', 'Referencia / Criterio Normativo']],
-      body: res.breakdownRows.map((r) => [r.parameter, r.value, r.reference || '—']),
+      body: res.breakdownRows.map((r) => [r.parameter, r.value, r.reference || '-']),
     });
-    currentY = getLastAutoTableY();
 
     // Si el método tiene tabla de datos cargada (OWAS, WBGT multizona, ISO 2631, ISO 5349)
     const seriesTable = extractRawSeriesRows(tab);
     if (seriesTable && seriesTable.rows.length > 0) {
       ensureSpace(30);
-      autoTable(doc, {
+      const colCount = Math.max(1, seriesTable.headers.length);
+      const eachW = contentWidth / colCount;
+      const dynCols: Record<number, { cellWidth: number }> = {};
+      for (let c = 0; c < colCount; c++) {
+        dynCols[c] = { cellWidth: eachW };
+      }
+      runPdfTable({
         startY: currentY,
-        margin: safeTableMargin,
         theme: 'grid',
-        headStyles: { fillColor: [51, 65, 85], textColor: 255, fontSize: 7.8, fontStyle: 'bold' },
-        bodyStyles: { fontSize: 7.8, textColor: [30, 41, 59], cellPadding: 1.8 },
+        columnStyles: dynCols,
+        headStyles: { fillColor: [51, 65, 85], textColor: 255, fontSize: 7.6, fontStyle: 'bold' },
+        bodyStyles: { fontSize: 7.5, textColor: [30, 41, 59], cellPadding: 1.8 },
         head: [seriesTable.headers],
         body: seriesTable.rows,
       });
-      currentY = getLastAutoTableY();
     }
 
     // Fotografías y Reconstrucciones 3D en grilla enmarcada de 2 columnas SIN SOLAPAMIENTO
@@ -624,16 +846,20 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
             : '';
         preparedPhotos.push({
           asset,
-          fullCaption: `${photo.caption}${angleSummary}`,
+          fullCaption: sanitizePdfText(`${photo.caption}${angleSummary}`),
         });
       }
 
       if (preparedPhotos.length > 0) {
         ensureSpace(78);
         doc.setFont('helvetica', 'bold');
-        doc.setFontSize(9.3);
+        doc.setFontSize(9.2);
         doc.setTextColor(15, 23, 42);
-        doc.text('Registro Fotográfico, Fotogramas Críticos y Modelización 3D:', margin, currentY);
+        doc.text(
+          sanitizePdfText('Registro Fotográfico, Fotogramas Críticos y Modelización 3D:'),
+          margin,
+          currentY,
+        );
         currentY += 4;
 
         const gapMm = 5;
@@ -647,12 +873,12 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
             : preparedPhotos.slice(pIdx, pIdx + 2);
 
           doc.setFont('helvetica', 'italic');
-          doc.setFontSize(7.6);
+          doc.setFontSize(7.4);
           const captionLinesList = rowItems.map((item) =>
             doc.splitTextToSize(item.fullCaption, colW - 6),
           );
           const maxCaptionLines = Math.max(...captionLinesList.map((lines) => lines.length), 1);
-          const cardH = imgBoxH + 5 + maxCaptionLines * 3.5 + 3.5;
+          const cardH = imgBoxH + 5 + maxCaptionLines * 3.4 + 3.5;
 
           ensureSpace(cardH + 5);
 
@@ -661,12 +887,10 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
               ? margin + (contentWidth - colW) / 2
               : margin + colOffset * (colW + gapMm);
 
-            // Marco limpio de tarjeta fotográfica
             doc.setDrawColor(203, 213, 225);
             doc.setFillColor(248, 250, 252);
             doc.rect(cardX, currentY, colW, cardH, 'FD');
 
-            // Área blanca interior reservada exclusivamente a la imagen
             const innerX = cardX + 2.5;
             const innerY = currentY + 2.5;
             const innerW = colW - 5;
@@ -686,9 +910,8 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
 
             doc.addImage(item.asset.pngDataUrl, 'PNG', drawX, drawY, drawW, drawH);
 
-            // Epígrafe envuelto debajo del recuadro de imagen sin pisar ninguna figura
             doc.setFont('helvetica', 'italic');
-            doc.setFontSize(7.6);
+            doc.setFontSize(7.4);
             doc.setTextColor(51, 65, 85);
             doc.text(captionLinesList[colOffset], cardX + 3, currentY + imgBoxH + 4.5);
           });
@@ -706,22 +929,21 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
     const measuresText =
       tab.correctiveMeasures.trim() || res.suggestedMeasures.map((s, idx) => `${idx + 1}. ${s}`).join('\n');
 
-    autoTable(doc, {
+    runPdfTable({
       startY: currentY,
-      margin: safeTableMargin,
       theme: 'grid',
-      headStyles: { fillColor: [2, 132, 199], textColor: 255, fontSize: 8.5, fontStyle: 'bold' },
-      bodyStyles: { fontSize: 8.3, textColor: [15, 23, 42], cellPadding: 2.5 },
+      columnStyles: { 0: { cellWidth: contentWidth } },
+      headStyles: { fillColor: [2, 132, 199], textColor: 255, fontSize: 8.4, fontStyle: 'bold' },
+      bodyStyles: { fontSize: 8.1, textColor: [15, 23, 42], cellPadding: 2.4 },
       head: [['OBSERVACIONES DEL EVALUADOR Y PLAN DE ACCIÓN DE LA HOJA']],
       body: [
         [`Observaciones del Evaluador:\n${obsText}`],
         [`Medidas Correctivas Propuestas:\n${measuresText}`],
         [
-          `Responsable Designado: ${tab.responsiblePerson || '—'}   |   Plazo de Implementación: ${tab.implementationDeadline}   |   Orden de Prioridad Global: #${pEntry.rank}`,
+          `Responsable Designado: ${tab.responsiblePerson || '-'} | Plazo de Implementación: ${tab.implementationDeadline} | Orden de Prioridad Global: #${pEntry.rank}`,
         ],
       ],
     });
-    currentY = getLastAutoTableY();
   }
 
   // FIRMA PROFESIONAL AL FINAL DEL ÚLTIMO FOLIO
@@ -732,21 +954,30 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(9);
   doc.setTextColor(15, 23, 42);
-  doc.text(general.evaluatorName || 'Firma del Profesional Evaluador', pageWidth - margin - 36, currentY + 19, {
-    align: 'center',
-  });
+  doc.text(
+    sanitizePdfText(general.evaluatorName || 'Firma del Profesional Evaluador'),
+    pageWidth - margin - 36,
+    currentY + 19,
+    { align: 'center' },
+  );
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8);
   doc.setTextColor(71, 85, 105);
   doc.text(
-    `${general.evaluatorTitle || ''} ${general.evaluatorLicense ? `· ${general.evaluatorLicense}` : ''}`,
+    sanitizePdfText(
+      `${general.evaluatorTitle || ''} ${general.evaluatorLicense ? `· ${general.evaluatorLicense}` : ''}`,
+    ),
     pageWidth - margin - 36,
     currentY + 23.5,
     { align: 'center' },
   );
-  doc.text(`Próxima Reevaluación Sugerida: ${general.nextReevaluationDate || 'Anual'}`, margin, currentY + 19);
+  doc.text(
+    sanitizePdfText(`Próxima Reevaluación Sugerida: ${general.nextReevaluationDate || 'Anual'}`),
+    margin,
+    currentY + 19,
+  );
 
-  // Numeración y encabezado institucional en todas las páginas (acotado para no pisar columna derecha)
+  // Numeración y encabezado institucional en todas las páginas
   const totalPages = doc.getNumberOfPages();
   for (let p = 1; p <= totalPages; p++) {
     doc.setPage(p);
@@ -773,7 +1004,7 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
     doc.setFontSize(8.4);
     doc.setTextColor(15, 23, 42);
     const headerCompanyLine = doc.splitTextToSize(
-      general.companyName || 'ESTUDIO ERGONÓMICO INTEGRAL',
+      sanitizePdfText(general.companyName || 'ESTUDIO ERGONÓMICO INTEGRAL'),
       maxLeftHeaderW,
     )[0];
     doc.text(headerCompanyLine, textStartX, 15.8);
@@ -782,11 +1013,11 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
     doc.setFontSize(7.6);
     doc.setTextColor(71, 85, 105);
     const headerWorkstationLine = doc.splitTextToSize(
-      `Puesto: ${general.workstationName || '—'} · Sector: ${general.department || '—'}`,
+      sanitizePdfText(`Puesto: ${general.workstationName || '-'} · Sector: ${general.department || '-'}`),
       maxLeftHeaderW,
     )[0];
     const headerEvaluatorLine = doc.splitTextToSize(
-      `Evaluador: ${general.evaluatorName || '—'}`,
+      sanitizePdfText(`Evaluador: ${general.evaluatorName || '-'}`),
       maxLeftHeaderW,
     )[0];
     doc.text(headerWorkstationLine, textStartX, 20.8);
@@ -795,16 +1026,19 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
     doc.setFont('helvetica', 'bold');
     doc.text(`Hoja ${p} de ${totalPages}`, pageWidth - margin - 3, 15.8, { align: 'right' });
     doc.setFont('helvetica', 'normal');
-    doc.text(`Fecha: ${general.reportDate}`, pageWidth - margin - 3, 20.8, { align: 'right' });
+    doc.text(sanitizePdfText(`Fecha: ${general.reportDate}`), pageWidth - margin - 3, 20.8, {
+      align: 'right',
+    });
 
-    // Pie de página institucional con Copyright y aviso profesional
     doc.setDrawColor(226, 232, 240);
     doc.line(margin, pageHeight - 11, pageWidth - margin, pageHeight - 11);
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(6.8);
     doc.setTextColor(100, 116, 139);
     doc.text(
-      '© Mauricio Alejandro Pizarro Muñoz · ErgoEval · Herramienta técnica para uso exclusivo de profesionales calificados',
+      sanitizePdfText(
+        '© Mauricio Alejandro Pizarro Muñoz · ErgoEval · Herramienta técnica para uso exclusivo de profesionales calificados',
+      ),
       margin,
       pageHeight - 7.5,
     );
@@ -860,8 +1094,49 @@ export async function exportStudyToWord(general: GeneralStudyData, tabs: StudyTa
 
   const docChildren: (Paragraph | Table)[] = [];
 
-  // Título Principal
+  const topWordStudy = prioritized[0];
+  const topWordSev: RiskSeverity = topWordStudy?.result.severity || 'bajo';
+  const wordRedOrAmber =
+    trafficSummary.immediateAlerts.length > 0 ||
+    trafficSummary.redCount > 0 ||
+    trafficSummary.amberCount > 0 ||
+    topWordSev !== 'bajo';
+
   docChildren.push(
+    new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      rows: [
+        new TableRow({
+          children: [
+            createCell(
+              wordRedOrAmber
+                ? `ALERTA DE GRAVEDAD ERGONÓMICA DEL PUESTO EVALUADO: ${(topWordStudy?.result.riskLabel || 'CRÍTICA / ALTA').toUpperCase()} (${trafficSummary.redCount} indicador(es) en Rojo · ${trafficSummary.amberCount} en Ámbar)`
+                : 'ESTADO ERGONÓMICO DEL PUESTO EVALUADO: GRAVEDAD BAJA / RIESGO CONTROLADO',
+              {
+                bold: true,
+                fillHex: wordRedOrAmber ? 'B91C1C' : '15803D',
+                colorHex: 'FFFFFF',
+              },
+            ),
+          ],
+        }),
+        new TableRow({
+          children: [
+            createCell(
+              topWordStudy
+                ? `Hallazgo principal: ${topWordStudy.tab.tabLabel} — ${topWordStudy.result.primaryScoreText} (${topWordStudy.result.actionLevelText}). Plazo requerido: ${topWordStudy.tab.implementationDeadline}.`
+                : 'Todos los parámetros evaluados se encuentran dentro de umbrales admisibles.',
+              {
+                bold: true,
+                fillHex: wordRedOrAmber ? 'FEE2E2' : 'DCFCE7',
+                colorHex: wordRedOrAmber ? '7F1D1D' : '166534',
+              },
+            ),
+          ],
+        }),
+      ],
+    }),
+    new Paragraph({ spacing: { after: 140 }, children: [] }),
     new Paragraph({
       heading: HeadingLevel.HEADING_1,
       spacing: { after: 120 },

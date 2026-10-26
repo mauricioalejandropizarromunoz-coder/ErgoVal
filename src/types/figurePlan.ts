@@ -61,7 +61,10 @@ export type ScenePropType =
   | 'high_scanner_desk'
   | 'pallet_cooler'
   | 'cold_room_high_shelf'
-  | 'bus_driver_seat';
+  | 'bus_driver_seat'
+  | 'conveyor_veg_line'
+  | 'hopper_sack_pour'
+  | 'pallet_jack_rack';
 
 export interface PosturePose3D {
   trunkFlexionDeg: number; // + forward flexion, - extension

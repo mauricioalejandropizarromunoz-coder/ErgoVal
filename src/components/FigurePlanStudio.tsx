@@ -170,6 +170,8 @@ export const FigurePlanStudio: React.FC<FigurePlanStudioProps> = ({ onBackToEval
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
   const customPhotoInputRef = useRef<HTMLInputElement>(null);
   const dragOrbitRef = useRef<{ startX: number; startY: number; az0: number; el0: number } | null>(null);
+  const activePointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const pinchOrbitRef = useRef<{ startDist: number; startZoom: number } | null>(null);
 
   // --- CUSTOM 3D ENGINE STATE ---
   const [promptInput, setPromptInput] = useState(PROMPT_EXAMPLES[0]);
@@ -299,8 +301,13 @@ export const FigurePlanStudio: React.FC<FigurePlanStudioProps> = ({ onBackToEval
       onAsyncPhotoLoaded: () => setPhotoRenderTick((t) => t + 1),
     };
 
-    renderBookFigureToCanvas(effectiveSelectedSpec, canvas, orbit, 2, renderOpts);
+    // Dibuja como máximo una vez por frame (escala adaptativa 1.35x en celulares para fluidez GPU, 2x en escritorio)
+    const raf = window.requestAnimationFrame(() => {
+      const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
+      renderBookFigureToCanvas(effectiveSelectedSpec, canvas, orbit, isMobile ? 1.35 : 2, renderOpts);
+    });
 
+    // El tamaño del PNG se calcula solo cuando el usuario deja de mover (1 s)
     let cancelled = false;
     const timer = window.setTimeout(() => {
       const exporter =
@@ -319,10 +326,11 @@ export const FigurePlanStudio: React.FC<FigurePlanStudioProps> = ({ onBackToEval
           }
         })
         .catch(() => {});
-    }, 80);
+    }, 1000);
 
     return () => {
       cancelled = true;
+      window.cancelAnimationFrame(raf);
       window.clearTimeout(timer);
     };
   }, [
@@ -698,19 +706,49 @@ export const FigurePlanStudio: React.FC<FigurePlanStudioProps> = ({ onBackToEval
     const activeMode = isCustom ? customSpec.renderMode : selectedSpec.renderMode;
     if (activeMode === 'diagram' || activeMode === 'real_chart') return;
     const current = isCustom ? customOrbit : orbit;
-    dragOrbitRef.current = {
-      startX: e.clientX,
-      startY: e.clientY,
-      az0: current.azimuthDeg,
-      el0: current.elevationDeg,
-    };
     e.currentTarget.setPointerCapture(e.pointerId);
+    activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (activePointersRef.current.size === 2) {
+      const pts = Array.from(activePointersRef.current.values());
+      const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+      pinchOrbitRef.current = { startDist: Math.max(20, dist), startZoom: current.zoom };
+      dragOrbitRef.current = null;
+    } else if (activePointersRef.current.size === 1) {
+      pinchOrbitRef.current = null;
+      dragOrbitRef.current = {
+        startX: e.clientX,
+        startY: e.clientY,
+        az0: current.azimuthDeg,
+        el0: current.elevationDeg,
+      };
+    }
   };
 
   const handleCanvasPointerMove = (
     e: React.PointerEvent<HTMLCanvasElement>,
     isCustom: boolean,
   ) => {
+    if (activePointersRef.current.has(e.pointerId)) {
+      activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+
+    if (activePointersRef.current.size === 2 && pinchOrbitRef.current) {
+      const pts = Array.from(activePointersRef.current.values());
+      const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+      const ratio = dist / pinchOrbitRef.current.startDist;
+      const nextZoom = Math.max(
+        0.65,
+        Math.min(1.85, Math.round(pinchOrbitRef.current.startZoom * ratio * 100) / 100),
+      );
+      if (isCustom) {
+        setCustomOrbit((prev) => ({ ...prev, zoom: nextZoom }));
+      } else {
+        setOrbit((prev) => ({ ...prev, zoom: nextZoom }));
+      }
+      return;
+    }
+
     if (!dragOrbitRef.current) return;
     const dx = e.clientX - dragOrbitRef.current.startX;
     const dy = e.clientY - dragOrbitRef.current.startY;
@@ -724,7 +762,13 @@ export const FigurePlanStudio: React.FC<FigurePlanStudioProps> = ({ onBackToEval
   };
 
   const handleCanvasPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    dragOrbitRef.current = null;
+    activePointersRef.current.delete(e.pointerId);
+    if (activePointersRef.current.size < 2) {
+      pinchOrbitRef.current = null;
+    }
+    if (activePointersRef.current.size === 0) {
+      dragOrbitRef.current = null;
+    }
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {
@@ -952,8 +996,8 @@ export const FigurePlanStudio: React.FC<FigurePlanStudioProps> = ({ onBackToEval
       {/* ===================================================================== */}
       {studioTab === 'catalog' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-          {/* COLUMNA IZQUIERDA: ÍNDICE FILTRABLE DE LAS 84 FIGURAS */}
-          <aside className="lg:col-span-5 bg-white border border-slate-300 rounded-lg overflow-hidden shadow-2xs">
+          {/* COLUMNA IZQUIERDA (EN MÓVIL DEBAJO DEL VISOR 3D): ÍNDICE FILTRABLE DE LAS 84 FIGURAS */}
+          <aside className="order-2 lg:order-1 lg:col-span-5 bg-white border border-slate-300 rounded-lg overflow-hidden shadow-2xs">
             <div className="p-3.5 border-b border-slate-200 space-y-3 bg-slate-50">
               <div className="relative">
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -1050,8 +1094,27 @@ export const FigurePlanStudio: React.FC<FigurePlanStudioProps> = ({ onBackToEval
             </div>
           </aside>
 
-          {/* COLUMNA DERECHA: VISOR TÉCNICO RETINA 2X Y DESCARGA EXACTA */}
-          <section className="lg:col-span-7 bg-white border border-slate-300 rounded-lg p-4 sm:p-5 shadow-2xs space-y-4">
+          {/* COLUMNA DERECHA (EN CELULARES ARRIBA DEL TODO): VISOR TÉCNICO 3D Y DESCARGA EXACTA */}
+          <section className="order-1 lg:order-2 lg:col-span-7 bg-white border border-slate-300 rounded-lg p-4 sm:p-5 shadow-2xs space-y-4">
+            {/* Selector rápido móvil para cambiar de figura sin desplazarse al listado inferior */}
+            <div className="lg:hidden space-y-1 pb-2 border-b border-slate-200">
+              <label className="block text-xs font-semibold text-slate-800">
+                Selección Rápida de Figura (Vista Superior Móvil)
+              </label>
+              <select
+                value={selectedSpec.id}
+                onChange={(e) => setSelectedId(e.target.value)}
+                className="w-full min-h-[42px] rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-900"
+              >
+                {filteredCatalog.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.fileName} — Fig. {item.figureNumber}
+                    {item.subPart || ''}: {item.title}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-3">
               <div>
                 <div className="text-xs font-mono text-slate-600 tabular-nums">
@@ -1263,7 +1326,8 @@ export const FigurePlanStudio: React.FC<FigurePlanStudioProps> = ({ onBackToEval
                         onPointerDown={(e) => handleCanvasPointerDown(e, false)}
                         onPointerMove={(e) => handleCanvasPointerMove(e, false)}
                         onPointerUp={handleCanvasPointerUp}
-                        className="w-full h-auto bg-white rounded-xs border border-slate-200 cursor-grab active:cursor-grabbing"
+                        onPointerCancel={handleCanvasPointerUp}
+                        className="w-full h-auto bg-white rounded-xs border border-slate-200 cursor-grab active:cursor-grabbing touch-none select-none"
                       />
                     </div>
                   </div>
@@ -1291,8 +1355,8 @@ export const FigurePlanStudio: React.FC<FigurePlanStudioProps> = ({ onBackToEval
                     {isShowingPureAssignedPhoto
                       ? 'Fotografía oficial adjunta asignada a esta figura en alta resolución'
                       : is3DSelected
-                        ? 'Avatar anatómico PBR (.glb) · Arrastre para rotar la vista o ajuste las articulaciones'
-                        : 'Esquema técnico renderizado en alta definición 2×'}
+                        ? 'Avatar anatómico PBR (.glb) · 1 dedo rotar / 2 dedos zoom'
+                        : 'Esquema técnico renderizado en alta definición'}
                   </span>
                   <span className="font-mono tabular-nums font-semibold text-slate-700">
                     {selectedSpec.fileName}
@@ -1304,8 +1368,11 @@ export const FigurePlanStudio: React.FC<FigurePlanStudioProps> = ({ onBackToEval
                   onPointerDown={(e) => handleCanvasPointerDown(e, false)}
                   onPointerMove={(e) => handleCanvasPointerMove(e, false)}
                   onPointerUp={handleCanvasPointerUp}
+                  onPointerCancel={handleCanvasPointerUp}
                   className={`${getCanvasMaxWidthClass(selectedSpec.widthPx)} h-auto bg-white shadow-xs rounded-xs border border-slate-300 ${
-                    is3DSelected && !isShowingPureAssignedPhoto ? 'cursor-grab active:cursor-grabbing' : ''
+                    is3DSelected && !isShowingPureAssignedPhoto
+                      ? 'cursor-grab active:cursor-grabbing touch-none select-none'
+                      : ''
                   }`}
                 />
               </div>
@@ -1797,7 +1864,7 @@ export const FigurePlanStudio: React.FC<FigurePlanStudioProps> = ({ onBackToEval
             </div>
           </section>
 
-          <section className="lg:col-span-7 bg-white border border-slate-300 rounded-lg p-4 sm:p-5 shadow-2xs space-y-4">
+          <section className="order-1 lg:order-2 lg:col-span-7 bg-white border border-slate-300 rounded-lg p-4 sm:p-5 shadow-2xs space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
               <div>
                 <div className="text-xs font-mono text-slate-600 tabular-nums">
@@ -1834,7 +1901,8 @@ export const FigurePlanStudio: React.FC<FigurePlanStudioProps> = ({ onBackToEval
                 onPointerDown={(e) => handleCanvasPointerDown(e, true)}
                 onPointerMove={(e) => handleCanvasPointerMove(e, true)}
                 onPointerUp={handleCanvasPointerUp}
-                className={`${getCanvasMaxWidthClass(customSpec.widthPx)} h-auto bg-white shadow-xs rounded-xs border border-slate-300 cursor-grab active:cursor-grabbing`}
+                onPointerCancel={handleCanvasPointerUp}
+                className={`${getCanvasMaxWidthClass(customSpec.widthPx)} h-auto bg-white shadow-xs rounded-xs border border-slate-300 cursor-grab active:cursor-grabbing touch-none select-none`}
               />
             </div>
 

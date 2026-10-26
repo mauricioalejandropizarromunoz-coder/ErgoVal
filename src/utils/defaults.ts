@@ -210,7 +210,7 @@ export const METHOD_CATALOG: MethodCatalogItem[] = [
     category: 'vibraciones',
     categoryLabel: 'Vibraciones Mecánicas',
     hierarchyOrder: 4,
-    needsAngleGuides: true,
+    needsAngleGuides: false,
     needsDataTableUpload: true,
     description:
       'Calcula la aceleración eficaz ponderada triaxial según postura (sentado/de pie) y la exposición diaria A(8) comparándola con los niveles de acción de 0,5 m/s² y 1,15 m/s².',
@@ -225,7 +225,7 @@ export const METHOD_CATALOG: MethodCatalogItem[] = [
     category: 'vibraciones',
     categoryLabel: 'Vibraciones Mecánicas',
     hierarchyOrder: 4,
-    needsAngleGuides: true,
+    needsAngleGuides: false,
     needsDataTableUpload: true,
     description:
       'Calcula la aceleración eficaz total triaxial ahv en empuñaduras de herramientas motorizadas, el valor diario A(8) frente a 2,5 y 5,0 m/s², y estima la latencia vascular (Raynaud).',

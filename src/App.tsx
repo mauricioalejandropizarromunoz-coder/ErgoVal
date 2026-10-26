@@ -15,6 +15,7 @@ import {
   Plus,
   Scale,
   Sliders,
+  Thermometer,
   Video,
   X,
 } from 'lucide-react';
@@ -39,6 +40,11 @@ import { AboutModal } from './components/AboutModal';
 import { FigurePlanStudio } from './components/FigurePlanStudio';
 import { FormulaStudio } from './components/FormulaStudio';
 import { VideoBiomechExtractor } from './components/VideoBiomechExtractor';
+import { AvatarTesterWorkspace } from './components/AvatarTesterWorkspace';
+import {
+  EnvironmentalMethodId,
+  EnvironmentalMethodsWorkspace,
+} from './components/EnvironmentalMethodsWorkspace';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
 const STORAGE_KEY = 'ergoeval_workspace_v1';
@@ -152,8 +158,12 @@ export default function App() {
   const [isAboutModalOpen, setIsAboutModalOpen] = useState(false);
   const [isDisclaimerDismissed, setIsDisclaimerDismissed] = useState(false);
 
-  // Espacio de trabajo superior: Evaluador Ergonómico, Motor 3D Plan de Figuras, Editor de Fórmulas o Extractor Video IA
-  const [activeWorkspace, setActiveWorkspace] = useState<'evaluador' | 'figuras3d' | 'formulas' | 'video_ia'>('evaluador');
+  // Espacio de trabajo superior: Evaluador Ergonómico, Térmico/Fanger, Testeo de Avatar 3D, Motor 3D Plan de Figuras, Editor de Fórmulas o Extractor Video IA
+  const [activeWorkspace, setActiveWorkspace] = useState<
+    'evaluador' | 'ambiente_fisico' | 'testeo_avatar' | 'figuras3d' | 'formulas' | 'video_ia'
+  >('evaluador');
+  const [envWorkspaceMethodId, setEnvWorkspaceMethodId] = useState<EnvironmentalMethodId>(MethodId.FANGER);
+  const [isVideoExpanded, setIsVideoExpanded] = useState<boolean>(false);
   const [formulaStudioMethodId, setFormulaStudioMethodId] = useState<MethodId>(MethodId.RULA);
   const [formulaRevision, setFormulaRevision] = useState<number>(0);
 
@@ -402,6 +412,24 @@ export default function App() {
     }
   };
 
+  const handleAddTestedTabToStudy = (newTab: StudyTab) => {
+    const nextNumber = tabs.length + 1;
+    const normalizedTab: StudyTab = {
+      ...newTab,
+      tabLabel: newTab.tabLabel
+        ? newTab.tabLabel.replace(/^Pestaña \d+:/, `Pestaña ${nextNumber}:`)
+        : `Pestaña ${nextNumber}: ${newTab.method}`,
+    };
+    const nextTabs = [...tabs, normalizedTab];
+    setTabs(nextTabs);
+    setActiveWorkspace('evaluador');
+    setSlideDirection(1);
+    setActiveSlideIndex(nextTabs.length);
+    showTempBanner(
+      `Pestaña calibrada "${normalizedTab.tabLabel}" agregada al estudio e informe técnico con su captura 3D.`,
+    );
+  };
+
   // Soporte táctil para deslizar (swipe horizontal) entre pestañas sin interferir con inputs
   const onTouchStart = (e: React.TouchEvent) => {
     const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
@@ -448,16 +476,16 @@ export default function App() {
     >
       {/* BARRA SUPERIOR GLOBAL */}
       <header className="sticky top-0 z-30 bg-white border-b border-slate-300 shadow-2xs">
-        <div className="max-w-[1400px] mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
-          {/* Marca, Pestaña Complementaria Motor 3D y Crédito de Autor */}
-          <div className="flex items-center gap-2.5 shrink-0">
+        <div className="max-w-[1400px] mx-auto px-3 sm:px-6 h-14 flex items-center justify-between gap-2 sm:gap-4">
+          {/* Marca, Pestañas de Espacios de Trabajo (con desplazamiento táctil en celular) y Crédito de Autor */}
+          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar min-w-0 py-1">
             <button
               type="button"
               onClick={() => {
                 setActiveWorkspace('evaluador');
                 navigateToSlide(0);
               }}
-              className={`font-bold text-base tracking-tight whitespace-nowrap cursor-pointer flex items-center gap-2 px-2 py-1 rounded-md transition-colors ${
+              className={`font-bold text-base tracking-tight whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-2 px-2 py-1 rounded-md transition-colors ${
                 activeWorkspace === 'evaluador'
                   ? 'text-slate-900 bg-slate-100'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
@@ -472,6 +500,20 @@ export default function App() {
 
             <button
               type="button"
+              onClick={() => setActiveWorkspace('testeo_avatar')}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
+                activeWorkspace === 'testeo_avatar'
+                  ? 'bg-indigo-700 text-white border-indigo-800 shadow-2xs'
+                  : 'bg-indigo-50/90 text-indigo-950 border-indigo-300 hover:bg-indigo-100'
+              }`}
+              title="Testeo Interactivo del Avatar Biomecánico 3D (Carga Postural y MMC)"
+            >
+              <Sliders className="w-3.5 h-3.5" />
+              <span>Testeo Avatar 3D</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setActiveWorkspace('figuras3d')}
               className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
                 activeWorkspace === 'figuras3d'
@@ -481,7 +523,21 @@ export default function App() {
               title="Motor de Renderizado Biomecánico 3D y Plan de Figuras del Libro"
             >
               <Box className="w-3.5 h-3.5" />
-              <span>Motor 3D · Plan de Figuras</span>
+              <span>Motor 3D · Figuras</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveWorkspace('ambiente_fisico')}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
+                activeWorkspace === 'ambiente_fisico'
+                  ? 'bg-amber-700 text-white border-amber-800 shadow-2xs'
+                  : 'bg-amber-50/90 text-amber-950 border-amber-300 hover:bg-amber-100'
+              }`}
+              title="Confort Térmico Fanger (ISO 7730 PMV/PPD), Estrés Térmico WBGT y Vibraciones (Cap. 7 y 8)"
+            >
+              <Thermometer className="w-3.5 h-3.5" />
+              <span>Térmico · Fanger / Físicos</span>
             </button>
 
             <button
@@ -496,7 +552,7 @@ export default function App() {
             >
               <Calculator className="w-3.5 h-3.5" />
               <span>
-                Fórmulas de Métodos
+                Fórmulas
                 {modifiedFormulaCount > 0 ? ` (${modifiedFormulaCount})` : ''}
               </span>
             </button>
@@ -509,13 +565,13 @@ export default function App() {
                   ? 'bg-emerald-700 text-white border-emerald-800 shadow-2xs'
                   : 'bg-emerald-50/90 text-emerald-950 border-emerald-300 hover:bg-emerald-100'
               }`}
-              title="Extractor de Variables Biomecánicas desde Archivo de Video con Emisión Automática de Informe"
+              title="Extractor de Variables Biomecánicas y Muestras CENEA con Emisión Automática de Informe"
             >
               <Video className="w-3.5 h-3.5" />
               <span>Video IA · Informe</span>
             </button>
 
-            <span className="hidden 2xl:inline text-[11px] text-slate-500 font-normal pl-1 border-l border-slate-300">
+            <span className="hidden 2xl:inline text-[11px] text-slate-500 font-normal pl-1 border-l border-slate-300 whitespace-nowrap shrink-0">
               por Mauricio Alejandro Pizarro Muñoz
             </span>
           </div>
@@ -672,9 +728,9 @@ export default function App() {
         </div>
       </header>
 
-      {/* AVISO DE RESPONSABILIDAD PROFESIONAL Y ADVERTENCIA DE ENLACE */}
+      {/* AVISO DE RESPONSABILIDAD PROFESIONAL Y ADVERTENCIA DE ENLACE (oculto en celular para despejar el visor 3D superior) */}
       {!isDisclaimerDismissed && (
-        <div className="bg-amber-50 border-b border-amber-200/90 text-amber-950 text-xs py-2 px-4 sm:px-6">
+        <div className="hidden sm:block bg-amber-50 border-b border-amber-200/90 text-amber-950 text-xs py-2 px-4 sm:px-6">
           <div className="max-w-[1400px] mx-auto flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2.5 min-w-0">
               <Scale className="w-4 h-4 text-amber-700 shrink-0" />
@@ -826,14 +882,39 @@ export default function App() {
       )}
 
       {/* CONTENEDOR PRINCIPAL */}
-      {activeWorkspace === 'figuras3d' ? (
-        <main className="flex-1 max-w-[1400px] w-full mx-auto px-4 sm:px-6 py-6 overflow-x-hidden">
+      {activeWorkspace === 'testeo_avatar' ? (
+        <main className="flex-1 max-w-[1400px] w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 overflow-x-hidden">
+          <ErrorBoundary>
+            <AvatarTesterWorkspace
+              onBackToEvaluator={() => setActiveWorkspace('evaluador')}
+              onAddTestedTabToStudy={handleAddTestedTabToStudy}
+              onOpenEnvironmentalWorkspace={() => {
+                setEnvWorkspaceMethodId(MethodId.FANGER);
+                setActiveWorkspace('ambiente_fisico');
+              }}
+            />
+          </ErrorBoundary>
+        </main>
+      ) : activeWorkspace === 'ambiente_fisico' ? (
+        <main className="flex-1 max-w-[1400px] w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 overflow-x-hidden">
+          <ErrorBoundary>
+            <EnvironmentalMethodsWorkspace
+              initialMethodId={envWorkspaceMethodId}
+              onBackToEvaluator={() => setActiveWorkspace('evaluador')}
+              onAddEnvironmentalTabToStudy={handleAddTestedTabToStudy}
+              onOpenReference={(mId) => handleOpenReference(mId)}
+              onOpenFormulaEditor={(mId) => handleOpenFormulaEditor(mId)}
+            />
+          </ErrorBoundary>
+        </main>
+      ) : activeWorkspace === 'figuras3d' ? (
+        <main className="flex-1 max-w-[1400px] w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 overflow-x-hidden">
           <ErrorBoundary>
             <FigurePlanStudio onBackToEvaluator={() => setActiveWorkspace('evaluador')} />
           </ErrorBoundary>
         </main>
       ) : activeWorkspace === 'formulas' ? (
-        <main className="flex-1 max-w-[1400px] w-full mx-auto px-4 sm:px-6 py-6 overflow-x-hidden">
+        <main className="flex-1 max-w-[1400px] w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 overflow-x-hidden">
           <ErrorBoundary>
             <FormulaStudio
               initialMethodId={formulaStudioMethodId}
@@ -845,7 +926,11 @@ export default function App() {
           </ErrorBoundary>
         </main>
       ) : activeWorkspace === 'video_ia' ? (
-        <main className="flex-1 max-w-[1400px] w-full mx-auto px-4 sm:px-6 py-6 overflow-x-hidden">
+        <main
+          className={`flex-1 ${
+            isVideoExpanded ? 'max-w-[1780px]' : 'max-w-[1400px]'
+          } w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 overflow-x-hidden`}
+        >
           <ErrorBoundary>
             <VideoBiomechExtractor
               general={general}
@@ -853,6 +938,8 @@ export default function App() {
               onEmitTabsAndReport={handleEmitTabsAndReportFromVideo}
               onExportCurrentPdf={handleExportPdf}
               onExportCurrentWord={handleExportWord}
+              isExpandedView={isVideoExpanded}
+              onToggleExpandedView={() => setIsVideoExpanded((prev) => !prev)}
               onOpenGeneratedTabsInEvaluator={() => {
                 setActiveWorkspace('evaluador');
                 const nioshIdx = tabs.findIndex((t) => t.id === 'tab-video-ia-niosh');
@@ -865,7 +952,7 @@ export default function App() {
         <main
           onTouchStart={onTouchStart}
           onTouchEnd={onTouchEnd}
-          className="flex-1 max-w-[1400px] w-full mx-auto px-4 sm:px-6 py-6 overflow-x-hidden"
+          className="flex-1 max-w-[1400px] w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 overflow-x-hidden"
         >
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
@@ -910,6 +997,17 @@ export default function App() {
                   onOpenReference={(methodId, query) => handleOpenReference(methodId, query)}
                   onOpenFormulaEditor={(methodId) => handleOpenFormulaEditor(methodId)}
                   onOpenVideoExtractor={() => setActiveWorkspace('video_ia')}
+                  onOpenEnvironmentalWorkspace={(methodId) => {
+                    if (
+                      methodId === MethodId.FANGER ||
+                      methodId === MethodId.WBGT ||
+                      methodId === MethodId.ISO_2631 ||
+                      methodId === MethodId.ISO_5349
+                    ) {
+                      setEnvWorkspaceMethodId(methodId);
+                    }
+                    setActiveWorkspace('ambiente_fisico');
+                  }}
                 />
               )}
             </motion.div>
