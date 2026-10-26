@@ -64,6 +64,17 @@ export function isAvatarGlbReady(): boolean {
   return Boolean(sharedEngine?.rig.isReady);
 }
 
+export function subscribeAvatarGlbloaded(_callback: () => void): () => void {
+  if (isAvatarGlbReady()) {
+    try { _callback(); } catch {}
+  }
+  return () => {};
+}
+
+export function subscribeAvatarGlbLoaded(callback: () => void): () => void {
+  return subscribeAvatarGlbloaded(callback);
+}
+
 function createPlaceholderJoints(parent: THREE.Group): Record<JointKey, THREE.Object3D> {
   const keys: JointKey[] = [
     'pelvis', 'l5s1', 't12', 'c7', 'head',
