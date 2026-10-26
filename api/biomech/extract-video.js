@@ -2,8 +2,6 @@ export const config = {
   maxDuration: 60,
 };
 
-const MODEL = 'gemini-1.5-flash';
-
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -29,7 +27,23 @@ export default async function handler(req, res) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return res.status(500).json({ error: 'Falta GEMINI_API_KEY en Vercel' });
 
-  // Tomar solo 4 fotogramas clave (inicio, medio, final) para máxima velocidad
+  // 1. Detectar automáticamente el modelo disponible en tu cuenta
+  let modelName = 'gemini-1.5-flash-latest';
+  try {
+    const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+    if (listRes.ok) {
+      const listData = await listRes.json();
+      const valid = (listData.models || []).filter((m) =>
+        m.supportedGenerationMethods?.includes('generateContent') &&
+        m.name?.includes('gemini')
+      );
+      const flash = valid.find((m) => m.name.includes('flash'));
+      if (flash) modelName = flash.name.replace('models/', '');
+      else if (valid.length > 0) modelName = valid[0].name.replace('models/', '');
+    }
+  } catch (e) {}
+
+  // 2. Extraer 4 fotogramas clave
   const count = frames.length;
   const indices = [0, Math.floor(count * 0.33), Math.floor(count * 0.66), count - 1];
   const selectedFrames = [...new Set(indices)].map((i) => frames[i]).filter(Boolean);
@@ -48,25 +62,25 @@ Devuelve estrictamente este JSON:
   "status": "processed",
   "critical_events": {
     "origen_timestamp": "${selectedFrames[0]?.timestamp || '00:00.500'}",
-    "destino_timestamp": "${selectedFrames[selectedFrames.length - 1]?.timestamp || '00:03.000'}"
+    "destino_timestamp": "${selectedFrames[selectedFrames.length - 1]?.timestamp || '00:02.500'}"
   },
   "movement_analysis": {
     "direction": "levantamiento_suelo_a_estanteria",
-    "v_origen_cm": 30.0,
-    "v_destino_cm": 110.0,
+    "v_origen_cm": 35.0,
+    "v_destino_cm": 115.0,
     "h_origen_cm": 35.0,
-    "h_destino_cm": 40.0,
-    "trajectory_note": "Movimiento vertical de carga"
+    "h_destino_cm": 42.0,
+    "trajectory_note": "Levantamiento vertical continuo"
   },
   "niosh_inputs": {
     "H_cm": 35.0,
-    "V_cm": 30.0,
+    "V_cm": 35.0,
     "D_cm": 80.0,
-    "A_deg": 10.0
+    "A_deg": 12.0
   },
   "postural_angles_deg": {
-    "trunk_flexion": 40.0,
-    "knee_flexion": 35.0,
+    "trunk_flexion": 42.0,
+    "knee_flexion": 38.0,
     "right_elbow": 75.0,
     "left_elbow": 75.0
   }
@@ -75,7 +89,7 @@ Devuelve estrictamente este JSON:
 
   try {
     const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -93,14 +107,12 @@ Devuelve estrictamente este JSON:
 
     if (!r.ok) {
       return res.status(r.status).json({
-        error: `Error Gemini: ${data?.error?.message || JSON.stringify(data)}`,
+        error: `Error Gemini (${modelName}): ${data?.error?.message || JSON.stringify(data)}`,
       });
     }
 
     const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) {
-      return res.status(500).json({ error: 'Sin respuesta de IA' });
-    }
+    if (!text) return res.status(500).json({ error: 'Sin respuesta de IA' });
 
     const clean = text.replace(/```json/g, '').replace(/```/g, '').trim();
     return res.status(200).json(JSON.parse(clean));
