@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ErgoVal · Prueba RULA desde video (fase 1)</title>
+<style>
+  :root{color-scheme:light dark;--bd:#8885;--mut:#777;--ok:#16a34a;--warn:#d97706;--bad:#dc2626;--acc:#0284c7}
+  *{box-sizing:border-box}
+  body{font:14px/1.45 system-ui,sans-serif;margin:0 auto;padding:16px;max-width:1100px}
+  h1{font-size:20px;margin:0 0 4px} h2{font-size:15px;margin:18px 0 6px}
+  fieldset{border:1px solid var(--bd);border-radius:8px;margin:10px 0;padding:10px 12px}
+  legend{padding:0 6px;font-weight:600}
+  label{display:inline-flex;align-items:center;gap:6px;margin:3px 14px 3px 0}
+  input[type=number]{width:72px} select,input,button{font:inherit}
+  button{padding:6px 14px;border-radius:6px;border:1px solid var(--bd);cursor:pointer}
+  button.main{background:var(--acc);color:#fff;border-color:var(--acc)}
+  .note{color:var(--mut);font-size:13px}
+  .banner{border-radius:6px;padding:6px 10px;margin:6px 0;font-weight:600}
+  .banner.bad{background:#dc262622;color:var(--bad);border:1px solid var(--bad)}
+  .banner.ok{background:#16a34a22;color:var(--ok);border:1px solid var(--ok)}
+  table{border-collapse:collapse;width:100%;margin:6px 0}
+  td,th{border:1px solid var(--bd);padding:4px 8px;text-align:left}
+  th{font-weight:600} td.n{text-align:right;font-variant-numeric:tabular-nums}
+  .tag{font-size:12px;padding:1px 6px;border-radius:10px;border:1px solid var(--bd)}
+  .tag.m{border-color:var(--ok);color:var(--ok)} .tag.e{border-color:var(--warn);color:var(--warn)} .tag.i{border-color:var(--acc);color:var(--acc)}
+  .cands{display:flex;gap:10px;flex-wrap:wrap}
+  .cand{border:2px solid var(--bd);border-radius:8px;padding:4px;cursor:pointer;max-width:100%}
+  .cand.sel{border-color:var(--acc)} .cand canvas{display:block;max-width:100%;height:auto;border-radius:4px}
+  #chart{width:100%;height:220px;display:block;border:1px solid var(--bd);border-radius:8px}
+  progress{width:100%} .disc{margin-top:18px;padding:10px 12px;border:1px solid var(--warn);border-radius:8px;font-size:13px}
+  .big{font-size:18px;font-weight:700}
+</style>
+</head>
+<body>
+<h1>Prueba RULA desde video <span class="note">· fase 1 · herramienta de estimación inicial</span></h1>
+<p class="note">Sube un video con vista <b>lateral</b>. La página detecta la pose en el navegador (nada se sube a ningún servidor),
+mide los ángulos fotograma a fotograma, puntúa con las tablas A, B y C de RULA y propone el fotograma más desfavorable.</p>
+
+<fieldset><legend>1 · Video</legend>
+  <input type="file" id="file" accept="video/*">
+  <div class="note" id="vinfo">Solo necesitas el video: al elegirlo, el análisis empieza solo.</div>
+</fieldset>
+
+<div class="note" style="margin:10px 0">Peso de la carga (opcional):
+  <input type="number" id="kg" value="25" min="0" step="0.5"> kg
+  <span id="kgBanner" class="banner bad" style="display:inline-block;padding:2px 8px;margin:0">PESO NO CONFIRMADO: 25 kg por defecto</span>
+  <button type="button" id="kgOk">Confirmar</button>
+  · Si no lo cambias, el informe lo marca como no confirmado.</div>
+
+<details>
+  <summary><b>Ajustes opcionales</b> · por defecto todo es automático, no hace falta tocar nada</summary>
+  <fieldset><legend>Técnicos</legend>
+    <label>Medición <select id="mode"><option value="3d">3D (recomendada: cualquier cámara)</option><option value="2d">2D (solo vista lateral pura)</option></select></label>
+    <label>Modelo <select id="model"><option value="full">Normal (rápido)</option><option value="heavy">Pesado (más preciso, más lento)</option></select></label>
+    <label>Lado evaluado <select id="side"><option value="auto">Automático</option><option value="R">Derecho</option><option value="L">Izquierdo</option></select></label>
+    <label>Muestreo <input type="number" id="fps" value="8" min="2" max="25"> fps</label>
+    <label>Desde <input type="number" id="tFrom" value="0" min="0" step="0.1"> s</label>
+    <label>Hasta <input type="number" id="tTo" value="0" min="0" step="0.1"> s</label>
+    <label>Límite vista lateral (2D) <input type="number" id="latMax" value="0.5" min="0.1" max="1.5" step="0.05"></label>
+    <label>Visibilidad mínima <input type="number" id="visMin" value="0.4" min="0.1" max="0.9" step="0.05"></label>
+    <label><input type="checkbox" id="inclNon"> incluir vistas poco laterales</label>
+  </fieldset>
+  <fieldset><legend>Correcciones del evaluador (marcar solo si aplican)</legend>
+    <label><input type="checkbox" id="autoMods" checked> estimar del video: abducción del brazo, giro e inclinación del tronco (solo 3D)</label><br>
+    <label>Tipo de carga <select id="loadType"><option value="int">Intermitente</option><option value="sta">Estática</option><option value="rep">Repetida</option></select></label>
+    <label><input type="checkbox" id="muscle"> uso muscular (estático &gt;1 min o repetido &gt;4 veces/min)</label><br>
+    <label><input type="checkbox" id="shRaised"> hombro elevado</label>
+    <label><input type="checkbox" id="armAbd"> brazo abducido</label>
+    <label><input type="checkbox" id="armSup"> brazo apoyado</label>
+    <label><input type="checkbox" id="crossMid"> antebrazo cruza línea media</label><br>
+    <label>Muñeca <select id="wrist"><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
+    <label>Giro muñeca <select id="twist"><option>1</option><option>2</option></select></label>
+    <label>Cuello <select id="neckSel"><option value="auto">Estimado del video</option><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
+    <label><input type="checkbox" id="neckTw"> cuello girado</label>
+    <label><input type="checkbox" id="neckSb"> cuello inclinado</label><br>
+    <label><input type="checkbox" id="seated"> sentado con apoyo</label>
+    <label><input type="checkbox" id="trTw"> tronco girado</label>
+    <label><input type="checkbox" id="trSb"> tronco inclinado lateral</label>
+    <label>Piernas <select id="legs"><option value="1">1 · apoyadas</option><option value="2">2 · no apoyadas</option></select></label>
+  </fieldset>
+</details>
+
+<button class="main" id="go" disabled>Analizar de nuevo</button>
+<progress id="prog" value="0" max="1" hidden></progress>
+<div class="note" id="status"></div>
+
+<section id="res" hidden>
+  <h2>Resultado</h2>
+  <div id="sumBox"></div>
+  <h2>Fotogramas candidatos (los más desfavorables)</h2>
+  <div class="cands" id="cands"></div>
+  <div id="detail"></div>
+  <h2>Ángulos en el tiempo</h2>
+  <canvas id="chart"></canvas>
+  <div class="note">Azul: tronco · Naranja: brazo superior (respecto al tronco) · Rojo: candidatos · Zona gris: vista no lateral o sin detección fiable.</div>
+  <p><button id="dlJson">Descargar ángulos (JSON)</button> <button id="cpTxt">Copiar resumen</button></p>
+</section>
+
+<div class="disc"><b>Aviso:</b> los valores de este informe (ángulos, puntuaciones y peso de la carga) fueron estimados automáticamente a partir del video
+y pueden contener errores, que aumentan con la calidad de la imagen, la posición de la cámara y las oclusiones. Esta herramienta es solo una estimación
+inicial y orientativa: sus resultados no sustituyen el análisis, la medición en terreno ni la evaluación de un profesional calificado, quien debe verificar
+los datos y validar las conclusiones antes de tomar decisiones.</div>
+
+<script type="module">
+import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
+const modelUrl = k => `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_${k}/float16/1/pose_landmarker_${k}.task`;
+
+// ==LOGIC-START==
+// Tablas RULA A, B y C: verificadas celda por celda contra RULA.xls (272 celdas, 0 diferencias).
+const TABLE_A = [
+  [[1,2,2,2,2,3,3,3],[2,2,2,2,3,3,3,3],[2,3,3,3,3,3,4,4]],
+  [[2,3,3,3,3,4,4,4],[3,3,3,3,3,4,4,4],[3,4,4,4,4,4,5,5]],
+  [[3,3,4,4,4,4,5,5],[3,4,4,4,4,4,5,5],[4,4,4,4,4,5,5,5]],
+  [[4,4,4,4,4,5,5,5],[4,4,4,4,4,5,5,5],[4,4,4,5,5,5,6,6]],
+  [[5,5,5,5,5,6,6,7],[5,6,6,6,6,7,7,7],[6,6,6,7,7,7,7,8]],
+  [[7,7,7,7,7,8,8,9],[8,8,8,8,8,9,9,9],[9,9,9,9,9,9,9,9]],
+];
+const TABLE_B = [
+  [1,3,2,3,3,4,5,5,6,6,7,7],[2,3,2,3,4,5,5,5,6,7,7,7],[3,3,3,4,4,5,5,6,6,7,7,7],
+  [5,5,5,6,6,7,7,7,7,7,8,8],[7,7,7,7,7,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,9,9,9,9,9],
+];
+const TABLE_C = [
+  [1,2,3,3,4,5,5],[2,2,3,4,4,5,5],[3,3,3,4,4,5,6],[3,3,3,4,5,6,6],
+  [4,4,4,5,6,7,7],[4,4,5,6,6,7,7],[5,5,6,6,7,7,7],[5,5,6,7,7,7,7],
+];
+const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+const tableA = (u,l,w,t) => TABLE_A[clamp(u,1,6)-1][clamp(l,1,3)-1][(clamp(w,1,4)-1)*2 + (clamp(t,1,2)-1)];
+const tableB = (n,t,g) => TABLE_B[clamp(n,1,6)-1][(clamp(t,1,6)-1)*2 + (clamp(g,1,2)-1)];
+const tableC = (c,d) => TABLE_C[clamp(c,1,8)-1][clamp(d,1,7)-1];
+
+// Puntajes por ángulo (RULA estándar)
+const sUpper = f => f > 90 ? 4 : f > 45 ? 3 : (f > 20 || f < -20) ? 2 : 1;
+const sLower = e => (e >= 60 && e <= 100) ? 1 : 2;
+const sNeck  = n => n < 0 ? 4 : n <= 10 ? 1 : n <= 20 ? 2 : 3;
+const sTrunk = (t, seated) => seated ? 1 : (t <= 20 ? 2 : t <= 60 ? 3 : 4);
+// Fuerza/carga (RULA estándar; NO contrastada con el Excel porque ahí está en imágenes)
+const forceScore = (kg, type) => kg < 2 ? 0 : kg < 10 ? (type === 'int' ? 1 : 2) : (type === 'int' ? 2 : 3);
+const actionLevel = s => s <= 2 ? [1, 'Aceptable si no se mantiene ni se repite durante largos períodos']
+  : s <= 4 ? [2, 'Se requiere investigar más; pueden ser necesarios cambios']
+  : s <= 6 ? [3, 'Se requiere investigar y cambiar pronto'] : [4, 'Se requiere investigar y cambiar de inmediato'];
+
+function rulaScore(m, o) {
+  const upperBase = sUpper(m.upper), lowerBase = sLower(m.elbow);
+  const neckBase = o.neckSel === 'auto' ? (Number.isFinite(m.neck) ? sNeck(m.neck) : 2) : +o.neckSel;
+  const trunkBase = sTrunk(m.trunk, o.seated);
+  const upper = clamp(upperBase + (o.shRaised?1:0) + ((o.armAbd || m.abd) ? 1 : 0) - (o.armSup?1:0), 1, 6);
+  const lower = clamp(lowerBase + (o.crossMid?1:0), 1, 3);
+  const neck  = clamp(neckBase + (o.neckTw?1:0) + (o.neckSb?1:0), 1, 6);
+  const trunk = clamp(trunkBase + ((o.trTw || m.trTwist) ? 1 : 0) + ((o.trSb || m.trSide) ? 1 : 0), 1, 6);
+  const muscle = o.muscle ? 1 : 0, force = forceScore(o.kg, o.loadType);
+  const A = tableA(upper, lower, o.wrist, o.twist), B = tableB(neck, trunk, o.legs);
+  const C = A + muscle + force, D = B + muscle + force;
+  const final = tableC(C, D);
+  return { upperBase, lowerBase, neckBase, trunkBase, upper, lower, neck, trunk, muscle, force, A, B, C, D, final,
+           action: actionLevel(final), sev: Math.max(0, m.upper) + Math.max(0, m.trunk) };
+}
+
+// Medición 2D en el plano de la imagen (válida con vista lateral)
+const IDX = { R: { s:12, e:14, w:16, h:24, ear:8 }, L: { s:11, e:13, w:15, h:23, ear:7 } };
+function measure(lm, W, H, side, latMax, visMin = 0.5) {
+  const I = IDX[side];
+  const P = i => ({ x: lm[i].x * W, y: lm[i].y * H, v: lm[i].visibility ?? 1 });
+  const s = P(I.s), e = P(I.e), w = P(I.w), h = P(I.h), ear = P(I.ear);
+  const out = { ok:false, why:'', lateral:false, trunk:NaN, upper:NaN, elbow:NaN, neck:NaN, ratio:NaN };
+  if (Math.min(s.v, h.v) < visMin) { out.why = 'vis'; return out; }
+  out.armLow = Math.min(e.v, w.v) < visMin;
+  const Ls = P(11), Rs = P(12), Lh = P(23), Rh = P(24), nose = P(0), eL = P(7), eR = P(8);
+  const ms = { x:(Ls.x+Rs.x)/2, y:(Ls.y+Rs.y)/2 }, mh = { x:(Lh.x+Rh.x)/2, y:(Lh.y+Rh.y)/2 };
+  const trunkLen = Math.hypot(ms.x-mh.x, ms.y-mh.y);
+  if (trunkLen < 10) { out.why = 'vis'; return out; }
+  out.ratio = Math.abs(Ls.x - Rs.x) / trunkLen;
+  out.lateral = out.ratio < latMax;
+  const dxFace = nose.x - (eL.x + eR.x) / 2;
+  let sgn = Math.abs(dxFace) < 0.012 * H ? 0 : Math.sign(dxFace);
+  if (!sgn) { const lean = ms.x - mh.x; if (Math.abs(lean) > 0.3 * trunkLen) sgn = Math.sign(lean); }   // respaldo: hacia donde se inclina el tronco
+  if (!sgn) { out.why = 'face'; return out; }                 // de frente o de espaldas: sin sentido de "adelante"
+  const tl = Math.hypot(h.x - s.x, h.y - s.y);
+  const t = { x:(h.x - s.x)/tl, y:(h.y - s.y)/tl };       // eje del tronco hacia abajo
+  const n = { x: sgn * t.y, y: -sgn * t.x };              // "adelante" en el marco del tronco
+  const dot = (a, b) => a.x*b.x + a.y*b.y;
+  out.trunk = Math.atan2(-t.x * sgn, t.y) * 180 / Math.PI;        // inclinación del tronco respecto a la vertical (+ = adelante)
+  const a = { x:e.x - s.x, y:e.y - s.y }, al = Math.hypot(a.x, a.y);
+  if (al < 5) { out.why = 'vis'; return out; }
+  const an = { x:a.x/al, y:a.y/al };
+  out.upper = Math.atan2(dot(an, n), dot(an, t)) * 180 / Math.PI;
+  const v1 = { x:s.x - e.x, y:s.y - e.y }, v2 = { x:w.x - e.x, y:w.y - e.y };
+  const cs = dot(v1, v2) / (Math.hypot(v1.x, v1.y) * Math.hypot(v2.x, v2.y) || 1);
+  out.elbow = 180 - Math.acos(clamp(cs, -1, 1)) * 180 / Math.PI;
+  if (ear.v >= 0.3) {
+    const hv = { x:ear.x - s.x, y:ear.y - s.y };
+    out.neck = Math.atan2(dot(hv, n), -dot(hv, t)) * 180 / Math.PI;
+  }
+  out.ok = true;
+  return out;
+}
+// Medición 3D (coordenadas "world" de MediaPipe): ángulos respecto al propio cuerpo, casi independientes del ángulo de la cámara
+const VIEW_MIN = 0.3;                                       // 1 = vista lateral pura, 0 = de frente/espaldas
+const v3 = { sub:(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]], add:(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]], mul:(a,k)=>[a[0]*k,a[1]*k,a[2]*k],
+  dot:(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2], cross:(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]], len:a=>Math.hypot(a[0],a[1],a[2]) };
+const unit3 = a => { const l = v3.len(a); return l > 1e-9 ? v3.mul(a, 1/l) : [0,0,0]; };
+const rad2deg = r => r * 180 / Math.PI;
+function measure3D(wl, nl, side, visMin = 0.4, W = 0, H = 0) {
+  const I = IDX[side];
+  const out = { ok:false, why:'', lateral:false, trunk:NaN, upper:NaN, elbow:NaN, neck:NaN, ratio:NaN };
+  const vis = i => nl[i].visibility ?? 1, V = i => [wl[i].x, wl[i].y, wl[i].z];
+  if (Math.min(vis(I.s), vis(I.h)) < visMin) { out.why = 'vis'; return out; }
+  out.armLow = Math.min(vis(I.e), vis(I.w)) < visMin;       // brazo tapado (p. ej. por la caja): lo estima el modelo, se marca
+  const sh = V(I.s), el = V(I.e), wr = V(I.w), ear = V(I.ear), Ls = V(11), Rs = V(12), Lh = V(23), Rh = V(24);
+  const msh = v3.mul(v3.add(Ls, Rs), .5), mhp = v3.mul(v3.add(Lh, Rh), .5);
+  if (v3.len(v3.sub(msh, mhp)) < 0.1) { out.why = 'vis'; return out; }
+  const up = unit3(v3.sub(msh, mhp));                       // eje del tronco hacia arriba
+  let r = v3.sub(Rs, Ls); r = unit3(v3.sub(r, v3.mul(up, v3.dot(r, up))));   // línea de hombros
+  if (v3.len(r) < 0.5) { out.why = 'vis'; return out; }
+  out.ratio = Math.abs(r[2]); out.lateral = out.ratio >= VIEW_MIN;
+  const fc = unit3(v3.cross(r, up));                        // perpendicular al tronco y a los hombros = "adelante" (sentido por decidir)
+  let hint = unit3(v3.sub(V(0), v3.mul(v3.add(V(7), V(8)), .5)));            // nariz respecto a las orejas
+  for (const [h, t] of [[29, 31], [30, 32]]) if (vis(h) > .3 && vis(t) > .3) hint = v3.add(hint, unit3(v3.sub(V(t), V(h))));  // + dirección de los pies
+  const d = v3.dot(hint, fc);
+  if (Math.abs(d) < 0.15) { out.why = 'face'; return out; }
+  const n = d > 0 ? fc : v3.mul(fc, -1), t = v3.mul(up, -1);
+  out.trunk3d = rad2deg(Math.acos(clamp(-up[1], -1, 1)));    // respecto a la vertical (y hacia abajo): 0 = erguido
+  out.trunk2d = NaN;
+  if (W && H) {                                              // mismo ángulo medido en la imagen: respaldo si el 3D no queda vertical
+    const dx = ((nl[11].x + nl[12].x) / 2 - (nl[23].x + nl[24].x) / 2) * W, dy = ((nl[11].y + nl[12].y) / 2 - (nl[23].y + nl[24].y) / 2) * H;
+    out.trunk2d = rad2deg(Math.atan2(Math.abs(dx), -dy));
+  }
+  out.trunk = Number.isFinite(out.trunk2d) ? Math.max(out.trunk3d, out.trunk2d) : out.trunk3d;
+  // Carga probable: ambas manos cerca entre sí y por delante del tronco (agarre a dos manos)
+  const wL = V(15), wR = V(16), hipM = mhp;
+  out.carry = v3.len(v3.sub(wL, wR)) < 0.55 && (v3.dot(v3.sub(wL, hipM), n) + v3.dot(v3.sub(wR, hipM), n)) / 2 > 0.22;
+  const a = v3.sub(el, sh);
+  out.upper = rad2deg(Math.atan2(v3.dot(a, n), v3.dot(a, t)));
+  const v1 = v3.sub(sh, el), v2 = v3.sub(wr, el);
+  out.elbow = 180 - rad2deg(Math.acos(clamp(v3.dot(v1, v2) / (v3.len(v1) * v3.len(v2) || 1), -1, 1)));
+  if (vis(I.ear) >= .3) { const hv = v3.sub(ear, sh); out.neck = rad2deg(Math.atan2(v3.dot(hv, n), v3.dot(hv, up))); }
+  // Modificadores estimados del video (3D): abducción del brazo, giro del tronco e inclinación lateral
+  const alat = v3.dot(a, r), aPlane = Math.hypot(v3.dot(a, n), v3.dot(a, t));
+  out.abdDeg = rad2deg(Math.atan2(Math.abs(alat), aPlane)); out.abd = out.abdDeg > 30;
+  const rHipRaw = unit3(v3.sub(Rh, Lh)), rHip = unit3(v3.sub(rHipRaw, v3.mul(up, v3.dot(rHipRaw, up))));
+  out.twistDeg = rad2deg(Math.acos(clamp(v3.dot(r, rHip), -1, 1))); out.trTwist = out.twistDeg > 20;
+  out.sideDeg = rad2deg(Math.asin(clamp(Math.abs(v3.dot(up, rHipRaw)), 0, 1))); out.trSide = out.sideDeg > 15;
+  out.ok = true; return out;
+}
+// Índice de desfavorabilidad (criterio de selección): flexión de tronco + elevación del brazo (+ carga probable)
+const severity = m => Math.min(Math.max(m.trunk, 0), 120) + (m.armLow ? 0.4 : 0.8) * Math.min(Math.max(m.upper, 0), 150) + (m.carry ? 25 : 0);
+const median = a => { const b = a.filter(Number.isFinite).sort((x,y)=>x-y); return b.length ? b[Math.floor(b.length/2)] : NaN; };
+function smoothSeries(meas) {                               // mediana de 3 fotogramas vecinos
+  return meas.map((m, i) => {
+    if (!m.ok) return m;
+    const w = [meas[i-1], m, meas[i+1]].filter(q => q && q.ok);
+    const r = { ...m };
+    for (const k of ['trunk','upper','elbow','neck']) r[k] = median(w.map(q => q[k]));
+    return r;
+  });
+}
+function pickCandidates(sm, ts, o, includeNon, minGap = 1.0, n = 3) {
+  const list = [];
+  sm.forEach((m, i) => { if (m.ok && (m.lateral || includeNon)) { const sc = rulaScore(m, o); sc.sev = severity(m); list.push({ i, t: ts[i], sc, m }); } });
+  list.sort((a, b) => b.sc.sev - a.sc.sev || b.sc.final - a.sc.final);
+  const out = [];
+  for (const c of list) { if (out.every(q => Math.abs(q.t - c.t) >= minGap)) out.push(c); if (out.length >= n) break; }
+  return out;
+}
+// ==LOGIC-END==
+
+// ---------------- Interfaz ----------------
+const $ = id => document.getElementById(id);
+let video, landmarker, landmarkerKey = '', drawToken = 0, samples = [], ts = [], W = 0, H = 0, vis = { R:0, L:0 }, kgConfirmed = false, sel = 0, cands = [], sm = [], meas = [], curSide = 'R';
+
+const opts = () => ({
+  kg:+$('kg').value || 0, loadType:$('loadType').value, muscle:$('muscle').checked,
+  shRaised:$('shRaised').checked, armAbd:$('armAbd').checked, armSup:$('armSup').checked, crossMid:$('crossMid').checked,
+  wrist:+$('wrist').value, twist:+$('twist').value, neckSel:$('neckSel').value, neckTw:$('neckTw').checked, neckSb:$('neckSb').checked,
+  seated:$('seated').checked, trTw:$('trTw').checked, trSb:$('trSb').checked, legs:+$('legs').value,
+});
+const origenTag = k => ({ m:'<span class="tag m">medido</span>', e:'<span class="tag e">estimado · baja confianza</span>', i:'<span class="tag i">ingresado por el evaluador</span>' }[k]);
+
+$('file').addEventListener('change', async e => {
+  const f = e.target.files[0]; if (!f) return;
+  video = document.createElement('video'); video.muted = true; video.playsInline = true; video.preload = 'auto';
+  video.src = URL.createObjectURL(f);
+  await new Promise(r => video.addEventListener('loadeddata', r, { once:true }));
+  $('tFrom').value = 0; $('tTo').value = video.duration.toFixed(1);
+  $('vinfo').textContent = `${f.name} · ${video.videoWidth}×${video.videoHeight} · ${video.duration.toFixed(1)} s`;
+  $('go').disabled = false; $('go').click();
+});
+$('kgOk').onclick = confirmKg; $('kg').addEventListener('change', confirmKg);
+function confirmKg() {
+  kgConfirmed = true; const b = $('kgBanner'); b.className = 'banner ok'; b.textContent = `Peso ingresado por el evaluador: ${$('kg').value} kg`;
+  if (samples.length) render();
+}
+for (const id of ['autoMods','side','mode','inclNon','latMax','visMin','loadType','muscle','shRaised','armAbd','armSup','crossMid','wrist','twist','neckSel','neckTw','neckSb','seated','trTw','trSb','legs','kg'])
+  $(id).addEventListener('input', () => { if (samples.length) render(); });
+
+function seekTo(v, t) {
+  return new Promise(res => {
+    if (Math.abs(v.currentTime - t) < 1e-3) return res();
+    const done = () => { v.removeEventListener('seeked', done); clearTimeout(to); res(); };
+    const to = setTimeout(done, 2500);
+    v.addEventListener('seeked', done); v.currentTime = t;
+  });
+}
+async function getLandmarker() {
+  const key = $('model').value;
+  if (landmarker && landmarkerKey === key) return landmarker;
+  if (landmarker) { try { landmarker.close(); } catch (e) {} landmarker = null; }
+  const fs = await FilesetResolver.forVisionTasks(WASM);
+  for (const delegate of ['GPU', 'CPU']) {
+    try { landmarker = await PoseLandmarker.createFromOptions(fs, { baseOptions:{ modelAssetPath:modelUrl(key), delegate }, runningMode:'IMAGE', numPoses:1 }); landmarkerKey = key; return landmarker; }
+    catch (err) { console.warn('delegate', delegate, err); }
+  }
+  throw new Error('No se pudo cargar el modelo de pose (revisa la conexión).');
+}
+$('go').onclick = async () => {
+  try {
+    $('go').disabled = true; $('res').hidden = true; $('prog').hidden = false; $('status').textContent = 'Cargando modelo de pose…';
+    const lm = await getLandmarker();
+    const scale = Math.min(1, 960 / video.videoWidth); W = Math.round(video.videoWidth * scale); H = Math.round(video.videoHeight * scale);
+    const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const g = cv.getContext('2d', { willReadFrequently:true });
+    const step = 1 / clamp(+$('fps').value || 8, 2, 25);
+    const t0 = clamp(+$('tFrom').value || 0, 0, video.duration), t1 = clamp(+$('tTo').value || video.duration, t0, video.duration);
+    samples = []; ts = []; vis = { R:0, L:0 };
+    const total = Math.max(1, Math.floor((t1 - t0) / step) + 1);
+    for (let k = 0; k < total; k++) {
+      const t = Math.min(t1, t0 + k * step);
+      await seekTo(video, t); g.drawImage(video, 0, 0, W, H);
+      const r = lm.detect(cv), p = r.landmarks && r.landmarks[0], wl = r.worldLandmarks && r.worldLandmarks[0];
+      samples.push(p ? { n:p, w:wl || null } : null); ts.push(t);
+      if (p) for (const sd of ['R','L']) { const I = IDX[sd]; vis[sd] += (p[I.s].visibility + p[I.e].visibility + p[I.w].visibility + p[I.h].visibility) / 4; }
+      $('prog').value = (k + 1) / total; $('status').textContent = `Analizando… ${k + 1}/${total} fotogramas`;
+      if (k % 4 === 0) await new Promise(r => setTimeout(r));
+    }
+    $('status').textContent = `Listo: ${samples.filter(Boolean).length}/${total} fotogramas con persona detectada.`;
+    $('prog').hidden = true; render();
+  } catch (err) { $('status').textContent = 'Error: ' + err.message; console.error(err); $('prog').hidden = true; }
+  finally { $('go').disabled = false; }
+};
+
+function render() {
+  const sd = $('side').value; curSide = sd === 'auto' ? (vis.R >= vis.L ? 'R' : 'L') : sd;
+  const latMax = +$('latMax').value || 0.5, visMin = +$('visMin').value || 0.4, o = opts(), non = $('inclNon').checked || $('mode').value === '3d';
+  const mode3 = $('mode').value === '3d';
+  const auto = $('autoMods').checked;
+  meas = samples.map(p => p ? ((mode3 && p.w) ? measure3D(p.w, p.n, curSide, visMin, W, H) : measure(p.n, W, H, curSide, latMax, visMin)) : { ok:false, why:'none', lateral:false, trunk:NaN, upper:NaN, elbow:NaN, neck:NaN, ratio:NaN });
+  if (!auto) meas.forEach(m => { m.abd = m.trTwist = m.trSide = false; });
+  sm = smoothSeries(meas);
+  cands = pickCandidates(sm, ts, o, non); sel = Math.min(sel, Math.max(0, cands.length - 1));
+  $('res').hidden = false;
+  const tag = kgConfirmed ? `Peso ingresado por el evaluador: ${o.kg} kg` : `PESO NO CONFIRMADO: ${o.kg} kg por defecto`;
+  const nLat = sm.filter(m => m.ok && m.lateral).length;
+  const cnt = { none:0, vis:0, face:0, nonlat:0, armLow:0 };
+  meas.forEach(m => { if (m.why === 'none') cnt.none++; else if (m.why === 'vis') cnt.vis++; else if (m.why === 'face') cnt.face++; else if (m.ok) { if (!m.lateral) cnt.nonlat++; if (m.armLow) cnt.armLow++; } });
+  const diag = `<div class="note">Fotogramas analizados: ${samples.length} · utilizables (vista lateral): ${nLat} · descartados: sin persona ${cnt.none}, tronco poco visible ${cnt.vis}, sin saber hacia dónde mira ${cnt.face} · incluidos con aviso: vista poco lateral ${non ? cnt.nonlat : 0}, brazo tapado ${cnt.armLow}</div>`;
+  if (!cands.length) {
+    $('sumBox').innerHTML = `<div class="banner bad">No hay fotogramas utilizables. Prueba bajar la visibilidad mínima, subir el límite de vista lateral, marcar "incluir vistas no laterales" o ampliar el rango de tiempo.</div>${diag}`;
+    $('cands').innerHTML = ''; $('detail').innerHTML = ''; drawChart(); return;
+  }
+  const b = cands[0];
+  $('sumBox').innerHTML = `<div class="banner ${kgConfirmed ? 'ok' : 'bad'}">${tag}</div>
+    <div class="big"><span style="display:inline-block;width:14px;height:14px;border-radius:50%;vertical-align:-1px;background:${['','#16a34a','#eab308','#f97316','#dc2626'][b.sc.action[0]]}"></span> Postura más desfavorable: t = ${b.t.toFixed(1)} s · RULA = ${b.sc.final} · nivel de acción ${b.sc.action[0]}</div>
+    <div>${b.sc.action[1]}</div>
+    <div class="note">Lado evaluado: ${curSide === 'R' ? 'derecho' : 'izquierdo'}</div>${diag}`;
+  $('cands').innerHTML = ''; const jobs = [], tok = ++drawToken;
+  cands.forEach((c, k) => {
+    const d = document.createElement('div'); d.className = 'cand' + (k === sel ? ' sel' : '');
+    const cv = document.createElement('canvas'); d.appendChild(cv);
+    const cap = document.createElement('div'); cap.className = 'note'; cap.textContent = `#${k + 1} · t=${c.t.toFixed(1)} s · RULA ${c.sc.final}`; d.appendChild(cap);
+    d.onclick = () => { sel = k; render(); }; $('cands').appendChild(d); jobs.push([cv, c]);
+  });
+  (async () => { for (const [cv, c] of jobs) { if (tok !== drawToken) return; await drawCand(cv, c); } })();  // uno por uno: un solo video no puede estar en 3 instantes a la vez
+  detail(cands[sel]); drawChart();
+}
+async function drawCand(cv, c) {
+  const sc = Math.min(1, 480 / video.videoWidth); cv.width = Math.round(video.videoWidth * sc); cv.height = Math.round(video.videoHeight * sc);
+  await seekTo(video, c.t); await new Promise(r => setTimeout(r, 40)); const g = cv.getContext('2d'); g.drawImage(video, 0, 0, cv.width, cv.height);
+  const p = samples[c.i] && samples[c.i].n; if (!p) return; const X = i => p[i].x * cv.width, Y = i => p[i].y * cv.height, I = IDX[curSide];
+  const seg = (a, b, col, w) => { g.strokeStyle = col; g.lineWidth = w; g.beginPath(); g.moveTo(X(a), Y(a)); g.lineTo(X(b), Y(b)); g.stroke(); };
+  for (const [a, b] of [[11,12],[11,23],[12,24],[23,24],[23,25],[24,26],[25,27],[26,28],[11,13],[13,15],[12,14],[14,16]]) seg(a, b, '#38bdf8aa', 2);
+  seg(I.h, I.s, '#facc15', 4); seg(I.s, I.e, '#ef4444', 4); seg(I.e, I.w, '#f97316', 4); seg(I.s, I.ear, '#a78bfa', 3);
+  g.fillStyle = '#000a'; g.fillRect(4, 4, 150, 56); g.fillStyle = '#fff'; g.font = '12px system-ui';
+  g.fillText(`tronco ${c.m.trunk.toFixed(0)}°`, 10, 20); g.fillText(`brazo ${c.m.upper.toFixed(0)}°`, 10, 34); g.fillText(`codo ${c.m.elbow.toFixed(0)}°`, 10, 48);
+}
+function detail(c) {
+  const s = c.sc, m = c.m, o = opts(), f1 = v => Number.isFinite(v) ? v.toFixed(0) + '°' : '—';
+  const row = (name, ang, base, fin, org) => `<tr><td>${name}</td><td class="n">${ang}</td><td class="n">${base}</td><td class="n"><b>${fin}</b></td><td>${org}</td></tr>`;
+  const neckO = o.neckSel === 'auto' ? origenTag('e') : origenTag('i');
+  const avisos = [m.armLow ? 'brazo poco visible (tapado por la carga u otro objeto): los ángulos de brazo y antebrazo son estimados por el modelo' : '',
+    m.lateral === false ? 'vista poco lateral: la profundidad la estima el modelo y es menos fiable' : ''].filter(Boolean);
+  const crit = `<div class="note">Criterio de selección: mayor flexión de tronco + elevación del brazo (+ carga probable). Índice = ${s.sev.toFixed(0)} · tronco ${m.trunk.toFixed(0)}°${Number.isFinite(m.trunk2d) ? ` (3D ${m.trunk3d.toFixed(0)}° / imagen ${m.trunk2d.toFixed(0)}°)` : ''} · brazo ${Number.isFinite(m.upper) ? m.upper.toFixed(0) : '—'}° · agarre a dos manos al frente: ${m.carry ? 'sí' : 'no'}</div>`;
+  $('detail').innerHTML = `<h2>Detalle del fotograma #${sel + 1} (t = ${c.t.toFixed(1)} s)</h2>${crit}${avisos.length ? `<div class="banner" style="background:#d9770622;border:1px solid var(--warn);color:var(--warn)">Aviso: ${avisos.join(' · ')}</div>` : ''}
+  <table><tr><th>Segmento</th><th>Ángulo</th><th>Puntaje por ángulo</th><th>Puntaje final (con modificadores)</th><th>Origen</th></tr>
+  ${row('Brazo superior', f1(m.upper), s.upperBase, s.upper, origenTag('m'))}
+  ${row('Antebrazo', f1(m.elbow), s.lowerBase, s.lower, origenTag('m'))}
+  ${row('Muñeca', '—', '—', o.wrist, origenTag('i'))}
+  ${row('Giro de muñeca', '—', '—', o.twist, origenTag('i'))}
+  ${row('Cuello', f1(m.neck), s.neckBase, s.neck, neckO)}
+  ${row('Tronco', f1(m.trunk), s.trunkBase, s.trunk, origenTag('m'))}
+  ${row('Piernas', '—', '—', o.legs, origenTag('i'))}
+  ${row('Uso muscular / Fuerza-carga', '—', '—', `${s.muscle} / ${s.force}`, origenTag('i'))}</table>
+  <table><tr><th>Tabla A</th><th>Tabla B</th><th>Puntaje C (A + uso + fuerza)</th><th>Puntaje D (B + uso + fuerza)</th><th>Tabla C → final</th></tr>
+  <tr><td class="n">${s.A}</td><td class="n">${s.B}</td><td class="n">${s.C}</td><td class="n">${s.D}</td><td class="n"><b>${s.final}</b></td></tr></table>
+  <div class="note">${Number.isFinite(m.abdDeg) ? `<span class="tag e">estimado del video (3D)</span> abducción del brazo ${m.abdDeg.toFixed(0)}° → ${m.abd ? '+1' : 'no'} · giro del tronco ${m.twistDeg.toFixed(0)}° → ${m.trTwist ? '+1' : 'no'} · inclinación lateral ${m.sideDeg.toFixed(0)}° → ${m.trSide ? '+1' : 'no'}. ` : ''}No medidos (se suponen neutros salvo que los marques en Ajustes): muñeca, hombro elevado, cuello girado o inclinado, piernas.</div>`;
+}
+function drawChart() {
+  const c = $('chart'), dpr = devicePixelRatio || 1, Wc = c.clientWidth, Hc = 220; c.width = Wc * dpr; c.height = Hc * dpr;
+  const g = c.getContext('2d'); g.scale(dpr, dpr); g.clearRect(0, 0, Wc, Hc);
+  const fg = getComputedStyle(document.body).color, t0 = ts[0], t1 = ts[ts.length - 1] || 1;
+  const X = t => 36 + (Wc - 46) * (t - t0) / Math.max(1e-6, t1 - t0), Y = a => Hc - 18 - (Hc - 30) * (a + 30) / 180;
+  const dt = ts.length > 1 ? ts[1] - ts[0] : 0.1;
+  g.fillStyle = '#8883'; sm.forEach((m, i) => { if (!(m.ok && (m.lateral || $('inclNon').checked || $('mode').value === '3d'))) g.fillRect(X(ts[i] - dt / 2), 4, Math.max(1, X(ts[i] + dt / 2) - X(ts[i] - dt / 2)), Hc - 22); });
+  g.strokeStyle = '#8886'; g.fillStyle = fg; g.font = '11px system-ui'; g.lineWidth = 1;
+  for (const a of [0, 45, 90, 135]) { g.beginPath(); g.moveTo(36, Y(a)); g.lineTo(Wc - 10, Y(a)); g.stroke(); g.fillText(a + '°', 4, Y(a) + 4); }
+  for (const [k, col] of [['trunk', '#3b82f6'], ['upper', '#f97316']]) {
+    g.strokeStyle = col; g.lineWidth = 2; g.beginPath(); let pen = false;
+    sm.forEach((m, i) => { const v = m.ok ? m[k] : NaN; if (!Number.isFinite(v)) { pen = false; return; } const x = X(ts[i]), y = Y(clamp(v, -30, 150)); pen ? g.lineTo(x, y) : g.moveTo(x, y); pen = true; });
+    g.stroke();
+  }
+  g.strokeStyle = '#ef4444'; g.lineWidth = 1.5; cands.forEach((cd, k) => { g.beginPath(); g.moveTo(X(cd.t), 4); g.lineTo(X(cd.t), Hc - 18); g.stroke(); g.fillStyle = '#ef4444'; g.fillText('#' + (k + 1), X(cd.t) + 3, 14); });
+  g.fillStyle = fg; g.fillText('s', Wc - 10, Hc - 4); g.fillText(t0.toFixed(0), 36, Hc - 4); g.fillText(t1.toFixed(0), Wc - 28, Hc - 4);
+}
+$('dlJson').onclick = () => {
+  const data = { archivo: $('vinfo').textContent, lado: curSide, medicion: $('mode').value, ancho: W, alto: H, limiteLateral: +$('latMax').value,
+    muestras: ts.map((t, i) => ({ t:+t.toFixed(3), ok:meas[i].ok, brazoTapado:!!meas[i].armLow, motivo:meas[i].why || '', lateral:meas[i].lateral, ratio:+(meas[i].ratio || 0).toFixed(3),
+      tronco:+(meas[i].trunk || 0).toFixed(1), tronco3d:+(meas[i].trunk3d || 0).toFixed(1), tronco2d:+(meas[i].trunk2d || 0).toFixed(1), carga:!!meas[i].carry, brazo:+(meas[i].upper || 0).toFixed(1), codo:+(meas[i].elbow || 0).toFixed(1), cuello:+(meas[i].neck || 0).toFixed(1) })) };
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(data)], { type:'application/json' })); a.download = 'angulos_rula.json'; a.click();
+};
+$('cpTxt').onclick = () => {
+  if (!cands.length) return; const c = cands[sel], s = c.sc, o = opts();
+  const txt = `RULA (estimación inicial desde video)\n${kgConfirmed ? 'Peso ingresado por el evaluador' : 'PESO NO CONFIRMADO'}: ${o.kg} kg\nFotograma t=${c.t.toFixed(1)} s · lado ${curSide}\n` +
+    `Brazo ${c.m.upper.toFixed(0)}° (${s.upper}) · Antebrazo ${c.m.elbow.toFixed(0)}° (${s.lower}) · Cuello ${s.neck} · Tronco ${c.m.trunk.toFixed(0)}° (${s.trunk})\n` +
+    `A=${s.A} B=${s.B} C=${s.C} D=${s.D} → RULA ${s.final} · nivel de acción ${s.action[0]}\n` +
+    `AVISO: valores estimados automáticamente; pueden contener errores; no sustituyen la evaluación de un profesional calificado.`;
+  navigator.clipboard.writeText(txt); $('status').textContent = 'Resumen copiado.';
+};
+window.addEventListener('resize', () => { if (samples.length) drawChart(); });
+</script>
+</body>
+</html>
