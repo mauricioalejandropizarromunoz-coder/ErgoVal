@@ -1288,37 +1288,34 @@ export function renderWireframeFigureToCanvas(
       ctx.fillText('Ilustración Biomecánica Técnica', widthPx / 2, bodyAreaY + bodyAreaH / 2);
       ctx.restore();
     } else if (panels.length >= 2) {
-      const halfW = Math.floor(widthPx / 2);
-      renderSingleWireframePanel(
-        ctx,
-        engine,
-        spec.id,
-        0,
-        panels[0],
-        { x: 0, y: bodyAreaY, w: halfW - 1, h: bodyAreaH },
-        orbitOverride,
-        options,
-        scale,
-      );
-      renderSingleWireframePanel(
-        ctx,
-        engine,
-        spec.id,
-        1,
-        panels[1],
-        { x: halfW + 1, y: bodyAreaY, w: widthPx - halfW - 1, h: bodyAreaH },
-        orbitOverride,
-        options,
-        scale,
-      );
+      // Admite 2 a 4 paneles en columnas iguales (con 2 paneles el resultado es idéntico al anterior).
+      const nCols = Math.min(panels.length, 4);
+      const colW = Math.floor(widthPx / nCols);
+      for (let i = 0; i < nCols; i++) {
+        const x0 = i * colW + (i > 0 ? 1 : 0);
+        const x1 = i === nCols - 1 ? widthPx : (i + 1) * colW - 1;
+        renderSingleWireframePanel(
+          ctx,
+          engine,
+          spec.id,
+          i,
+          panels[i],
+          { x: x0, y: bodyAreaY, w: x1 - x0, h: bodyAreaH },
+          orbitOverride,
+          options,
+          scale,
+        );
+      }
 
       ctx.save();
       ctx.strokeStyle = WF_PALETTE.border;
       ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(halfW, topTitleBarH);
-      ctx.lineTo(halfW, heightPx - bottomManualFooterH);
-      ctx.stroke();
+      for (let i = 1; i < nCols; i++) {
+        ctx.beginPath();
+        ctx.moveTo(i * colW, topTitleBarH);
+        ctx.lineTo(i * colW, heightPx - bottomManualFooterH);
+        ctx.stroke();
+      }
       ctx.restore();
     } else if (panels.length === 1) {
       renderSingleWireframePanel(

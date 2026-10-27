@@ -213,6 +213,36 @@ export function getCatalogPanelMethodSpec(
           },
         };
       }
+      if (panelIdx === 2) {
+        return {
+          showZeroRefLine: true,
+          sectors: [
+            { joint: 'shoulderR', zeroRef: 'trunk_down', minDeg: 45, maxDeg: 90, minTag: '45°', maxTag: '90°' },
+          ],
+          activeArc: {
+            joint: 'shoulderR',
+            zeroRef: 'trunk_down',
+            toJoint: 'elbowR',
+            label: '3 ptos: 45°–90°',
+            radiusScale: 0.62,
+          },
+        };
+      }
+      if (panelIdx >= 3) {
+        return {
+          showZeroRefLine: true,
+          sectors: [
+            { joint: 'shoulderR', zeroRef: 'trunk_down', minDeg: 90, maxDeg: 145, minTag: '90°', midTag: '>90°' },
+          ],
+          activeArc: {
+            joint: 'shoulderR',
+            zeroRef: 'trunk_down',
+            toJoint: 'elbowR',
+            label: '4 ptos: >90°',
+            radiusScale: 0.62,
+          },
+        };
+      }
       return {
         showZeroRefLine: true,
         sectors: [

@@ -209,25 +209,60 @@ const RAW_BOOK_FIGURE_CATALOG: BookFigureFileSpec[] = [
     bookDescription:
       'Tabla 4.2 RULA — Puntuaciones base del brazo: 1 pto (−20° a 20°), 2 ptos (ext. >20° o flex. 20°–45°), 3 ptos (45°–90°) y 4 ptos (>90°).',
     bodiesRule: '2',
-    widthPx: 800,
+    widthPx: 1600,
     heightPx: 520,
     renderMode: '3d_dual',
+    // ÁNGULOS MEDIDOS SOBRE LA IMAGEN DEL LIBRO (fig-4-04a): brazo superior (hombro→codo) respecto al eje del tronco.
+    // Panel 1 ≈ 20° · Panel 2 ≈ 35° · Panel 3 ≈ 79° · Panel 4 ≈ 108°  (±3°).  Codo ≈ 6–8° de flexión.
+    // Abducción = 0° para que el brazo quede exactamente en el plano sagital.
     panels: [
       {
-        subTitle: '1–2 ptos: −20° a 45° de flexión',
-        scoreBadge: '1–2 ptos',
+        subTitle: '1 pto: −20° a 20°',
+        scoreBadge: '1 pto',
         focusZone: 'shoulder_arm',
         cameraPreset: 'sagittal_right',
-        pose: makeNeutralPose({ shoulderRFlexionDeg: 30, elbowRFlexionDeg: 22 }),
-        angleArcs: [{ joint: 'shoulderR', refType: 'trunk_axis', toJoint: 'elbowR', label: 'α: 20°–45°' }],
+        pose: makeNeutralPose({
+          shoulderRFlexionDeg: 20, shoulderLFlexionDeg: 20,
+          shoulderRAbductionDeg: 0, shoulderLAbductionDeg: 0,
+          elbowRFlexionDeg: 8, elbowLFlexionDeg: 8,
+        }),
+        angleArcs: [{ joint: 'shoulderR', refType: 'trunk_axis', toJoint: 'elbowR', label: 'α = 20° (1 pto)' }],
       },
       {
-        subTitle: '3–4 ptos: 45° a > 90° de flexión',
-        scoreBadge: '3–4 ptos',
+        subTitle: '2 ptos: 20° a 45°',
+        scoreBadge: '2 ptos',
         focusZone: 'shoulder_arm',
         cameraPreset: 'sagittal_right',
-        pose: makeNeutralPose({ shoulderRFlexionDeg: 104, elbowRFlexionDeg: 14 }),
-        angleArcs: [{ joint: 'shoulderR', refType: 'trunk_axis', toJoint: 'elbowR', label: 'α > 90°' }],
+        pose: makeNeutralPose({
+          shoulderRFlexionDeg: 35, shoulderLFlexionDeg: 35,
+          shoulderRAbductionDeg: 0, shoulderLAbductionDeg: 0,
+          elbowRFlexionDeg: 8, elbowLFlexionDeg: 8,
+        }),
+        angleArcs: [{ joint: 'shoulderR', refType: 'trunk_axis', toJoint: 'elbowR', label: 'α = 35° (2 ptos)' }],
+      },
+      {
+        subTitle: '3 ptos: 45° a 90°',
+        scoreBadge: '3 ptos',
+        focusZone: 'shoulder_arm',
+        cameraPreset: 'sagittal_right',
+        pose: makeNeutralPose({
+          shoulderRFlexionDeg: 79, shoulderLFlexionDeg: 79,
+          shoulderRAbductionDeg: 0, shoulderLAbductionDeg: 0,
+          elbowRFlexionDeg: 6, elbowLFlexionDeg: 6,
+        }),
+        angleArcs: [{ joint: 'shoulderR', refType: 'trunk_axis', toJoint: 'elbowR', label: 'α = 79° (3 ptos)' }],
+      },
+      {
+        subTitle: '4 ptos: > 90°',
+        scoreBadge: '4 ptos',
+        focusZone: 'shoulder_arm',
+        cameraPreset: 'sagittal_right',
+        pose: makeNeutralPose({
+          shoulderRFlexionDeg: 108, shoulderLFlexionDeg: 108,
+          shoulderRAbductionDeg: 0, shoulderLAbductionDeg: 0,
+          elbowRFlexionDeg: 6, elbowLFlexionDeg: 6,
+        }),
+        angleArcs: [{ joint: 'shoulderR', refType: 'trunk_axis', toJoint: 'elbowR', label: 'α = 108° (4 ptos)' }],
       },
     ],
   },
