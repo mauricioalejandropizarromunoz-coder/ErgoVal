@@ -2020,10 +2020,88 @@ export const FigurePlanStudio: React.FC<FigurePlanStudioProps> = ({ onBackToEval
                     console.error('Error al ejecutar la sincronización en el cliente:', err);
                   }
                 }}
-                className="px-3.5 py-1.5 rounded bg-sky-700 hover:bg-sky-600 text-white text-xs font-bold cursor-pointer transition-colors shadow-xs"
+                               onClick={async () => {
+                  const canvasDom = document.querySelector('canvas');
+                  const videoDom = document.querySelector('video');
+                  
+                  if (!canvasDom || !videoDom) {
+                    alert('Por favor, asegúrate de que el avatar renderizado y el video MP4 visible en pantalla.');
+                    return;
+                  }
+
+                  try {
+                    alert('Iniciando captura... El sistema calibrará las posturas exactas y grabará la animación 3D de forma simultánea.');
+                    
+                    const streamCanvas = canvasDom.captureStream(30);
+                    const chunksVideo = [];
+                    const mediaRecorder = new MediaRecorder(streamCanvas, {
+                      mimeType: 'video/webm;codecs=vp9',
+                      videoBitsPerSecond: 2500000
+                    });
+
+                    mediaRecorder.ondataavailable = (e) => {
+                      if (e.data && e.data.size > 0) chunksVideo.push(e.data);
+                    };
+
+                    mediaRecorder.onstop = () => {
+                      const blobVideo = new Blob(chunksVideo, { type: 'video/webm' });
+                      const urlDescarga = URL.createObjectURL(blobVideo);
+                      
+                      const enlaceDescarga = document.createElement('a');
+                      enlaceDescarga.href = urlDescarga;
+                      enlaceDescarga.download = 'simulacion_perfecta_avatar.webm';
+                      document.body.appendChild(enlaceDescarga);
+                      enlaceDescarga.click();
+                      document.body.removeChild(enlaceDescarga);
+                    };
+
+                    mediaRecorder.start();
+                    
+                    const resultadoMoCap = await trackVideoFrames(videoDom);
+                    
+                    if (resultadoMoCap && resultadoMoCap.posesPorFrame && resultadoMoCap.posesPorFrame.length > 0) {
+                      const framesPose = resultadoMoCap.posesPorFrame;
+                      
+                      let indiceOrigen = 0;
+                      let maximaFlexion = 0;
+                      for (let idx = 0; idx < framesPose.length; idx++) {
+                        const flex = Math.abs(framesPose[idx]?.trunkFlexionDeg || 0);
+                        if (flex > maximaFlexion) {
+                          maximaFlexion = flex;
+                          indiceOrigen = idx;
+                        }
+                      }
+
+                      let indiceDestino = framesPose.length - 1;
+                      let minimaFlexion = Infinity;
+                      for (let idx = indiceOrigen; idx < framesPose.length; idx++) {
+                        const flex = Math.abs(framesPose[idx]?.trunkFlexionDeg || 0);
+                        if (flex < minimaFlexion) {
+                          minimaFlexion = flex;
+                          indiceDestino = idx;
+                        }
+                      }
+                      
+                      if (typeof (window as any).setCustomSpecPose === 'function') {
+                        (window as any).setCustomSpecPose(framesPose[indiceOrigen], 'origen');
+                        (window as any).setCustomSpecPose(framesPose[indiceDestino], 'destino');
+                      }
+                    }
+
+                    setTimeout(() => {
+                      mediaRecorder.stop();
+                      alert('¡Proceso completado! Posturas alineadas y video biomecánico descargado.');
+                    }, videoDom.duration * 1000);
+
+                  } catch (err) {
+                    console.error('Error en el pipeline de simulación unificada:', err);
+                    alert('Hubo un problema al procesar o grabar el video en este navegador.');
+                  }
+                }}
+                className="px-4 py-2 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold cursor-pointer transition-all shadow-sm border border-sky-400 shrink-0"
               >
-                Sincronizar Avatar con Video Real
-              </button>
+                Ejecutar MoCap y Grabar Réplica 3D
+
             </div>
 
               </button>
