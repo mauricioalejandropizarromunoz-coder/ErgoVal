@@ -44,6 +44,20 @@ import {
   subscribeFigurePhotoOverrides,
 } from '../utils/figurePlanCatalog';
 import {
+  // --- INTERCEPTOR DE DESBLOQUEO GLOBAL BIOMECÁNICO IA — ERGOVAL ---
+// Guardamos una copia de la función original de fotos estáticas
+import * as catalogModule from '../utils/figurePlanCatalog';
+const funcionOriginalFotos = catalogModule.getEffectiveFigurePhotoUrl;
+
+// Reemplazamos la función dentro del archivo para que se apague si el MoCap está corriendo
+(catalogModule as any).getEffectiveFigurePhotoUrl = function(spec: any) {
+  if ((window as any).isMoCapActive === true) {
+    return undefined; // Desactiva el bloqueo de imagen fija y libera el avatar 3D en tiempo real
+  }
+  return funcionOriginalFotos(spec);
+};
+// -----------------------------------------------------------------
+
   CameraOrbitOverride,
   DEFAULT_ORBIT_OVERRIDE,
   FigureRenderOptions,
@@ -1919,18 +1933,113 @@ export const FigurePlanStudio: React.FC<FigurePlanStudioProps> = ({ onBackToEval
               >
                 <Download className="w-3.5 h-3.5" />
                 Descargar {customSpec.fileName} (Alta Calidad)
-                            {/* COMPONENTE CONECTOR MOCAP DE IA REAL - INYECCIÓN ERGOVAL */}
-            <div className="mt-4 p-3 bg-sky-50 border border-sky-200 rounded-md flex flex-col sm:flex-row items-center justify-between gap-3">
+                                     {/* PANEL UNIFICADO ERGOVAL: MOCAP + SINCRONIZACIÓN DE ÁNGULOS + GRABACIÓN DE VIDEO 3D */}
+            <div className="mt-4 p-4 bg-slate-900 border border-slate-700 rounded-md flex flex-col sm:flex-row items-center justify-between gap-4 text-white shadow-md">
               <div className="flex flex-col">
-                <span className="text-xs font-bold text-sky-900 flex items-center gap-1">
-                  ✨ Captura de Movimiento Biomecánica Real Activa
+                <span className="text-xs font-bold text-sky-400 flex items-center gap-1">
+                  🎥 Central Biomecánica IA (MoCap + Sincronización + Grabación)
                 </span>
-                <span className="text-[11px] text-sky-700">
-                  Procesa el video MP4 frame por frame en tu tarjeta gráfica local mediante visión artificial.
+                <span className="text-[11px] text-slate-300">
+                  Calibra las posturas de origen/destino reales del operario y exporta la réplica del avatar en video 3D.
                 </span>
               </div>
+              
               <button
                 type="button"
+                onClick={async () => {
+                  const canvasDom = document.querySelector('canvas');
+                  const videoDom = document.querySelector('video');
+                  
+                  if (!canvasDom || !videoDom) {
+                    alert('Por favor, asegúrate de tener el avatar renderizado y el video MP4 visible en pantalla.');
+                    return;
+                  }
+
+                  try {
+                    // Encendemos la bandera global para desactivar el bloqueo estático
+                    (window as any).isMoCapActive = true;
+                    alert('Iniciando captura... El sistema calibrará las posturas exactas y grabará la animación 3D de forma simultánea.');
+                    
+                    // Configurar la grabación del lienzo 3D
+                    const streamCanvas = canvasDom.captureStream(30);
+                    const chunksVideo = [];
+                    const mediaRecorder = new MediaRecorder(streamCanvas, {
+                      mimeType: 'video/webm;codecs=vp9',
+                      videoBitsPerSecond: 2500000
+                    });
+
+                    mediaRecorder.ondataavailable = (e) => {
+                      if (e.data && e.data.size > 0) chunksVideo.push(e.data);
+                    };
+
+                    mediaRecorder.onstop = () => {
+                      const blobVideo = new Blob(chunksVideo, { type: 'video/webm' });
+                      const urlDescarga = URL.createObjectURL(blobVideo);
+                      
+                      const enlaceDescarga = document.createElement('a');
+                      enlaceDescarga.href = urlDescarga;
+                      enlaceDescarga.download = 'simulacion_perfecta_avatar.webm';
+                      document.body.appendChild(enlaceDescarga);
+                      enlaceDescarga.click();
+                      document.body.removeChild(enlaceDescarga);
+                    };
+
+                    mediaRecorder.start();
+                    
+                    // Extraer fotogramas con MediaPipe
+                    const resultadoMoCap = await trackVideoFrames(videoDom);
+                    
+                    if (resultadoMoCap && resultadoMoCap.posesPorFrame && resultadoMoCap.posesPorFrame.length > 0) {
+                      const framesPose = resultadoMoCap.posesPorFrame;
+                      
+                      // Buscar momento de máxima flexión (Origen)
+                      let indiceOrigen = 0;
+                      let maximaFlexion = 0;
+                      for (let idx = 0; idx < framesPose.length; idx++) {
+                        const flex = Math.abs(framesPose[idx]?.trunkFlexionDeg || 0);
+                        if (flex > maximaFlexion) {
+                          maximaFlexion = flex;
+                          indiceOrigen = idx;
+                        }
+                      }
+
+                      // Buscar momento de reincorporación (Destino)
+                      let indiceDestino = framesPose.length - 1;
+                      let minimaFlexion = Infinity;
+                      for (let idx = indiceOrigen; idx < framesPose.length; idx++) {
+                        const flex = Math.abs(framesPose[idx]?.trunkFlexionDeg || 0);
+                        if (flex < minimaFlexion) {
+                          minimaFlexion = flex;
+                          indiceDestino = idx;
+                        }
+                      }
+                      
+                      // Forzar inyección real en el visor de Three.js
+                      if (typeof (window as any).setCustomSpecPose === 'function') {
+                        (window as any).setCustomSpecPose(framesPose[indiceOrigen], 'origen');
+                        (window as any).setCustomSpecPose(framesPose[indiceDestino], 'destino');
+                      }
+                    }
+
+                    // Detener grabación al finalizar la duración del video
+                    setTimeout(() => {
+                      mediaRecorder.stop();
+                      (window as any).isMoCapActive = false;
+                      alert('¡Proceso completado! Posturas alineadas y video biomecánico descargado.');
+                    }, videoDom.duration * 1000);
+
+                  } catch (err) {
+                    console.error('Error en el pipeline de simulación unificada:', err);
+                    (window as any).isMoCapActive = false;
+                    alert('Hubo un problema al procesar o grabar el video en este navegador.');
+                  }
+                }}
+                className="px-4 py-2 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold cursor-pointer transition-all shadow-sm border border-sky-400 shrink-0"
+              >
+                Ejecutar MoCap y Grabar Réplica 3D
+              </button>
+            </div>
+
                 onClick={async () => {
                   // Localiza el elemento de video renderizado en tu interfaz web
                   const videoDom = document.querySelector('video');
