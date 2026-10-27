@@ -1919,6 +1919,49 @@ export const FigurePlanStudio: React.FC<FigurePlanStudioProps> = ({ onBackToEval
               >
                 <Download className="w-3.5 h-3.5" />
                 Descargar {customSpec.fileName} (Alta Calidad)
+                            {/* COMPONENTE CONECTOR MOCAP DE IA REAL - INYECCIÓN ERGOVAL */}
+            <div className="mt-4 p-3 bg-sky-50 border border-sky-200 rounded-md flex flex-col sm:flex-row items-center justify-between gap-3">
+              <div className="flex flex-col">
+                <span className="text-xs font-bold text-sky-900 flex items-center gap-1">
+                  ✨ Captura de Movimiento Biomecánica Real Activa
+                </span>
+                <span className="text-[11px] text-sky-700">
+                  Procesa el video MP4 frame por frame en tu tarjeta gráfica local mediante visión artificial.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  // Localiza el elemento de video renderizado en tu interfaz web
+                  const videoDom = document.querySelector('video');
+                  if (!videoDom) {
+                    alert('Por favor, asegúrate de que el video MP4 esté cargado y visible en pantalla antes de iniciar.');
+                    return;
+                  }
+                  
+                  try {
+                    // Invoca al extractor matemático que guardamos en utils/poseExtractor.ts
+                    const resultadoMoCap = await trackVideoFrames(videoDom);
+                    
+                    if (resultadoMoCap && resultadoMoCap.peorPoseREBA) {
+                      alert('¡Análisis cinemático exitoso! Las articulaciones han sido mapeadas de forma matemática.');
+                      
+                      // Forzamos la actualización de tu especificación del visor 3D para romper el Fallback fijo
+                      // Esto inyectará los ángulos reales directamente sobre los huesos de Mixamo
+                      if (typeof (window as any).setCustomSpecPose === 'function') {
+                        (window as any).setCustomSpecPose(resultadoMoCap.peorPoseREBA);
+                      }
+                    }
+                  } catch (err) {
+                    console.error('Error al ejecutar MediaPipe en el cliente:', err);
+                  }
+                }}
+                className="px-3.5 py-1.5 rounded bg-sky-700 hover:bg-sky-600 text-white text-xs font-bold cursor-pointer transition-colors shadow-xs"
+              >
+                Sincronizar Avatar con Video Real
+              </button>
+            </div>
+
               </button>
             </div>
           </section>
