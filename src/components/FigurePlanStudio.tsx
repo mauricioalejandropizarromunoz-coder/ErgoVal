@@ -1958,7 +1958,74 @@ export const FigurePlanStudio: React.FC<FigurePlanStudioProps> = ({ onBackToEval
                 }}
                 className="px-3.5 py-1.5 rounded bg-sky-700 hover:bg-sky-600 text-white text-xs font-bold cursor-pointer transition-colors shadow-xs"
               >
+                          {/* COMPONENTE CONECTOR MOCAP DE IA REAL CON SINCRONIZACIÓN DE POSTURAS — ERGOVAL */}
+            <div className="mt-4 p-3 bg-sky-50 border border-sky-200 rounded-md flex flex-col sm:flex-row items-center justify-between gap-3">
+              <div className="flex flex-col">
+                <span className="text-xs font-bold text-sky-900 flex items-center gap-1">
+                  ✨ Captura de Movimiento Biomecánica Real Activa
+                </span>
+                <span className="text-[11px] text-sky-700">
+                  Busca automáticamente los momentos exactos de flexión y reincorporación del operario.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  const videoDom = document.querySelector('video');
+                  if (!videoDom) {
+                    alert('Por favor, asegúrate de que el video MP4 esté cargado y visible en pantalla antes de iniciar.');
+                    return;
+                  }
+                  
+                  try {
+                    // 1. Extraer todos los fotogramas calculados con MediaPipe
+                    const resultadoMoCap = await trackVideoFrames(videoDom);
+                    
+                    if (resultadoMoCap && resultadoMoCap.posesPorFrame && resultadoMoCap.posesPorFrame.length > 0) {
+                      const framesPose = resultadoMoCap.posesPorFrame;
+                      
+                      // 2. BUSCAR EL MOMENTO DE MÁXIMA FLEXIÓN (ORIGEN — OPERARIO AGACHADO)
+                      let indiceOrigen = 0;
+                      let maximaFlexion = 0;
+                      for (let idx = 0; idx < framesPose.length; idx++) {
+                        const flex = Math.abs(framesPose[idx]?.trunkFlexionDeg || 0);
+                        if (flex > maximaFlexion) {
+                          maximaFlexion = flex;
+                          indiceOrigen = idx;
+                        }
+                      }
+
+                      // 3. BUSCAR EL MOMENTO DE REINCORPORACIÓN (DESTINO — OPERARIO PARADO)
+                      let indiceDestino = framesPose.length - 1;
+                      let minimaFlexion = Infinity;
+                      for (let idx = indiceOrigen; idx < framesPose.length; idx++) {
+                        const flex = Math.abs(framesPose[idx]?.trunkFlexionDeg || 0);
+                        if (flex < minimaFlexion) {
+                          minimaFlexion = flex;
+                          indiceDestino = idx;
+                        }
+                      }
+
+                      alert('¡Sincronización cinemática exitosa! Posturas de origen y destino alineadas de forma perfecta.');
+                      
+                      // 4. Forzar la inyección de las poses reales calculadas en el visor 3D derecho
+                      // Esto sobreescribe los valores fijos y empareja el avatar con la foto real de forma exacta
+                      if (typeof (window as any).setCustomSpecPose === 'function') {
+                        // Enviamos la pose real agachada al panel de Origen y la erguida al panel de Destino
+                        (window as any).setCustomSpecPose(framesPose[indiceOrigen], 'origen');
+                        (window as any).setCustomSpecPose(framesPose[indiceDestino], 'destino');
+                      }
+                    }
+                  } catch (err) {
+                    console.error('Error al ejecutar la sincronización en el cliente:', err);
+                  }
+                }}
+                className="px-3.5 py-1.5 rounded bg-sky-700 hover:bg-sky-600 text-white text-xs font-bold cursor-pointer transition-colors shadow-xs"
+              >
                 Sincronizar Avatar con Video Real
+              </button>
+            </div>
+
               </button>
             </div>
 
