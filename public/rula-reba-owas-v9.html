@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ángulos RULA · REBA · OWAS desde video (v3)</title>
+<style>
+:root{color-scheme:light dark;--bd:#8885;--mut:#888;--acc:#0284c7}
+*{box-sizing:border-box}body{font:14px/1.45 system-ui,sans-serif;margin:0 auto;padding:14px;max-width:1100px}
+h1{font-size:19px;margin:0 0 4px}h2{font-size:15px;margin:16px 0 6px}.n{color:var(--mut);font-size:13px}
+fieldset{border:1px solid var(--bd);border-radius:8px;margin:8px 0}label{display:inline-flex;gap:5px;align-items:center;margin:3px 12px 3px 0}
+input[type=number]{width:64px}button{padding:6px 14px;border-radius:6px;border:1px solid var(--bd);cursor:pointer;font:inherit}
+button.m{background:var(--acc);color:#fff;border-color:var(--acc)}
+table{border-collapse:collapse;width:100%}td,th{border:1px solid var(--bd);padding:3px 7px;text-align:right}th,td:nth-child(2){text-align:left}
+tr[data-i]{cursor:pointer}tr.sel{outline:2px solid var(--acc)}
+.box{border:1px solid var(--bd);border-radius:8px;padding:8px 12px;margin:6px 0}.big{font-size:17px;font-weight:700}
+.tabs{display:flex;gap:6px;margin-top:10px}.tab{border-radius:8px 8px 0 0;font-weight:600}.tab.on{background:var(--acc);color:#fff;border-color:var(--acc)}.tp{border:1px solid var(--bd);padding:8px 12px;border-radius:0 8px 8px 8px}.tp[hidden]{display:none}.dot,.chip{display:inline-block;width:12px;height:12px;border-radius:50%;background:#888;vertical-align:-1px}.lg i{display:inline-block;width:20px;height:20px;border-radius:50%;margin-right:3px;vertical-align:-4px}.bar{background:var(--bd);height:22px;border-radius:4px;margin:3px 0;position:relative}.bar i{display:block;height:100%;border-radius:4px}.bar span{position:absolute;left:8px;top:2px;font-size:13px}.mt td,.mt th{text-align:left}.opt{margin-bottom:6px}.cands{display:flex;gap:10px;flex-wrap:wrap}.cand{border:2px solid var(--bd);border-radius:8px;padding:5px;cursor:pointer;flex:1 1 230px;max-width:380px}.cand.on{border-color:var(--acc)}.cand canvas{width:100%;height:auto;margin:0 0 4px}.cand b{display:block}.fh{font-weight:700;margin-top:8px;border-bottom:1px solid var(--bd)}.err{color:#dc2626;font-weight:600}canvas{max-width:100%;height:auto;border-radius:6px;display:block;margin:6px 0}
+#tw{max-height:320px;overflow:auto;border:1px solid var(--bd);border-radius:8px}
+</style></head><body>
+<h1>Ángulos RULA · REBA · OWAS desde video <span class="n">· v3</span></h1>
+<p class="n">Sube un video con vista <b>lateral</b>. Todo corre en tu navegador (nada se sube). Mide ángulos fotograma a fotograma y calcula RULA, REBA y OWAS con las mismas tablas de tu <code>calculations.ts</code>.</p>
+<div class="box"><b>1.</b> Video: <input type="file" id="f" accept="video/*"> &nbsp; <b>2.</b> Peso de la carga: <select id="kgSel"></select> <input type="number" id="kgTop" value="0" min="0" step="0.5" style="width:70px"> kg <span id="vi" class="n"></span><div class="n">Al subir el video el análisis arranca solo; cambia el peso u cualquier opción y se recalcula al instante.</div></div>
+<details><summary>Ajustes técnicos</summary><fieldset id="op"></fieldset></details>
+<button class="m" id="go" disabled>Analizar de nuevo</button> <progress id="pg" hidden style="width:200px"></progress>
+<div class="n" id="st"></div><div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start"><div style="flex:2 1 480px;min-width:0"><canvas id="pv"></canvas><input type="range" id="sl" min="0" value="0" hidden style="width:100%"><div class="n" id="slh" hidden>Desliza o haz clic en la tabla para ver otro fotograma (línea blanca = vertical).</div></div><div id="fi" class="box" style="flex:1 1 260px" hidden></div></div>
+<div class="box" id="tabsec"><b>Opciones comunes a los métodos (optativas: tilda las que apliquen)</b><div id="com" class="opt"></div>
+<div class="tabs"><button class="tab on" data-t="rula">RULA <i class="dot" id="d_rula"></i></button><button class="tab" data-t="reba">REBA <i class="dot" id="d_reba"></i></button><button class="tab" data-t="owas">OWAS <i class="dot" id="d_owas"></i></button></div>
+<div class="tp" id="tp_rula"><div id="po_rula" class="opt"></div><div id="o_rula"></div></div><div class="tp" id="tp_reba" hidden><div id="po_reba" class="opt"></div><div id="o_reba"></div></div><div class="tp" id="tp_owas" hidden><div id="po_owas" class="opt"></div><div id="o_owas"></div></div></div>
+<section id="res" hidden>
+ <h2>Resultado (peor fotograma y OWAS del ciclo)</h2><div id="sum"></div>
+ <h2>Posturas críticas del ciclo (las peores, en orden de aparición)</h2><div class="n" id="critn"></div><div class="cands" id="crit"></div>
+ <h2>Todos los fotogramas (clic para verlo con su esqueleto)</h2><div id="tw"><table id="tb"></table></div>
+ <p><button id="dlImg" class="m">Descargar imagen con todos los datos (PNG)</button> <button id="dl">Descargar JSON (ángulos + entradas RULA/REBA/OWAS)</button></p>
+</section>
+<p class="n" style="border:1px solid #d97706;border-radius:8px;padding:8px"><b>Aviso:</b> estimación automática desde video; puede tener errores (cámara, oclusiones, ropa). Torsión, inclinación lateral, abducción, muñeca, agarre y carga no se ven en 2D: se ingresan arriba. Debe validarlo un profesional.</p>
+<script type="module">
+import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+const WASM="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
+const mUrl=k=>`https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_${k}/float16/1/pose_landmarker_${k}.task`;
+const T={"rA":[[[1,2,2,2,2,3,3,3],[2,2,2,2,3,3,3,3],[2,3,3,3,3,3,4,4]],[[2,3,3,3,3,4,4,4],[3,3,3,3,3,4,4,4],[3,4,4,4,4,4,5,5]],[[3,3,4,4,4,4,5,5],[3,4,4,4,4,4,5,5],[4,4,4,4,4,5,5,5]],[[4,4,4,4,4,5,5,5],[4,4,4,4,4,5,5,5],[4,4,4,5,5,5,6,6]],[[5,5,5,5,5,6,6,7],[5,6,6,6,6,7,7,7],[6,6,6,7,7,7,7,8]],[[7,7,7,7,7,8,8,9],[8,8,8,8,8,9,9,9],[9,9,9,9,9,9,9,9]]],"rB":[[1,3,2,3,3,4,5,5,6,6,7,7],[2,3,2,3,4,5,5,5,6,7,7,7],[3,3,3,4,4,5,5,6,6,7,7,7],[5,5,5,6,6,7,7,7,7,7,8,8],[7,7,7,7,7,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,9,9,9,9,9]],"rC":[[1,2,3,3,4,5,5],[2,2,3,4,4,5,5],[3,3,3,4,4,5,6],[3,3,3,4,5,6,6],[4,4,4,5,6,7,7],[4,4,5,6,6,7,7],[5,5,6,6,7,7,7],[5,5,6,7,7,7,7]],"bA":[[[1,2,3,4],[1,2,3,4],[3,3,5,6]],[[2,3,4,5],[3,4,5,6],[4,5,6,7]],[[2,4,5,6],[4,5,6,7],[5,6,7,8]],[[3,5,6,7],[5,6,7,8],[6,7,8,9]],[[4,6,7,8],[6,7,8,9],[7,8,9,9]]],"bB":[[[1,2,2],[1,2,3]],[[1,2,3],[2,3,4]],[[3,4,5],[4,5,5]],[[4,5,5],[5,6,7]],[[6,7,8],[7,8,8]],[[7,8,8],[8,9,9]]],"bC":[[1,1,1,2,3,3,4,5,6,7,7,7],[1,2,2,3,4,4,5,6,6,7,7,8],[2,3,3,3,4,5,6,7,7,8,8,8],[3,4,4,4,5,6,7,8,8,9,9,9],[4,4,4,5,6,7,8,8,9,9,9,9],[6,6,6,7,8,8,9,9,10,10,10,10],[7,7,7,8,9,9,9,10,10,11,11,11],[8,8,8,9,10,10,10,10,10,11,11,11],[9,9,9,10,10,10,11,11,11,12,12,12],[10,10,10,11,11,11,11,12,12,12,12,12],[11,11,11,11,12,12,12,12,12,12,12,12],[12,12,12,12,12,12,12,12,12,12,12,12]],"owas":[[[[1,1,1],[1,1,1],[1,1,1],[2,2,2],[2,2,2],[1,1,1],[1,1,1]],[[1,1,1],[1,1,1],[1,1,1],[2,2,2],[2,2,2],[1,1,1],[1,1,1]],[[1,1,1],[1,1,1],[1,1,1],[2,2,3],[2,2,3],[1,1,1],[1,1,2]]],[[[2,2,3],[2,2,3],[2,2,3],[3,3,3],[3,3,3],[2,2,2],[2,3,3]],[[2,2,3],[2,2,3],[2,3,3],[3,4,4],[3,4,4],[3,3,4],[2,3,4]],[[3,3,4],[2,2,3],[3,3,3],[3,4,4],[4,4,4],[4,4,4],[2,3,4]]],[[[1,1,1],[1,1,2],[1,2,2],[3,3,3],[4,4,4],[1,1,1],[1,1,1]],[[2,2,3],[1,1,2],[1,1,2],[4,4,4],[4,4,4],[3,3,3],[1,1,1]],[[2,2,3],[1,1,2],[2,3,3],[4,4,4],[4,4,4],[4,4,4],[1,1,1]]],[[[2,3,3],[2,2,3],[2,2,3],[4,4,4],[4,4,4],[4,4,4],[2,3,4]],[[3,3,4],[2,3,4],[3,3,4],[4,4,4],[4,4,4],[4,4,4],[2,3,4]],[[4,4,4],[2,3,4],[3,3,4],[4,4,4],[4,4,4],[4,4,4],[2,3,4]]]]}; // tablas RULA/REBA/OWAS copiadas de calculations.ts
+const $=id=>document.getElementById(id),clamp=(v,a,b)=>Math.max(a,Math.min(b,v)),fin=Number.isFinite;
+const NUM=[['nCrit','Nº posturas críticas',3,1,1],['gapCrit','Separación mín. (s)',1.5,.5,.5],['fps','Muestreo (fps)',6,2,1],['neckOff','Cuello neutro (°)',10,0,1],['latMax','Límite lateral',.5,.1,.05],['visMin','Visib. mín.',.4,.1,.05]];
+const CHKS=['seated','oneLeg','trTw','trSb','neckTw','neckSb','abd','shR','armSup','wDev','crossMid','wTw','muscle','shock','stat','rep','unst','incl'];
+const chk=(i,l)=>`<label><input type="checkbox" id="${i}">${l}</label>`,sel=(i,l,a)=>`<label>${l} <select id="${i}">${a.map(([v,t])=>`<option value="${v}">${t}</option>`).join('')}</select></label>`;
+$('op').innerHTML=NUM.map(([i,l,v,a,s])=>`<label>${l} <input type="number" id="${i}" value="${v}" min="${a}" step="${s}"></label>`).join('')+chk('incl','Incluir vistas poco laterales')+sel('side','Lado',[['auto','Auto'],['R','Derecho'],['L','Izquierdo']])+sel('mdl','Modelo',[['full','Normal'],['heavy','Pesado']]);
+$('com').innerHTML=[['seated','Sentado con apoyo'],['oneLeg','Apoyo en una pierna'],['trTw','Tronco girado'],['trSb','Tronco inclinado lateral'],['neckTw','Cuello girado'],['neckSb','Cuello inclinado lateral'],['abd','Brazo abducido'],['shR','Hombro elevado'],['armSup','Brazo apoyado'],['wDev','Muñeca desviada/torcida']].map(([i,l])=>chk(i,l)).join('')+'<span class="n"> · torsión, inclinación y abducción también se estiman solas del video</span>';
+$('po_rula').innerHTML='<b>Opciones RULA:</b> '+chk('crossMid','Antebrazo cruza línea media / trabaja a un lado')+sel('wrist','Muñeca',[[1,'1 · neutra'],[2,'2 · 0–15°'],[3,'3 · >15°']])+chk('wTw','Giro de muñeca')+chk('muscle','Uso muscular (estático >1 min o repetido >4/min)')+sel('lt','Tipo de carga',[['i','Intermitente'],['s','Estática/repetida']]);
+$('po_reba').innerHTML='<b>Opciones REBA:</b> '+sel('wristR','Muñeca',[[1,'1 · 0–15°'],[2,'2 · >15°']])+sel('coupling','Agarre',[[0,'0 · Bueno'],[1,'1 · Regular'],[2,'2 · Malo'],[3,'3 · Inaceptable']])+chk('shock','Carga con golpes/sacudidas')+chk('stat','Actividad estática >1 min')+chk('rep','Repetida >4/min')+chk('unst','Cambios bruscos de postura');
+$('po_owas').innerHTML='<b>Opciones OWAS (por defecto automático):</b> '+sel('ob','Espalda',[['auto','Auto'],[1,'1 recta'],[2,'2 inclinada'],[3,'3 girada/lateral'],[4,'4 inclinada y girada']])+sel('oa','Brazos',[['auto','Auto'],[1,'1 ambos bajo hombros'],[2,'2 uno sobre hombro'],[3,'3 ambos sobre hombros']])+sel('ol','Piernas',[['auto','Auto'],[1,'1 sentado'],[2,'2 de pie recto'],[3,'3 una pierna recta'],[4,'4 ambas flexionadas'],[5,'5 una flexionada'],[6,'6 rodillas'],[7,'7 caminando']]);
+const KG=[0,1,2,3,5,7.5,10,12.5,15,20,25,30,40];$('kgSel').innerHTML=KG.map(v=>`<option value="${v}">${v?v+' kg':'Sin carga'}</option>`).join('')+'<option value="">Otro…</option>';
+$('kgSel').onchange=()=>{if($('kgSel').value!=='')$('kgTop').value=$('kgSel').value;$('kgTop').dispatchEvent(new Event('input'))};
+$('kgTop').addEventListener('input',()=>{const v=$('kgTop').value;$('kgSel').value=v!==''&&KG.includes(+v)?v:''});
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===b));for(const k of['rula','reba','owas'])$('tp_'+k).hidden=k!==b.dataset.t});
+const O=()=>{const r={kg:+$('kgTop').value||0};for(const[i]of NUM)r[i]=+$(i).value||0;for(const i of CHKS)r[i]=$(i).checked;for(const i of['lt','ol','side','ob','oa'])r[i]=$(i).value;for(const i of['wrist','wristR','coupling'])r[i]=+$(i).value;return r};
+const IX={R:{s:12,e:14,w:16,h:24,k:26,a:28,ear:8},L:{s:11,e:13,w:15,h:23,k:25,a:27,ear:7}};
+const dot=(a,b)=>a.x*b.x+a.y*b.y,deg=r=>r*180/Math.PI;
+function ang(a,b,c){const u={x:a.x-b.x,y:a.y-b.y},v={x:c.x-b.x,y:c.y-b.y};return 180-deg(Math.acos(clamp(dot(u,v)/(Math.hypot(u.x,u.y)*Math.hypot(v.x,v.y)||1),-1,1)))}
+// ---------- Medición 2D sagital (ángulos con signo: + = hacia adelante) ----------
+function measure(lm,W,H,side,o,wl){
+ const I=IX[side],P=i=>({x:lm[i].x*W,y:lm[i].y*H,v:lm[i].visibility??1}),out={ok:false,why:''};
+ const s=P(I.s),e=P(I.e),w=P(I.w),h=P(I.h),ear=P(I.ear),Ls=P(11),Rs=P(12),Lh=P(23),Rh=P(24);
+ if(Math.min(s.v,h.v)<o.visMin){out.why='vis';return out}
+ const ms={x:(Ls.x+Rs.x)/2,y:(Ls.y+Rs.y)/2},mh={x:(Lh.x+Rh.x)/2,y:(Lh.y+Rh.y)/2},L=Math.hypot(ms.x-mh.x,ms.y-mh.y);
+ if(L<10){out.why='vis';return out}
+ const u={x:(ms.x-mh.x)/L,y:(ms.y-mh.y)/L};                       // eje del tronco (cadera→hombros)
+ out.ratio=Math.abs(Ls.x-Rs.x)/L;out.lateral=out.ratio<o.latMax;
+ let fx=0;const nose=P(0);if(nose.v>.3)fx+=nose.x-(P(7).x+P(8).x)/2;  // hacia dónde mira: nariz vs orejas + dirección de los pies
+ for(const[a,b]of[[29,31],[30,32]])if((lm[a].visibility??1)>.3&&(lm[b].visibility??1)>.3)fx+=(lm[b].x-lm[a].x)*W*.5;
+ if(Math.abs(fx)<.01*W){out.why='face';return out}
+ const f=Math.sign(fx),n={x:-u.y*f,y:u.x*f},d={x:-u.x,y:-u.y};     // n = "adelante" en el marco del tronco
+ out.trunk=deg(Math.atan2(u.x*f,-u.y));                            // respecto a la vertical de la imagen
+ const a={x:e.x-s.x,y:e.y-s.y};if(Math.hypot(a.x,a.y)<5){out.why='vis';return out}
+ out.upper=deg(Math.atan2(dot(a,n),dot(a,d)));                      // brazo respecto al tronco
+ out.elbow=ang(s,e,w);out.armLow=Math.min(e.v,w.v)<o.visMin;
+ if(ear.v>=.3){const hv={x:ear.x-s.x,y:ear.y-s.y};out.neck=deg(Math.atan2(dot(hv,n),dot(hv,u)))-o.neckOff}
+ const kn=(a,b,c)=>Math.min(lm[a].visibility??1,lm[b].visibility??1,lm[c].visibility??1)<o.visMin?NaN:ang(P(a),P(b),P(c));
+ out.kR=kn(24,26,28);out.kL=kn(23,25,27);
+ out.armsUp=(((lm[15].visibility??1)>.3&&P(15).y<Ls.y)?1:0)+(((lm[16].visibility??1)>.3&&P(16).y<Rs.y)?1:0);
+ if(wl){try{const V=i=>[wl[i].x,wl[i].y,wl[i].z],sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],d3=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2],un=a=>{const l=Math.hypot(...a)||1;return[a[0]/l,a[1]/l,a[2]/l]},pj=(a,u)=>sub(a,u.map(x=>x*d3(a,u)));
+  const mid=(i,j)=>V(i).map((x,k)=>(x+V(j)[k])/2),up=un(sub(mid(11,12),mid(23,24))),r=un(pj(sub(V(12),V(11)),up)),hr=un(sub(V(24),V(23))),rh=un(pj(hr,up)),a3=sub(V(I.e),V(I.s)),fc=un([r[1]*up[2]-r[2]*up[1],r[2]*up[0]-r[0]*up[2],r[0]*up[1]-r[1]*up[0]]);
+  out.twist=deg(Math.acos(clamp(d3(r,rh),-1,1)));out.side=deg(Math.asin(clamp(Math.abs(d3(up,hr)),0,1)));out.abdD=deg(Math.atan2(Math.abs(d3(a3,r)),Math.hypot(d3(a3,fc),d3(a3,up))));
+  out.trTw=out.twist>25;out.trSb=out.side>20;out.abd=out.abdD>35}catch(e){}}
+ out.f=f;out.ok=true;return out}
+const med=a=>{const b=a.filter(fin).sort((x,y)=>x-y);return b.length?b[b.length>>1]:NaN};
+const smooth=M=>M.map((m,i)=>{if(!m.ok)return m;const w=[M[i-1],m,M[i+1]].filter(q=>q&&q.ok),r={...m};for(const k of['trunk','upper','elbow','neck','kR','kL'])r[k]=med(w.map(q=>q[k]));return r});
+// ---------- Puntuación ----------
+const tA=(u,l,w,t)=>T.rA[clamp(u,1,6)-1][clamp(l,1,3)-1][(clamp(w,1,4)-1)*2+clamp(t,1,2)-1];
+function score(m,o){
+ const sU=f=>f>90?4:f>45?3:(f>20||f<-20)?2:1,lo0=m.elbow>=60&&m.elbow<=100?1:2,at=Math.abs(m.trunk),k=Math.max(m.kR||0,m.kL||0),tw=o.trTw||m.trTw,sb=o.trSb||m.trSb,ab=o.abd||m.abd,nt=(o.neckTw||o.neckSb)?1:0;
+ // RULA
+ const up=clamp(sU(m.upper)+(o.shR?1:0)+(ab?1:0)-(o.armSup?1:0),1,6),lo=clamp(lo0+(o.crossMid?1:0),1,3),wr=clamp(o.wrist+(o.wDev?1:0),1,4),tws=o.wTw?2:1;
+ const nk=fin(m.neck)?(m.neck<-10?4:m.neck<=10?1:m.neck<=20?2:3):2,nR=clamp(nk+(o.neckTw?1:0)+(o.neckSb?1:0),1,6),trR=clamp((o.seated?1:at<=20?2:at<=60?3:4)+(tw?1:0)+(sb?1:0),1,6);
+ const mu=o.muscle?1:0,fo=o.shock?3:o.kg<2?0:o.kg<10?(o.lt==='i'?1:2):(o.lt==='i'?2:3),lgR=o.oneLeg?2:1;
+ const A=tA(up,lo,wr,tws),B=T.rB[nR-1][(trR-1)*2+lgR-1],C=A+mu+fo,D=B+mu+fo,rF=T.rC[clamp(C,1,8)-1][clamp(D,1,7)-1];
+ // REBA
+ const tb=at<5?1:m.trunk>0?(at<=20?2:at<=60?3:4):(at<=20?2:3),tbB=clamp(tb+((tw||sb)?1:0),1,5),nbB=clamp((!fin(m.neck)||(m.neck>=-10&&m.neck<=20)?1:2)+nt,1,3);
+ const lg=clamp((o.oneLeg?2:1)+(k>60?2:k>=30?1:0),1,4),rA=T.bA[tbB-1][nbB-1][lg-1],ld=(o.kg<5?0:o.kg<=10?1:2)+(o.shock?1:0),sA=clamp(rA+ld,1,12);
+ const uR=clamp((m.upper<-20?2:m.upper<=20?1:m.upper<=45?2:m.upper<=90?3:4)+(o.shR?1:0)+(ab?1:0)-(o.armSup?1:0),1,6),wrB=clamp(o.wristR+(o.wDev?1:0),1,3);
+ const sB=clamp(T.bB[uR-1][lo0-1][wrB-1]+o.coupling,1,12),act=(o.stat?1:0)+(o.rep?1:0)+(o.unst?1:0),bF=clamp(T.bC[sA-1][sB-1]+act,1,15);
+ return{rula:{up,lo,wr,tw:tws,nR,trR,lg:lgR,mu,fo,A,B,C,D,final:rF,lvl:rF<=2?1:rF<=4?2:rF<=6?3:4},reba:{tbB,nbB,lg,uR,lR:lo0,wr:wrB,cp:o.coupling,ld,sA,sB,act,final:bF,lvl:bF<2?'despreciable':bF<4?'bajo':bF<8?'medio':bF<11?'alto':'muy alto'},
+  inp:{up:sU(m.upper),lo:lo0,nk,tr:at<=20?2:at<=60?3:4,tb,nb:nbB,k}}}
+function owas(m,o){const at=Math.abs(m.trunk),bent=at>20,tw=o.trTw||m.trTw||o.trSb||m.trSb,back=o.ob!=='auto'?+o.ob:bent&&tw?4:tw?3:bent?2:1,arms=o.oa!=='auto'?+o.oa:clamp(1+(m.armsUp||0),1,3);
+ let legs;if(o.ol!=='auto')legs=+o.ol;else if(o.seated)legs=1;else{const a=m.kR>30,b=m.kL>30;legs=a&&b?4:a||b?5:o.oneLeg?3:2}
+ const load=o.kg<10?1:o.kg<=20?2:3;return{back,arms,legs,load,cat:T.owas[back-1][arms-1][legs-1][load-1]}}
+// ---------- Video / pose ----------
+let cur=0,video,lmk,mk='',S=[],SW=[],TS=[],W=0,H=0,vis={R:0,L:0},SM=[],M=[],side='R',worst=-1,OWo=[],crit=[],PH={},ctok=0,vq=Promise.resolve(),FC=new Map();
+function rawFrame(i){if(FC.has(i))return Promise.resolve(FC.get(i));const job=vq.then(async()=>{if(FC.has(i))return FC.get(i);await seek(video,TS[i]);const cv=document.createElement('canvas');cv.width=W;cv.height=H;cv.getContext('2d').drawImage(video,0,0,W,H);FC.set(i,cv);if(FC.size>30)FC.delete(FC.keys().next().value);return cv});vq=job.catch(()=>{});return job}
+function seek(v,t){return new Promise(res=>{if(Math.abs(v.currentTime-t)<1e-3)return res();let d=0;const ok=()=>{if(d)return;d=1;res()},
+ ev=()=>{v.removeEventListener('seeked',ev);if(v.requestVideoFrameCallback){v.requestVideoFrameCallback(ok);setTimeout(ok,200)}else setTimeout(ok,80)};
+ v.addEventListener('seeked',ev);setTimeout(ok,3500);v.currentTime=t})}
+async function getLM(){const k=$('mdl').value;if(lmk&&mk===k)return lmk;if(lmk)try{lmk.close()}catch(e){}
+ const fs=await FilesetResolver.forVisionTasks(WASM);   // CPU a propósito: la GPU a veces devuelve "sin persona" sin dar error (p. ej. en GitHub Pages)
+ lmk=await PoseLandmarker.createFromOptions(fs,{baseOptions:{modelAssetPath:mUrl(k),delegate:'CPU'},runningMode:'IMAGE',numPoses:1,minPoseDetectionConfidence:.3,minPosePresenceConfidence:.3,minTrackingConfidence:.3});mk=k;return lmk}
+const pv=$('pv'),pg=pv.getContext('2d');
+function skel(p,sd,g=pg){const X=i=>p[i].x*g.canvas.width,Y=i=>p[i].y*g.canvas.height;g.lineWidth=2;g.strokeStyle='#38bdf8';
+ for(const[a,b]of[[11,12],[11,23],[12,24],[23,24],[23,25],[24,26],[25,27],[26,28],[11,13],[13,15],[12,14],[14,16]]){g.beginPath();g.moveTo(X(a),Y(a));g.lineTo(X(b),Y(b));g.stroke()}
+ g.lineWidth=4;const I=IX[sd];for(const[a,b,c]of[[I.h,I.s,'#facc15'],[I.s,I.e,'#ef4444'],[I.e,I.w,'#f97316'],[I.s,I.ear,'#a78bfa']]){g.strokeStyle=c;g.beginPath();g.moveTo(X(a),Y(a));g.lineTo(X(b),Y(b));g.stroke()}}
+function arc(g,c,p1,p2,r,col){const a0=Math.atan2(p1.y-c.y,p1.x-c.x);let d=Math.atan2(p2.y-c.y,p2.x-c.x)-a0;while(d>Math.PI)d-=2*Math.PI;while(d<-Math.PI)d+=2*Math.PI;
+ g.fillStyle=col+'66';g.strokeStyle=col;g.lineWidth=3;g.beginPath();g.moveTo(c.x,c.y);g.arc(c.x,c.y,r,a0,a0+d,d<0);g.closePath();g.fill();g.stroke()}
+function lab(g,x,y,t,col){const fs=Math.max(14,Math.round(g.canvas.width/42));g.font='bold '+fs+'px system-ui';const w=g.measureText(t).width;g.fillStyle='#000c';g.fillRect(x-4,y-fs,w+8,fs+7);g.fillStyle=col;g.fillText(t,x,y)}
+// Dibuja el esqueleto y cada ángulo SOBRE el fotograma; cada valor se ancla a su arco y se coloca sin pisar a otro
+function ann(g,p,m,sd){skel(p,sd,g);if(!m||!m.ok)return;const Wc=g.canvas.width,Hc=g.canvas.height,I=IX[sd],P=i=>({x:p[i].x*Wc,y:p[i].y*Hc});
+ const s=P(I.s),e=P(I.e),w=P(I.w),ear=P(I.ear),ms={x:(P(11).x+P(12).x)/2,y:(P(11).y+P(12).y)/2},mh={x:(P(23).x+P(24).x)/2,y:(P(23).y+P(24).y)/2};
+ const L=Math.hypot(ms.x-mh.x,ms.y-mh.y),u={x:(ms.x-mh.x)/L,y:(ms.y-mh.y)/L},f=m.f||1,d=v=>Number.isFinite(v)?v.toFixed(0)+'°':'—',fs=Math.max(14,Math.round(Wc/42));
+ const placed=[{x:0,y:0,w:Wc,h:fs+12}];   // franja reservada al título
+ const bis=(c,p1,p2,r)=>{const a0=Math.atan2(p1.y-c.y,p1.x-c.x);let dd=Math.atan2(p2.y-c.y,p2.x-c.x)-a0;while(dd>Math.PI)dd-=2*Math.PI;while(dd<-Math.PI)dd+=2*Math.PI;return{x:c.x+r*Math.cos(a0+dd/2),y:c.y+r*Math.sin(a0+dd/2)}};
+ const put=(a,t,col)=>{g.font='bold '+fs+'px system-ui';const w=g.measureText(t).width+8,h=fs+7;let best=null;
+  for(let k=0;k<14&&!best;k++){const dy=k*(h+2);for(const[dx,sy]of[[10,dy],[10,-dy],[-w-10,dy],[-w-10,-dy]].sort((x,y)=>f>0?y[0]-x[0]:x[0]-y[0])){const x=a.x+dx,y=a.y+sy,r={x:x-4,y:y-fs,w,h};
+   if(r.x<0||r.y<0||r.x+w>Wc||r.y+h>Hc||placed.some(q=>r.x<q.x+q.w&&r.x+r.w>q.x&&r.y<q.y+q.h&&r.y+r.h>q.y))continue;best={x,y,r};break}}
+  if(!best)best={x:clamp(a.x+10,0,Wc-w),y:clamp(a.y,fs,Hc-8)};if(best.r)placed.push(best.r);
+  g.strokeStyle=col;g.lineWidth=1.5;g.beginPath();g.moveTo(a.x,a.y);g.lineTo(best.x-4+(best.x<a.x?w:0),best.y-fs/2);g.stroke();lab(g,best.x,best.y,t,col)};
+ g.setLineDash([8,6]);g.strokeStyle='#fff';g.lineWidth=2;g.beginPath();g.moveTo(mh.x,mh.y);g.lineTo(mh.x,mh.y-L*.8);g.stroke();g.setLineDash([]);   // vertical de referencia
+ const up={x:mh.x,y:mh.y-1},dn={x:s.x-u.x,y:s.y-u.y},nu={x:s.x+u.x,y:s.y+u.y};
+ arc(g,mh,up,ms,L*.4,'#facc15');arc(g,s,dn,e,L*.28,'#ef4444');arc(g,e,s,w,L*.16,'#f97316');if(Number.isFinite(m.neck))arc(g,s,nu,ear,L*.22,'#a78bfa');
+ put(bis(mh,up,ms,L*.4),'Tronco '+d(m.trunk),'#facc15');put(bis(s,dn,e,L*.28),'Brazo '+d(m.upper),'#ef4444');put(bis(e,s,w,L*.16),'Codo '+d(m.elbow),'#f97316');
+ if(Number.isFinite(m.neck))put(bis(s,nu,ear,L*.22),'Cuello '+d(m.neck),'#c4b5fd');
+ for(const[k,v,n]of[[26,m.kR,'Rod.D'],[25,m.kL,'Rod.I']])if(Number.isFinite(v))put(P(k),n+' '+d(v),'#86efac')}
+$('f').addEventListener('change',async e=>{const f=e.target.files[0];if(!f)return;video=document.createElement('video');video.muted=true;video.playsInline=true;video.preload='auto';video.src=URL.createObjectURL(f);
+ await new Promise((r,j)=>{video.addEventListener('loadeddata',r,{once:true});video.addEventListener('error',()=>j(new Error('No se pudo leer el video (usa MP4/H.264 o WebM)')),{once:true})}).catch(x=>{$('st').innerHTML='<span class=err>'+x.message+'</span>'});
+ $('vi').textContent=`${f.name} · ${video.videoWidth}×${video.videoHeight} · ${video.duration.toFixed(1)} s`;$('go').disabled=false;$('go').click()});
+$('go').onclick=async()=>{try{FC.clear();$('go').disabled=true;$('res').hidden=true;$('pg').hidden=false;$('st').textContent='Cargando modelo de pose…';
+ const lm=await getLM(),sc=Math.min(1,960/video.videoWidth);W=Math.round(video.videoWidth*sc);H=Math.round(video.videoHeight*sc);
+ const cv=document.createElement('canvas');cv.width=pv.width=W;cv.height=pv.height=H;const g=cv.getContext('2d');
+ const step=1/clamp(+$('fps').value||6,2,20),n=Math.max(1,Math.floor(video.duration/step)+1);S=[];SW=[];TS=[];vis={R:0,L:0};let det=0;
+ for(let k=0;k<n;k++){const t=Math.min(video.duration-.01,k*step);await seek(video,t);g.drawImage(video,0,0,W,H);
+  const r=lm.detect(cv),p=r.landmarks&&r.landmarks[0];S.push(p||null);SW.push((r.worldLandmarks&&r.worldLandmarks[0])||null);TS.push(t);pg.drawImage(cv,0,0);
+  if(p){det++;ann(pg,p,measure(p,W,H,vis.R>=vis.L?'R':'L',O(),SW[SW.length-1]),vis.R>=vis.L?'R':'L');for(const sd of['R','L']){const I=IX[sd];vis[sd]+=['s','e','w','h','k','a'].reduce((a,q)=>a+(p[I[q]].visibility??1),0)/6}}
+  $('pg').value=(k+1)/n;$('st').textContent=`Analizando ${k+1}/${n} · personas detectadas: ${det}`;if(k%3==0)await new Promise(r=>setTimeout(r))}
+ $('pg').hidden=true;$('st').innerHTML=det?`Listo: persona detectada en ${det}/${n} fotogramas.`:'<span class=err>No se detectó ninguna persona. Revisa que el cuerpo completo sea visible, que haya buena luz y prueba el modelo Pesado.</span>';
+ if(det)render()}catch(err){$('st').innerHTML='<span class=err>Error: '+err.message+'</span>';console.error(err);$('pg').hidden=true}finally{$('go').disabled=false}};
+document.querySelectorAll('input,select').forEach(el=>{if(el.type!=='file'&&el.id!=='sl'&&el.id!=='kgSel')el.addEventListener('input',()=>{if(S.length)render()})});
+const f0=v=>fin(v)?v.toFixed(0)+'°':'—',cat=['','1','2','3','4'];
+function render(){const o=O();side=o.side==='auto'?(vis.R>=vis.L?'R':'L'):o.side;
+ M=S.map((p,i)=>p?measure(p,W,H,side,o,SW[i]):{ok:false,why:'none'});SM=M.map(m=>({...m}));
+ SM.forEach(m=>{if(m.ok){Object.assign(m,score(m,o));m.ow=owas(m,o)}});
+ const el=SM.map((m,i)=>m.ok&&(m.lateral||o.incl)?i:-1).filter(i=>i>=0);
+ const why={none:'sin persona',vis:'tronco poco visible',face:'no se sabe hacia dónde mira'};
+ $('tb').innerHTML='<tr><th>t (s)</th><th>Estado</th><th>Tronco</th><th>Brazo</th><th>Codo</th><th>Cuello</th><th>Rod. D</th><th>Rod. I</th><th>RULA</th><th>REBA</th><th>OWAS</th></tr>'+SM.map((m,i)=>m.ok?
+  `<tr data-i="${i}"><td>${TS[i].toFixed(2)}</td><td>${m.lateral?'ok':'poco lateral'}${m.armLow?' · brazo tapado':''}</td><td>${f0(m.trunk)}</td><td>${f0(m.upper)}</td><td>${f0(m.elbow)}</td><td>${f0(m.neck)}</td><td>${f0(m.kR)}</td><td>${f0(m.kL)}</td><td style="background:${COL[m.rula.lvl]}55">${m.rula.final}</td><td style="background:${COL[rebaL(m.reba.final)]}55">${m.reba.final}</td><td style="background:${COL[m.ow.cat]}55">${m.ow.cat}</td></tr>`:
+  `<tr data-i="${i}"><td>${TS[i].toFixed(2)}</td><td colspan="10">${why[m.why]||'—'}</td></tr>`).join('');
+ if(!el.length){$('sum').innerHTML='<div class="box err">No hay fotogramas utilizables. Marca "Incluir vistas poco laterales", sube el límite lateral o baja la visibilidad mínima.</div>';$('res').hidden=false;return}
+ const sev=m=>m.reba.final*100+m.rula.final*10+Math.max(0,m.trunk)/12+Math.max(0,m.upper)/30+(m.ow.cat*5),order=el.slice().sort((a,b)=>sev(SM[b])-sev(SM[a]));
+ worst=order[0];const pick=[];for(const i of order){if(sev(SM[i])<.8*sev(SM[worst]))break;if(pick.every(j=>Math.abs(TS[i]-TS[j])>=Math.max(.3,o.gapCrit)))pick.push(i);if(pick.length>=Math.max(1,Math.round(o.nCrit)))break}
+ crit=pick.sort((a,b)=>TS[a]-TS[b]);PH={};crit.forEach((i,k)=>{PH[i]=crit.length===1?'Postura más crítica':k===0?'Inicio del ciclo · levantamiento':k===crit.length-1?'Final del ciclo · depósito':'Traslado / intermedia'});
+ const g={};el.forEach(i=>{const w=SM[i].ow,k=[w.back,w.arms,w.legs,w.load].join('-');(g[k]=g[k]||{back:w.back,arms:w.arms,legs:w.legs,load:w.load,cat:w.cat,n:0}).n++});
+ OWo=Object.entries(g).map(([k,v])=>({taskPhase:'Video '+k,back:v.back,arms:v.arms,legs:v.legs,load:v.load,frequencyCount:v.n,categoria:v.cat}));
+ const mc=Math.max(...OWo.map(x=>x.categoria)),w=SM[worst];
+ $('sum').innerHTML=`<div class="box" style="border-width:2px"><div class="big" style="font-size:22px">RULA ${w.rula.final} <i class="dot" style="background:${COL[w.rula.lvl]}"></i> · REBA ${w.reba.final} <i class="dot" style="background:${COL[rebaL(w.reba.final)]}"></i> · OWAS cat. ${mc} <i class="dot" style="background:${COL[mc]}"></i></div><div class="n">Torsión, inclinación lateral y abducción estimadas del video${o.kg?'':' · sin peso de carga (0 kg)'}</div></div><div class="box"><b>${crit.length} postura${crit.length>1?'s':''} crítica${crit.length>1?'s':''} detectada${crit.length>1?'s':''}:</b> ${crit.map(i=>`${PH[i]} (t=${TS[i].toFixed(1)} s · RULA ${SM[i].rula.final} · REBA ${SM[i].reba.final} · OWAS ${SM[i].ow.cat})`).join(' · ')}</div><div class="box"><div class="big">Peor fotograma: t = ${TS[worst].toFixed(2)} s · lado ${side==='R'?'derecho':'izquierdo'}</div>
+ Tronco ${f0(w.trunk)} · Brazo ${f0(w.upper)} · Codo ${f0(w.elbow)} · Cuello ${f0(w.neck)} · Rodillas D/I ${f0(w.kR)}/${f0(w.kL)}</div>
+ <div class="box"><b>RULA = ${w.rula.final}</b> (nivel de acción ${w.rula.lvl}) · brazo ${w.rula.up} · antebrazo ${w.rula.lo} · cuello ${w.rula.nR} · tronco ${w.rula.trR} · A=${w.rula.A} B=${w.rula.B} C=${w.rula.C} D=${w.rula.D}</div>
+ <div class="box"><b>REBA = ${w.reba.final}</b> (riesgo ${w.reba.lvl}) · tronco ${w.reba.tbB} · cuello ${w.reba.nbB} · piernas ${w.reba.lg} · brazo ${w.reba.uR} · antebrazo ${w.reba.lR} · A=${w.reba.sA} B=${w.reba.sB} actividad +${w.reba.act}</div>
+ <div class="box"><b>OWAS</b>: categoría máxima ${mc} · ${OWo.map(x=>`${x.back}-${x.arms}-${x.legs}-${x.load} → cat ${x.categoria} (${(100*x.frequencyCount/el.length).toFixed(0)}%)`).join(' · ')}<div class="n">Código = espalda-brazos-piernas-carga. Espalda 2 = inclinada >20°; brazos = muñecas por encima del hombro.</div></div>`;
+ crit.forEach(i=>{const td=document.querySelector(`#tb tr[data-i="${i}"] td`);if(td)td.textContent+=' ⚠'});
+ $('critn').textContent='La fase se asigna por orden de aparición (primera crítica ≈ levantar, última ≈ depositar): confírmalo mirando la imagen. Clic en una tarjeta para ver su detalle completo.';
+ $('crit').innerHTML='';const tk=++ctok;
+ crit.forEach(i=>{const m=SM[i],dv=document.createElement('div');dv.className='cand'+(i===worst?' on':'');dv.dataset.i=i;const cv=document.createElement('canvas');cv.width=480;cv.height=Math.round(480*H/W);dv.appendChild(cv);
+  const cp=document.createElement('div');cp.className='n';cp.innerHTML=`<b>${PH[i]}</b>t = ${TS[i].toFixed(2)} s${i===worst?' · <b style="display:inline">la más desfavorable</b>':''}<br>RULA ${m.rula.final} <i class="dot" style="background:${COL[m.rula.lvl]}"></i> · REBA ${m.reba.final} <i class="dot" style="background:${COL[rebaL(m.reba.final)]}"></i> · OWAS ${m.ow.cat} <i class="dot" style="background:${COL[m.ow.cat]}"></i><br>Tronco ${f0(m.trunk)} · Brazo ${f0(m.upper)} · Codo ${f0(m.elbow)} · Cuello ${f0(m.neck)}`;dv.appendChild(cp);
+  dv.onclick=()=>{show(i);pv.scrollIntoView({behavior:'smooth',block:'start'})};$('crit').appendChild(dv);
+  rawFrame(i).then(fr=>{if(tk!==ctok)return;const g=cv.getContext('2d');g.drawImage(fr,0,0,cv.width,cv.height);if(S[i])ann(g,S[i],M[i],side)})});
+ $('res').hidden=false;$('sl').max=S.length-1;$('sl').hidden=false;$('slh').hidden=false;show(worst);pv.scrollIntoView({behavior:'smooth',block:'start'})}
+const WHY={none:'sin persona detectada',vis:'tronco poco visible',face:'no se sabe hacia dónde mira'};
+function ficha(i){const m=SM[i],o=O(),d=v=>fin(v)?v.toFixed(0)+'°':'—',T0=['t = '+TS[i].toFixed(2)+' s · lado '+(side==='R'?'derecho':'izquierdo'),'h'];
+ if(!m.ok)return[T0,[WHY[m.why]||'sin datos']];const r=m.rula,b=m.reba,w=m.ow,mk=(v,f)=>f?' → +1':'';
+ return[T0,m.lateral?['vista lateral correcta']:['VISTA POCO LATERAL: ángulos poco fiables'],
+ ['ÁNGULOS MEDIDOS','h'],['Tronco (vs vertical): '+d(m.trunk)],['Brazo (vs tronco): '+d(m.upper)],['Codo: '+d(m.elbow)],['Cuello: '+d(m.neck)],['Rodilla D / I: '+d(m.kR)+' / '+d(m.kL)],
+ ['Torsión tronco: '+d(m.twist)+mk(0,m.trTw||o.trTw)],['Inclinación lateral: '+d(m.side)+mk(0,m.trSb||o.trSb)],['Abducción brazo: '+d(m.abdD)+mk(0,m.abd||o.abd)],['Carga: '+o.kg+' kg'+(o.kg?'':' (no ingresada)')],
+ ['RULA = '+r.final+' · nivel de acción '+r.lvl,'h'],['Brazo '+r.up+' · Antebrazo '+r.lo+' · Muñeca '+r.wr],['Cuello '+r.nR+' · Tronco '+r.trR+' · Piernas '+(o.oneLeg?2:1)],['Tabla A='+r.A+' · B='+r.B+' · C='+r.C+' · D='+r.D],
+ ['REBA = '+b.final+' · riesgo '+b.lvl,'h'],['Tronco '+b.tbB+' · Cuello '+b.nbB+' · Piernas '+b.lg],['Brazo '+b.uR+' · Antebrazo '+b.lR+' · Muñeca '+b.wr],['A='+b.sA+' · B='+b.sB+' · Actividad +'+b.act],
+ ['OWAS = categoría '+w.cat,'h'],['Espalda '+w.back+' · Brazos '+w.arms+' · Piernas '+w.legs+' · Carga '+w.load]]}
+const COL=['','#16a34a','#eab308','#f97316','#dc2626'],rebaL=f=>f<2?1:f<4?2:f<8?3:4;
+const ACT={rula:['','Aceptable si no se mantiene ni se repite durante largos períodos','Se requiere investigar más; pueden ser necesarios cambios','Se requiere investigar y cambiar pronto','Se requiere investigar y cambiar de inmediato'],reba:['','Actuación no necesaria','Actuación puede ser necesaria','Actuación necesaria','Actuación necesaria cuanto antes / inmediata'],owas:['','Sin medidas: postura normal','Corrección en un futuro próximo','Corrección lo antes posible','Corrección inmediata']};
+const segc=(v,mx)=>{if(v<=1)return COL[1];if(mx<=2)return COL[2];const r=(v-1)/(mx-1);return COL[r<=.5?2:r<=.75?3:4]};
+const lights=l=>`<span class="lg">${[1,2,3,4].map(k=>`<i style="background:${COL[k]};opacity:${k===l?1:.18}"></i>`).join('')}</span>`;
+const rowS=(n,dato,v,mx,off=0)=>`<tr><td>${n}</td><td>${dato}</td><td>${v}</td><td><i class="chip" style="background:${segc(v+off,mx)}"></i></td></tr>`;
+const tbl=h=>`<table class="mt"><tr><th>Segmento</th><th>Dato</th><th>Puntaje</th><th>Semáforo</th></tr>${h}</table>`;
+function tabs(i){const m=SM[i];if(!m||!m.ok){for(const k of['rula','reba','owas']){$('o_'+k).innerHTML='<div class="n">Sin datos en este fotograma ('+((m&&WHY[m.why])||'')+')</div>';$('d_'+k).style.background='#888'}return}
+ const o=O(),r=m.rula,b=m.reba,w=m.ow,bl=rebaL(b.final),d=v=>fin(v)?v.toFixed(0)+'°':'—';
+ $('d_rula').style.background=COL[r.lvl];$('d_reba').style.background=COL[bl];$('d_owas').style.background=COL[w.cat];
+ $('o_rula').innerHTML=`<div class="big">${lights(r.lvl)} RULA = ${r.final} · nivel de acción ${r.lvl}</div><div>${ACT.rula[r.lvl]}</div>`+tbl(rowS('Brazo superior',d(m.upper),r.up,6)+rowS('Antebrazo',d(m.elbow),r.lo,3)+rowS('Muñeca','—',r.wr,4)+rowS('Giro de muñeca','—',r.tw,2)+rowS('Cuello',d(m.neck),r.nR,6)+rowS('Tronco',d(m.trunk),r.trR,6)+rowS('Piernas','—',r.lg,2)+rowS('Uso muscular','—',r.mu,4,1)+rowS('Fuerza / carga',o.kg+' kg',r.fo,4,1))+`<div class="n">Tabla A=${r.A} · B=${r.B} · C (A+uso+fuerza)=${r.C} · D (B+uso+fuerza)=${r.D} → Tabla C = <b>${r.final}</b></div>`;
+ $('o_reba').innerHTML=`<div class="big">${lights(bl)} REBA = ${b.final} · riesgo ${b.lvl}</div><div>${ACT.reba[bl]}</div>`+tbl(rowS('Tronco',d(m.trunk),b.tbB,5)+rowS('Cuello',d(m.neck),b.nbB,3)+rowS('Piernas',d(Math.max(m.kR||0,m.kL||0)),b.lg,4)+rowS('Brazo',d(m.upper),b.uR,6)+rowS('Antebrazo',d(m.elbow),b.lR,2)+rowS('Muñeca','—',b.wr,3)+rowS('Agarre','—',b.cp,4,1)+rowS('Carga',o.kg+' kg',b.ld,4,1)+rowS('Actividad','—',b.act,4,1))+`<div class="n">Puntaje A=${b.sA} (incluye carga) · B=${b.sB} (incluye agarre) · Tabla C + actividad = <b>${b.final}</b></div>`;
+ const BK=['','Recta','Doblada','Girada o lateral','Doblada y girada'],AR=['','Ambos bajo hombros','Uno al nivel/sobre hombro','Ambos sobre hombros'],LG=['','Sentado','De pie, 2 piernas rectas','De pie, 1 pierna recta','Ambas rodillas flexionadas','1 rodilla flexionada','Arrodillado','Caminando'],LD=['','<10 kg','10–20 kg','>20 kg'],LC=[0,1,1,2,3,2,3,2];
+ const tot=OWo.reduce((a,x)=>a+x.frequencyCount,0)||1,pc=[0,0,0,0,0];OWo.forEach(x=>pc[x.categoria]+=100*x.frequencyCount/tot);
+ $('o_owas').innerHTML=`<div class="big">${lights(w.cat)} OWAS = categoría ${w.cat}</div><div>${ACT.owas[w.cat]}</div>`+tbl(rowS('Espalda',BK[w.back],w.back,4)+rowS('Brazos',AR[w.arms],w.arms,3)+`<tr><td>Piernas</td><td>${LG[w.legs]}</td><td>${w.legs}</td><td><i class="chip" style="background:${COL[LC[w.legs]+1>4?4:LC[w.legs]+1]}"></i></td></tr>`+rowS('Carga',LD[w.load],w.load,3))+`<div class="n">Código ${w.back}-${w.arms}-${w.legs}-${w.load}. Distribución en todo el video:</div>`+[1,2,3,4].map(c=>`<div class="bar"><i style="width:${pc[c].toFixed(0)}%;background:${COL[c]}"></i><span>Cat. ${c}: ${pc[c].toFixed(0)}%</span></div>`).join('')}
+$('dlImg').onclick=()=>{const L=ficha(cur),fs=17,pw=470,h=Math.max(H,L.length*(fs+7)+30),c=document.createElement('canvas');c.width=W+pw;c.height=h;const g=c.getContext('2d');
+ g.fillStyle='#111';g.fillRect(0,0,c.width,h);g.drawImage(pv,0,0);let y=30;for(const[t,hd]of L){g.font=(hd?'bold ':'')+fs+'px system-ui';g.fillStyle=hd?'#facc15':'#fff';g.fillText(t,W+14,y);y+=fs+7}
+ const a=document.createElement('a');a.href=c.toDataURL('image/png');a.download='postura_t'+TS[cur].toFixed(1)+'s.png';a.click()};
+async function show(i){cur=i;tabs(i);$('fi').hidden=false;$('fi').innerHTML=ficha(i).map(([t,h])=>`<div${h?' class="fh"':''}>${t}</div>`).join('');document.querySelectorAll('#tb tr.sel').forEach(r=>r.classList.remove('sel'));const r=document.querySelector(`#tb tr[data-i="${i}"]`);if(r){r.classList.add('sel');r.scrollIntoView({block:'nearest'})}$('sl').value=i;document.querySelectorAll('.cand').forEach(c=>c.classList.toggle('on',+c.dataset.i===i));
+ pg.drawImage(await rawFrame(i),0,0,W,H);const m=SM[i];if(S[i])ann(pg,S[i],M[i],side);
+ lab(pg,8,26,m.ok?`t=${TS[i].toFixed(2)} s · RULA ${m.rula.final} · REBA ${m.reba.final} · OWAS ${m.ow.cat}${m.lateral?'':' · VISTA POCO LATERAL: ángulos poco fiables'}`:`t=${TS[i].toFixed(2)} s · ${m.why}`,'#fff')}
+$('sl').addEventListener('input',()=>show(+$('sl').value));
+$('tb').addEventListener('click',e=>{const r=e.target.closest('tr[data-i]');if(r)show(+r.dataset.i)});
+$('dl').onclick=()=>{const o=O(),w=SM[worst],sd=side==='R'?'derecho':'izquierdo',s1=m=>({upperArmPos:m.rula.up-(o.shR?1:0)-((o.abd||w.abd)?1:0)+(o.armSup?1:0),shoulderRaised:o.shR,armAbducted:(o.abd||w.abd),armSupported:o.armSup,lowerArmPos:m.inp.lo,lowerArmCrossMidline:o.crossMid,wristPos:o.wrist,wristDeviated:o.wDev,wristTwist:o.wTw?2:1,muscleUseA:o.muscle?1:0,forceLoadA:m.rula.C-m.rula.A-(o.muscle?1:0)});
+ const sx=s1(w),rb={upperArmPos:w.reba.uR-(o.shR?1:0)-((o.abd||w.abd)?1:0)+(o.armSup?1:0),shoulderRaised:o.shR,armAbducted:(o.abd||w.abd),armSupported:o.armSup,lowerArmPos:w.reba.lR,wristPos:o.wristR,wristTwistedOrDeviated:o.wDev,coupling:o.coupling};
+ const data={version:'v3',video:$('vi').textContent,lado:sd,posturasCriticas:crit.map(i=>({fase:PH[i],t:TS[i],rula:SM[i].rula.final,reba:SM[i].reba.final,owas:SM[i].ow.cat,tronco:SM[i].trunk,brazo:SM[i].upper,codo:SM[i].elbow,cuello:SM[i].neck})),opciones:o,
+  frames:TS.map((t,i)=>{const m=SM[i];return{t:+t.toFixed(3),ok:m.ok,motivo:m.why||'',lateral:!!m.lateral,tronco:m.trunk,brazo:m.upper,codo:m.elbow,cuello:m.neck,rodillaD:m.kR,rodillaI:m.kL,rula:m.rula&&m.rula.final,reba:m.reba&&m.reba.final,owas:m.ow&&m.ow.cat}}),
+  peorFotograma:{t:TS[worst],
+   rulaData:{evaluatedSide:sd,neckPos:w.inp.nk,neckRotated:o.neckTw,neckSideBending:o.neckSb,trunkPos:o.seated?1:w.inp.tr,trunkTwisted:(o.trTw||w.trTw),trunkSideBending:(o.trSb||w.trSb),legsPos:o.oneLeg?2:1,muscleUseB:o.muscle?1:0,forceLoadB:sx.forceLoadA,right:sx,left:sx},
+   rebaData:{evaluatedSide:sd,trunkPos:w.inp.tb,trunkTwistedOrSide:(o.trTw||w.trTw)||(o.trSb||w.trSb),neckPos:w.inp.nb,neckTwistedOrSide:(o.neckTw||o.neckSb),legsBase:o.oneLeg?2:1,legsKneeFlexion:w.reba.lg-(o.oneLeg?2:1),loadForce:(o.kg<5?0:o.kg<=10?1:2),shockForce:o.shock,activityStatic:o.stat,activityRepetitive:o.rep,activityUnstableChanges:o.unst,right:rb,left:rb}},
+  owasData:{observations:OWo.map(({categoria,...r})=>r)}};
+ const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,1)],{type:'application/json'}));a.download='angulos_rula_reba_owas.json';a.click()};
+</script></body></html>
