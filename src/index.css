@@ -26,7 +26,7 @@
 }
 
 /* Superficie claramente diferenciada para todos los campos de carga de datos y desplegables */
-main input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+main input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]),
 main select,
 main textarea {
   background-color: #eef4fa;
@@ -34,14 +34,14 @@ main textarea {
   transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
 }
 
-main input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):hover,
+main input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):hover,
 main select:hover,
 main textarea:hover {
   background-color: #f8fbff;
   border-color: #475569;
 }
 
-main input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus,
+main input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):focus,
 main select:focus,
 main textarea:focus {
   background-color: #ffffff;
@@ -126,7 +126,7 @@ main label.inline-flex:has(input[type="checkbox"]:checked) {
 .font-grande p, .font-grande label { font-size: 0.95rem !important; }
 
 /* Resaltado especial de campos de carga y selección */
-.highlight-inputs main input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+.highlight-inputs main input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]),
 .highlight-inputs main select,
 .highlight-inputs main textarea {
   background-color: #e0f2fe !important;
@@ -149,6 +149,55 @@ main label.inline-flex:has(input[type="checkbox"]:checked) {
 .no-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;
+}
+
+/* Ergonomía táctil para teléfonos celulares y tablets */
+button,
+select,
+input[type="range"],
+label {
+  touch-action: manipulation;
+}
+
+.mobile-safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+@media (pointer: coarse) {
+  input[type="range"] {
+    min-height: 36px;
+    cursor: pointer;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    width: 22px;
+    height: 22px;
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 22px;
+    height: 22px;
+  }
+  main select,
+  main input[type="text"],
+  main input[type="date"] {
+    min-height: 42px;
+  }
+  main label.inline-flex:has(input[type="checkbox"]) {
+    min-height: 42px;
+    align-items: center;
+  }
+}
+
+@media (max-width: 640px) {
+  html,
+  body {
+    overflow-x: hidden;
+  }
+  main select,
+  main textarea,
+  main input[type="text"],
+  main input[type="date"] {
+    font-size: 16px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

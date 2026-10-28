@@ -8,10 +8,13 @@ import {
   Calculator,
   ChevronLeft,
   ChevronRight,
+  ClipboardList,
   FileDown,
   FileSpreadsheet,
   Info,
   Layers,
+  Menu,
+  Move3d,
   Plus,
   Scale,
   Sliders,
@@ -41,6 +44,7 @@ import { FigurePlanStudio } from './components/FigurePlanStudio';
 import { FormulaStudio } from './components/FormulaStudio';
 import { VideoBiomechExtractor } from './components/VideoBiomechExtractor';
 import { AvatarTesterWorkspace } from './components/AvatarTesterWorkspace';
+import { FreeAvatarStudioWorkspace } from './components/FreeAvatarStudioWorkspace';
 import {
   EnvironmentalMethodId,
   EnvironmentalMethodsWorkspace,
@@ -158,10 +162,17 @@ export default function App() {
   const [isAboutModalOpen, setIsAboutModalOpen] = useState(false);
   const [isDisclaimerDismissed, setIsDisclaimerDismissed] = useState(false);
 
-  // Espacio de trabajo superior: Evaluador Ergonómico, Térmico/Fanger, Testeo de Avatar 3D, Motor 3D Plan de Figuras, Editor de Fórmulas o Extractor Video IA
+  // Espacio de trabajo superior: Estudio Multipestaña, Video IA, Avatar Libre 3D, Testeo Avatar 3D, Motor 3D Figuras, Confort Térmico o Fórmulas
   const [activeWorkspace, setActiveWorkspace] = useState<
-    'evaluador' | 'ambiente_fisico' | 'testeo_avatar' | 'figuras3d' | 'formulas' | 'video_ia'
+    | 'evaluador'
+    | 'video_ia'
+    | 'avatar_libre'
+    | 'testeo_avatar'
+    | 'figuras3d'
+    | 'ambiente_fisico'
+    | 'formulas'
   >('evaluador');
+  const [isMobileMoreOpen, setIsMobileMoreOpen] = useState<boolean>(false);
   const [envWorkspaceMethodId, setEnvWorkspaceMethodId] = useState<EnvironmentalMethodId>(MethodId.FANGER);
   const [isVideoExpanded, setIsVideoExpanded] = useState<boolean>(false);
   const [formulaStudioMethodId, setFormulaStudioMethodId] = useState<MethodId>(MethodId.RULA);
@@ -470,27 +481,33 @@ export default function App() {
   const fontClass = `font-${preferences.fontSize}`;
   const highlightClass = preferences.highlightInputs ? 'highlight-inputs' : '';
 
+  const workspaceLabelMap: Record<typeof activeWorkspace, string> = {
+    evaluador: 'Estudio Multipestaña',
+    video_ia: 'Video IA · Informe',
+    avatar_libre: 'Avatar Libre 3D',
+    testeo_avatar: 'Testeo Avatar 3D',
+    figuras3d: 'Motor 3D · Figuras',
+    ambiente_fisico: 'Confort Térmico · Planillas',
+    formulas: 'Editor de Fórmulas',
+  };
+
   return (
     <div
-      className={`min-h-screen flex flex-col transition-colors duration-150 ${themeClass} ${contrastClass} ${fontClass} ${highlightClass}`}
+      className={`min-h-screen flex flex-col pb-20 md:pb-0 transition-colors duration-150 ${themeClass} ${contrastClass} ${fontClass} ${highlightClass}`}
     >
-      {/* BARRA SUPERIOR GLOBAL */}
+      {/* CABECERA GLOBAL EN DOS NIVELES (100% VISIBLE EN GOOGLE CHROME, TABLETS Y CELULARES SIN RECORTES) */}
       <header className="sticky top-0 z-30 bg-white border-b border-slate-300 shadow-2xs">
-        <div className="max-w-[1400px] mx-auto px-3 sm:px-6 h-14 flex items-center justify-between gap-2 sm:gap-4">
-          {/* Marca, Pestañas de Espacios de Trabajo (con desplazamiento táctil en celular) y Crédito de Autor */}
-          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar min-w-0 py-1">
+        {/* NIVEL 1: Marca, Accesos de Estudio/Manual y Exportación */}
+        <div className="max-w-[1440px] mx-auto px-3 sm:px-6 min-h-[54px] py-1.5 flex items-center justify-between gap-2 sm:gap-4">
+          <div className="flex items-center gap-2.5 min-w-0">
             <button
               type="button"
               onClick={() => {
                 setActiveWorkspace('evaluador');
                 navigateToSlide(0);
               }}
-              className={`font-bold text-base tracking-tight whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-2 px-2 py-1 rounded-md transition-colors ${
-                activeWorkspace === 'evaluador'
-                  ? 'text-slate-900 bg-slate-100'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
-              }`}
-              title="Estudio Ergonómico Multipestaña"
+              className="font-bold text-base tracking-tight whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-2 px-2 py-1.5 rounded-md text-slate-900 hover:bg-slate-100 transition-colors"
+              title="Ir al inicio del Estudio Ergonómico Multipestaña"
             >
               <span className="w-7 h-7 rounded-md bg-sky-700 text-white flex items-center justify-center text-xs font-mono font-bold">
                 EE
@@ -498,86 +515,17 @@ export default function App() {
               <span>ErgoEval</span>
             </button>
 
-            <button
-              type="button"
-              onClick={() => setActiveWorkspace('testeo_avatar')}
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
-                activeWorkspace === 'testeo_avatar'
-                  ? 'bg-indigo-700 text-white border-indigo-800 shadow-2xs'
-                  : 'bg-indigo-50/90 text-indigo-950 border-indigo-300 hover:bg-indigo-100'
-              }`}
-              title="Testeo Interactivo del Avatar Biomecánico 3D (Carga Postural y MMC)"
-            >
-              <Sliders className="w-3.5 h-3.5" />
-              <span>Testeo Avatar 3D</span>
-            </button>
+            <span className="md:hidden text-xs font-semibold text-slate-700 truncate border-l border-slate-300 pl-2">
+              {workspaceLabelMap[activeWorkspace]}
+            </span>
 
-            <button
-              type="button"
-              onClick={() => setActiveWorkspace('figuras3d')}
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
-                activeWorkspace === 'figuras3d'
-                  ? 'bg-sky-700 text-white border-sky-800 shadow-2xs'
-                  : 'bg-sky-50/80 text-sky-900 border-sky-200 hover:bg-sky-100'
-              }`}
-              title="Motor de Renderizado Biomecánico 3D y Plan de Figuras del Libro"
-            >
-              <Box className="w-3.5 h-3.5" />
-              <span>Motor 3D · Figuras</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setActiveWorkspace('ambiente_fisico')}
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
-                activeWorkspace === 'ambiente_fisico'
-                  ? 'bg-amber-700 text-white border-amber-800 shadow-2xs'
-                  : 'bg-amber-50/90 text-amber-950 border-amber-300 hover:bg-amber-100'
-              }`}
-              title="Confort Térmico Fanger (ISO 7730 PMV/PPD), Estrés Térmico WBGT y Vibraciones (Cap. 7 y 8)"
-            >
-              <Thermometer className="w-3.5 h-3.5" />
-              <span>Térmico · Fanger / Físicos</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => handleOpenFormulaEditor()}
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
-                activeWorkspace === 'formulas'
-                  ? 'bg-slate-900 text-white border-slate-900 shadow-2xs'
-                  : 'bg-slate-100 text-slate-900 border-slate-300 hover:bg-slate-200'
-              }`}
-              title="Ver y modificar las fórmulas algebraicas y umbrales de cada método"
-            >
-              <Calculator className="w-3.5 h-3.5" />
-              <span>
-                Fórmulas
-                {modifiedFormulaCount > 0 ? ` (${modifiedFormulaCount})` : ''}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setActiveWorkspace('video_ia')}
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
-                activeWorkspace === 'video_ia'
-                  ? 'bg-emerald-700 text-white border-emerald-800 shadow-2xs'
-                  : 'bg-emerald-50/90 text-emerald-950 border-emerald-300 hover:bg-emerald-100'
-              }`}
-              title="Extractor de Variables Biomecánicas y Muestras CENEA con Emisión Automática de Informe"
-            >
-              <Video className="w-3.5 h-3.5" />
-              <span>Video IA · Informe</span>
-            </button>
-
-            <span className="hidden 2xl:inline text-[11px] text-slate-500 font-normal pl-1 border-l border-slate-300 whitespace-nowrap shrink-0">
+            <span className="hidden xl:inline text-[11px] text-slate-500 font-normal pl-2.5 border-l border-slate-300 whitespace-nowrap shrink-0">
               por Mauricio Alejandro Pizarro Muñoz
             </span>
           </div>
 
-          {/* Navegación central y accesos de desarrollo / visualización */}
-          <nav className="hidden xl:flex items-center gap-3.5 text-xs font-medium text-slate-600">
+          {/* Navegación rápida de secciones del estudio y utilidades documentales */}
+          <nav className="hidden lg:flex items-center gap-3 text-xs font-medium text-slate-600 flex-wrap justify-center">
             <button
               type="button"
               onClick={() => {
@@ -598,13 +546,13 @@ export default function App() {
                 setActiveWorkspace('evaluador');
                 navigateToSlide(1);
               }}
-              className={`py-1 whitespace-nowrap shrink-0 cursor-pointer hover:text-slate-900 ${
+              className={`py-1 whitespace-nowrap shrink-0 cursor-pointer hover:text-slate-900 tabular-nums ${
                 activeWorkspace === 'evaluador' && safeSlideIndex >= 1 && safeSlideIndex <= tabs.length
                   ? 'text-sky-700 font-semibold underline underline-offset-4'
                   : ''
               }`}
             >
-              Pestañas de Estudio ({tabs.length})
+              Pestañas ({tabs.length})
             </button>
             <button
               type="button"
@@ -618,12 +566,11 @@ export default function App() {
                   : ''
               }`}
             >
-              Resumen Automático
+              Resumen
             </button>
 
             <span className="text-slate-300">|</span>
 
-            {/* Acceso directo al Manual de Métodos en PDF */}
             <button
               type="button"
               onClick={handleDownloadManualPdf}
@@ -634,7 +581,6 @@ export default function App() {
               Manual PDF
             </button>
 
-            {/* Acceso al archivo de desarrollo y libro */}
             <button
               type="button"
               onClick={() => handleOpenReference()}
@@ -645,7 +591,6 @@ export default function App() {
               Fórmulas y Libro
             </button>
 
-            {/* Ajustes de visualización y contraste */}
             <button
               type="button"
               onClick={() => setIsDisplayModalOpen(true)}
@@ -656,7 +601,6 @@ export default function App() {
               Visualización
             </button>
 
-            {/* Información, descargo legal y aviso de enlace */}
             <button
               type="button"
               onClick={() => setIsAboutModalOpen(true)}
@@ -668,8 +612,8 @@ export default function App() {
             </button>
           </nav>
 
-          {/* Acciones principales de exportación */}
-          <div className="flex items-center gap-2 shrink-0">
+          {/* Acciones principales de exportación y acceso táctil */}
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <input
               ref={jsonInputRef}
               type="file"
@@ -681,48 +625,146 @@ export default function App() {
             <button
               type="button"
               onClick={() => setIsDisplayModalOpen(true)}
-              className="xl:hidden p-1.5 rounded-md border border-slate-300 text-slate-700 hover:bg-slate-100 cursor-pointer"
-              title="Visualización"
+              className="lg:hidden min-h-[40px] min-w-[40px] inline-flex items-center justify-center rounded-md border border-slate-300 text-slate-700 hover:bg-slate-100 cursor-pointer"
+              title="Ajustes de Visualización y Contraste"
             >
               <Sliders className="w-4 h-4" />
             </button>
 
             <button
               type="button"
-              onClick={() =>
-                setActiveWorkspace((prev) => (prev === 'figuras3d' ? 'evaluador' : 'figuras3d'))
-              }
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
-                activeWorkspace === 'figuras3d'
-                  ? 'bg-sky-700 text-white border-sky-800'
-                  : 'bg-white hover:bg-slate-50 text-slate-800 border-slate-300'
-              }`}
-              title="Alternar al Estudio de Figuras 3D del Libro (PNG < 120 KB)"
-            >
-              <Box className={`w-3.5 h-3.5 ${activeWorkspace === 'figuras3d' ? 'text-white' : 'text-sky-600'}`} />
-              <span className="hidden sm:inline">
-                {activeWorkspace === 'figuras3d' ? 'Ir a Evaluador' : 'Figuras 3D'}
-              </span>
-            </button>
-
-            <button
-              type="button"
               onClick={handleExportPdf}
               disabled={isExportingPdf}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white text-xs font-medium whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+              className="min-h-[40px] sm:min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors"
             >
               <FileDown className="w-3.5 h-3.5" />
-              {isExportingPdf ? 'PDF...' : 'Exportar PDF'}
+              <span>{isExportingPdf ? 'PDF...' : 'Exportar PDF'}</span>
             </button>
 
             <button
               type="button"
               onClick={handleExportWord}
               disabled={isExportingWord}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white text-xs font-medium whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+              className="hidden sm:inline-flex min-h-[36px] items-center gap-1.5 px-3 py-1.5 rounded-md bg-sky-600 hover:bg-sky-700 disabled:opacity-60 text-white text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors"
             >
               <FileSpreadsheet className="w-3.5 h-3.5" />
-              {isExportingWord ? 'Word...' : 'Exportar Word'}
+              <span>{isExportingWord ? 'Word...' : 'Exportar Word'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsMobileMoreOpen((prev) => !prev)}
+              className="md:hidden min-h-[40px] px-2.5 inline-flex items-center gap-1 rounded-md border border-slate-300 bg-slate-100 text-slate-900 text-xs font-semibold whitespace-nowrap cursor-pointer"
+              title="Abrir todos los módulos y herramientas"
+            >
+              <Menu className="w-4 h-4" />
+              <span>Módulos</span>
+            </button>
+          </div>
+        </div>
+
+        {/* NIVEL 2 (ESCRITORIO, CHROME Y TABLETS): Barra dedicada de módulos con ajuste multilínea (flex-wrap), CERO recortes ocultos */}
+        <div className="hidden md:block bg-slate-900 border-t border-slate-800">
+          <div className="max-w-[1440px] mx-auto px-3 sm:px-6 py-2 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setActiveWorkspace('evaluador')}
+              className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
+                activeWorkspace === 'evaluador'
+                  ? 'bg-sky-600 text-white border-sky-400 shadow-xs'
+                  : 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700 hover:text-white'
+              }`}
+              title="Estudio Ergonómico Multipestaña e Informe Integrado"
+            >
+              <ClipboardList className="w-3.5 h-3.5" />
+              <span>Estudio Multipestaña</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveWorkspace('video_ia')}
+              className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
+                activeWorkspace === 'video_ia'
+                  ? 'bg-emerald-600 text-white border-emerald-400 shadow-xs'
+                  : 'bg-emerald-950/80 text-emerald-200 border-emerald-700/80 hover:bg-emerald-900 hover:text-white'
+              }`}
+              title="Extractor Biomecánico por Video IA, Tareas Humanizadas CENEA e Informe Automático"
+            >
+              <Video className="w-3.5 h-3.5" />
+              <span>Video IA · Informe</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveWorkspace('avatar_libre')}
+              className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
+                activeWorkspace === 'avatar_libre'
+                  ? 'bg-violet-600 text-white border-violet-400 shadow-xs'
+                  : 'bg-violet-950/80 text-violet-200 border-violet-700/80 hover:bg-violet-900 hover:text-white'
+              }`}
+              title="Movimiento Libre del Avatar 3D con el Ratón/Táctil y Ángulos Específicos"
+            >
+              <Move3d className="w-3.5 h-3.5" />
+              <span>Avatar Libre 3D</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveWorkspace('testeo_avatar')}
+              className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
+                activeWorkspace === 'testeo_avatar'
+                  ? 'bg-indigo-600 text-white border-indigo-400 shadow-xs'
+                  : 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700 hover:text-white'
+              }`}
+              title="Testeo Paramétrico del Avatar 3D por Método Ergonómico"
+            >
+              <Sliders className="w-3.5 h-3.5" />
+              <span>Testeo Avatar 3D</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveWorkspace('figuras3d')}
+              className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
+                activeWorkspace === 'figuras3d'
+                  ? 'bg-cyan-600 text-white border-cyan-400 shadow-xs'
+                  : 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700 hover:text-white'
+              }`}
+              title="Motor 3D de Figuras del Libro y Reemplazo Permanente de Imágenes"
+            >
+              <Box className="w-3.5 h-3.5" />
+              <span>Motor 3D · Figuras</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveWorkspace('ambiente_fisico')}
+              className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
+                activeWorkspace === 'ambiente_fisico'
+                  ? 'bg-amber-600 text-white border-amber-400 shadow-xs'
+                  : 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700 hover:text-white'
+              }`}
+              title="Planillas Multilínea de Confort Térmico Fanger (ISO 7730), WBGT y Vibraciones"
+            >
+              <Thermometer className="w-3.5 h-3.5" />
+              <span>Confort Térmico · Planillas</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleOpenFormulaEditor()}
+              className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors tabular-nums ${
+                activeWorkspace === 'formulas'
+                  ? 'bg-slate-100 text-slate-950 border-white shadow-xs'
+                  : 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700 hover:text-white'
+              }`}
+              title="Ver y auditar las fórmulas algebraicas y umbrales de cada método"
+            >
+              <Calculator className="w-3.5 h-3.5" />
+              <span>
+                Fórmulas
+                {modifiedFormulaCount > 0 ? ` (${modifiedFormulaCount})` : ''}
+              </span>
             </button>
           </div>
         </div>
@@ -764,13 +806,13 @@ export default function App() {
       {/* BARRA DESLIZABLE DE PESTAÑAS DE TRABAJO (MODO EVALUADOR) */}
       {activeWorkspace === 'evaluador' && (
         <div className="bg-[#d2dfec] border-b border-slate-300">
-          <div className="max-w-[1400px] mx-auto px-2 sm:px-6 flex items-center gap-1.5 py-2">
+          <div className="max-w-[1440px] mx-auto px-2 sm:px-6 flex items-center gap-1.5 py-2">
             <button
               type="button"
               onClick={() => navigateToSlide(safeSlideIndex - 1)}
               disabled={safeSlideIndex === 0}
               title="Deslizar a la pestaña anterior (Alt + ←)"
-              className="p-1.5 rounded border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-35 text-slate-700 shrink-0 cursor-pointer"
+              className="min-h-[40px] min-w-[40px] sm:min-h-[36px] sm:min-w-[36px] inline-flex items-center justify-center rounded border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-35 text-slate-700 shrink-0 cursor-pointer"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
@@ -783,7 +825,7 @@ export default function App() {
                 }}
                 type="button"
                 onClick={() => navigateToSlide(0)}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
+                className={`min-h-[40px] sm:min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
                   safeSlideIndex === 0
                     ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
                     : 'bg-white/95 text-slate-700 border-slate-300 hover:border-slate-400 hover:bg-white hover:text-slate-900'
@@ -806,7 +848,7 @@ export default function App() {
                     }}
                     type="button"
                     onClick={() => navigateToSlide(slideIdx)}
-                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
+                    className={`min-h-[40px] sm:min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
                       isActive
                         ? 'bg-sky-700 text-white border-sky-800 shadow-xs'
                         : 'bg-white/95 text-slate-700 border-slate-300 hover:border-sky-400 hover:bg-white hover:text-slate-900'
@@ -828,7 +870,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => handleAddTab(MethodId.RULA)}
-                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-dashed border-sky-700/70 bg-sky-50/90 hover:bg-white text-xs font-semibold text-sky-800 whitespace-nowrap shrink-0 cursor-pointer"
+                className="min-h-[40px] sm:min-h-[36px] inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-dashed border-sky-700/70 bg-sky-50/90 hover:bg-white text-xs font-semibold text-sky-800 whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5" />
                 Añadir Pestaña
@@ -841,7 +883,7 @@ export default function App() {
                 }}
                 type="button"
                 onClick={() => navigateToSlide(tabs.length + 1)}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap shrink-0 border transition-colors cursor-pointer ${
+                className={`min-h-[40px] sm:min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap shrink-0 border transition-colors cursor-pointer tabular-nums ${
                   safeSlideIndex === tabs.length + 1
                     ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
                     : 'bg-white/95 text-slate-800 border-slate-300 hover:border-slate-400 hover:bg-white'
@@ -857,7 +899,7 @@ export default function App() {
               onClick={() => navigateToSlide(safeSlideIndex + 1)}
               disabled={safeSlideIndex === totalSlides - 1}
               title="Deslizar a la pestaña siguiente (Alt + →)"
-              className="p-1.5 rounded border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-35 text-slate-700 shrink-0 cursor-pointer"
+              className="min-h-[40px] min-w-[40px] sm:min-h-[36px] sm:min-w-[36px] inline-flex items-center justify-center rounded border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-35 text-slate-700 shrink-0 cursor-pointer"
             >
               <ChevronRight className="w-4 h-4" />
             </button>
@@ -882,8 +924,17 @@ export default function App() {
       )}
 
       {/* CONTENEDOR PRINCIPAL */}
-      {activeWorkspace === 'testeo_avatar' ? (
-        <main className="flex-1 max-w-[1400px] w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 overflow-x-hidden">
+      {activeWorkspace === 'avatar_libre' ? (
+        <main className="flex-1 max-w-[1440px] w-full mx-auto px-3 sm:px-6 py-3 sm:py-6 overflow-x-hidden">
+          <ErrorBoundary>
+            <FreeAvatarStudioWorkspace
+              onBackToEvaluator={() => setActiveWorkspace('evaluador')}
+              onAddPoseTabToStudy={handleAddTestedTabToStudy}
+            />
+          </ErrorBoundary>
+        </main>
+      ) : activeWorkspace === 'testeo_avatar' ? (
+        <main className="flex-1 max-w-[1440px] w-full mx-auto px-3 sm:px-6 py-3 sm:py-6 overflow-x-hidden">
           <ErrorBoundary>
             <AvatarTesterWorkspace
               onBackToEvaluator={() => setActiveWorkspace('evaluador')}
@@ -1130,6 +1181,289 @@ export default function App() {
         onOpenDisplayControls={() => setIsDisplayModalOpen(true)}
         onDownloadManualPdf={handleDownloadManualPdf}
       />
+
+      {/* PANEL DESLIZABLE DE TODOS LOS MÓDULOS Y ACCIONES PARA CELULARES (md:hidden) */}
+      {isMobileMoreOpen && (
+        <div className="fixed inset-0 z-50 md:hidden flex flex-col justify-end bg-slate-950/60">
+          <button
+            type="button"
+            aria-label="Cerrar menú móvil"
+            onClick={() => setIsMobileMoreOpen(false)}
+            className="flex-1 w-full cursor-default"
+          />
+          <div className="bg-white rounded-t-xl border-t border-slate-300 shadow-2xl p-4 space-y-4 max-h-[82vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-200 pb-2.5">
+              <div>
+                <h2 className="text-sm font-bold text-slate-900">Módulos y Herramientas ErgoEval</h2>
+                <p className="text-[11px] text-slate-500">Optimizado para uso táctil en teléfonos y tablets</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsMobileMoreOpen(false)}
+                className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center rounded-md border border-slate-300 text-slate-700 hover:bg-slate-100"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveWorkspace('evaluador');
+                  setIsMobileMoreOpen(false);
+                }}
+                className={`min-h-[48px] px-3 py-2 rounded-md border text-left text-xs font-semibold flex items-center gap-2 ${
+                  activeWorkspace === 'evaluador'
+                    ? 'bg-sky-700 text-white border-sky-800'
+                    : 'bg-slate-50 text-slate-900 border-slate-300'
+                }`}
+              >
+                <ClipboardList className="w-4 h-4 shrink-0" />
+                <span>Estudio Multipestaña</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveWorkspace('video_ia');
+                  setIsMobileMoreOpen(false);
+                }}
+                className={`min-h-[48px] px-3 py-2 rounded-md border text-left text-xs font-semibold flex items-center gap-2 ${
+                  activeWorkspace === 'video_ia'
+                    ? 'bg-emerald-700 text-white border-emerald-800'
+                    : 'bg-emerald-50 text-emerald-950 border-emerald-300'
+                }`}
+              >
+                <Video className="w-4 h-4 shrink-0" />
+                <span>Video IA · Informe</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveWorkspace('avatar_libre');
+                  setIsMobileMoreOpen(false);
+                }}
+                className={`min-h-[48px] px-3 py-2 rounded-md border text-left text-xs font-semibold flex items-center gap-2 ${
+                  activeWorkspace === 'avatar_libre'
+                    ? 'bg-violet-700 text-white border-violet-800'
+                    : 'bg-violet-50 text-violet-950 border-violet-300'
+                }`}
+              >
+                <Move3d className="w-4 h-4 shrink-0" />
+                <span>Avatar Libre 3D</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveWorkspace('testeo_avatar');
+                  setIsMobileMoreOpen(false);
+                }}
+                className={`min-h-[48px] px-3 py-2 rounded-md border text-left text-xs font-semibold flex items-center gap-2 ${
+                  activeWorkspace === 'testeo_avatar'
+                    ? 'bg-indigo-700 text-white border-indigo-800'
+                    : 'bg-slate-50 text-slate-900 border-slate-300'
+                }`}
+              >
+                <Sliders className="w-4 h-4 shrink-0" />
+                <span>Testeo Avatar 3D</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveWorkspace('figuras3d');
+                  setIsMobileMoreOpen(false);
+                }}
+                className={`min-h-[48px] px-3 py-2 rounded-md border text-left text-xs font-semibold flex items-center gap-2 ${
+                  activeWorkspace === 'figuras3d'
+                    ? 'bg-cyan-700 text-white border-cyan-800'
+                    : 'bg-slate-50 text-slate-900 border-slate-300'
+                }`}
+              >
+                <Box className="w-4 h-4 shrink-0" />
+                <span>Motor 3D · Figuras</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveWorkspace('ambiente_fisico');
+                  setIsMobileMoreOpen(false);
+                }}
+                className={`min-h-[48px] px-3 py-2 rounded-md border text-left text-xs font-semibold flex items-center gap-2 ${
+                  activeWorkspace === 'ambiente_fisico'
+                    ? 'bg-amber-700 text-white border-amber-800'
+                    : 'bg-amber-50 text-amber-950 border-amber-300'
+                }`}
+              >
+                <Thermometer className="w-4 h-4 shrink-0" />
+                <span>Térmico · Planillas</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  handleOpenFormulaEditor();
+                  setIsMobileMoreOpen(false);
+                }}
+                className={`col-span-2 min-h-[46px] px-3 py-2 rounded-md border text-left text-xs font-semibold flex items-center gap-2 tabular-nums ${
+                  activeWorkspace === 'formulas'
+                    ? 'bg-slate-900 text-white border-slate-900'
+                    : 'bg-slate-50 text-slate-900 border-slate-300'
+                }`}
+              >
+                <Calculator className="w-4 h-4 shrink-0" />
+                <span>
+                  Editor de Fórmulas y Umbrales
+                  {modifiedFormulaCount > 0 ? ` (${modifiedFormulaCount})` : ''}
+                </span>
+              </button>
+            </div>
+
+            <div className="border-t border-slate-200 pt-3 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsMobileMoreOpen(false);
+                  handleExportWord();
+                }}
+                disabled={isExportingWord}
+                className="min-h-[44px] px-3 py-2 rounded-md bg-sky-600 text-white text-xs font-semibold flex items-center justify-center gap-1.5"
+              >
+                <FileSpreadsheet className="w-4 h-4" />
+                <span>{isExportingWord ? 'Word...' : 'Exportar Word'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsMobileMoreOpen(false);
+                  handleDownloadManualPdf();
+                }}
+                className="min-h-[44px] px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-800 text-xs font-semibold flex items-center justify-center gap-1.5"
+              >
+                <FileDown className="w-4 h-4 text-sky-600" />
+                <span>Manual PDF</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsMobileMoreOpen(false);
+                  handleOpenReference();
+                }}
+                className="min-h-[44px] px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-800 text-xs font-semibold flex items-center justify-center gap-1.5"
+              >
+                <BookOpen className="w-4 h-4 text-sky-600" />
+                <span>Tablas del Libro</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsMobileMoreOpen(false);
+                  setIsDisplayModalOpen(true);
+                }}
+                className="min-h-[44px] px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-800 text-xs font-semibold flex items-center justify-center gap-1.5"
+              >
+                <Sliders className="w-4 h-4 text-sky-600" />
+                <span>Visualización</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* BARRA INFERIOR FIJA PARA CELULARES (md:hidden) — Controles principales al alcance del pulgar */}
+      <nav
+        aria-label="Navegación rápida móvil"
+        className="fixed bottom-0 inset-x-0 z-40 md:hidden bg-slate-900 text-slate-200 border-t border-slate-800 shadow-lg mobile-safe-bottom"
+      >
+        <div className="grid grid-cols-5 h-15">
+          <button
+            type="button"
+            onClick={() => {
+              setActiveWorkspace('evaluador');
+              setIsMobileMoreOpen(false);
+            }}
+            className={`flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold whitespace-nowrap transition-colors ${
+              activeWorkspace === 'evaluador'
+                ? 'text-sky-400 bg-slate-800/90'
+                : 'text-slate-300 hover:text-white'
+            }`}
+          >
+            <ClipboardList className="w-4 h-4" />
+            <span>Estudio</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setActiveWorkspace('video_ia');
+              setIsMobileMoreOpen(false);
+            }}
+            className={`flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold whitespace-nowrap transition-colors ${
+              activeWorkspace === 'video_ia'
+                ? 'text-emerald-400 bg-slate-800/90'
+                : 'text-emerald-300 hover:text-white'
+            }`}
+          >
+            <Video className="w-4 h-4" />
+            <span>Video IA</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setActiveWorkspace('avatar_libre');
+              setIsMobileMoreOpen(false);
+            }}
+            className={`flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold whitespace-nowrap transition-colors ${
+              activeWorkspace === 'avatar_libre'
+                ? 'text-violet-400 bg-slate-800/90'
+                : 'text-violet-300 hover:text-white'
+            }`}
+          >
+            <Move3d className="w-4 h-4" />
+            <span>Avatar Libre</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setActiveWorkspace('ambiente_fisico');
+              setIsMobileMoreOpen(false);
+            }}
+            className={`flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold whitespace-nowrap transition-colors ${
+              activeWorkspace === 'ambiente_fisico'
+                ? 'text-amber-400 bg-slate-800/90'
+                : 'text-slate-300 hover:text-white'
+            }`}
+          >
+            <Thermometer className="w-4 h-4" />
+            <span>Térmico</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsMobileMoreOpen((prev) => !prev)}
+            className={`flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold whitespace-nowrap transition-colors ${
+              isMobileMoreOpen ||
+              activeWorkspace === 'testeo_avatar' ||
+              activeWorkspace === 'figuras3d' ||
+              activeWorkspace === 'formulas'
+                ? 'text-white bg-slate-800/90'
+                : 'text-slate-300 hover:text-white'
+            }`}
+          >
+            <Menu className="w-4 h-4" />
+            <span>Más</span>
+          </button>
+        </div>
+      </nav>
     </div>
   );
 }

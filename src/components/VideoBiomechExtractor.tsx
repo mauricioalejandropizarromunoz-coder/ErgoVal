@@ -1027,74 +1027,45 @@ export const VideoBiomechExtractor: React.FC<VideoBiomechExtractorProps> = ({
 
       recorder.start(120);
 
-      const totalDurationMs = 3400;
-      const fps = 18;
+      const totalDurationMs = 4800;
+      const fps = 20;
       const totalSteps = Math.round((totalDurationMs / 1000) * fps);
       const stepMs = Math.round(1000 / fps);
 
+      const demoSpec = {
+        ...getCeneaSampleCaseById('cenea_transformando_higienico'),
+        title:
+          simDirection === 'levantamiento'
+            ? 'Tarea EmpresaX · Levantamiento Humanizado con Traslado y Giro'
+            : 'Tarea EmpresaX · Descenso Controlado desde Estantería a Tarima',
+        sector: 'Almacén y Expedición',
+        movementDirection: simDirection,
+        loadWeightKg,
+        vOriginCm: simDirection === 'levantamiento' ? 28 : 114,
+        hOriginCm: simDirection === 'levantamiento' ? 30 : 34,
+        vDestCm: simDirection === 'levantamiento' ? 114 : 28,
+        hDestCm: simDirection === 'levantamiento' ? 34 : 30,
+        asymmetryOriginDeg: 0,
+        asymmetryDestDeg: 10,
+        trunkOriginDeg: simDirection === 'levantamiento' ? 16 : 6,
+        kneeOriginDeg: simDirection === 'levantamiento' ? 108 : 10,
+        trunkDestDeg: simDirection === 'levantamiento' ? 6 : 16,
+        kneeDestDeg: simDirection === 'levantamiento' ? 10 : 108,
+        liftStyleOrigin: 'hygienic_squat' as const,
+        liftStyleDest: 'hygienic_squat' as const,
+        prop: 'pallet_jack_rack' as const,
+      };
+
       for (let i = 0; i <= totalSteps; i++) {
         const progress = i / totalSteps;
-        let phaseFactor = 0;
-        if (progress < 0.22) {
-          phaseFactor = 0;
-        } else if (progress <= 0.84) {
-          const u = (progress - 0.22) / 0.62;
-          phaseFactor = u * u * (3 - 2 * u);
-        } else {
-          phaseFactor = 1;
-        }
-
-        // Si simDirection === 'descenso', comienza arriba en estantería (factor=1) y desciende al suelo (factor=0)
-        // Regla ergonómica higiénica en el ciclo demostrativo: rodillas flexionadas (~112°) + espalda recta (~16°)
-        const heightProgress = simDirection === 'levantamiento' ? phaseFactor : 1 - phaseFactor;
-        const simVCm = Math.round(28 * (1 - heightProgress) + 138 * heightProgress);
-        const simHCm = Math.round(28 * (1 - heightProgress) + 34 * heightProgress);
-        const simTrunkHint = Math.round(16 * (1 - heightProgress) + 4 * heightProgress);
-        const simKneeHint = Math.round(112 * (1 - heightProgress) + 6 * heightProgress);
-        const twistDeg = Math.round(8 * phaseFactor);
-
-        const simSolved = solveAvatarLiftPoseForTarget({
-          vCm: simVCm,
-          hCm: simHCm,
-          workerHeightCm,
-          trunkFlexHintDeg: simTrunkHint,
-          kneeFlexHintDeg: simKneeHint,
-          asymmetryDeg: twistDeg,
-          loadKg: loadWeightKg,
-          liftStyle: 'hygienic_squat',
-        });
-
-        const simPanel: Panel3DSpec = {
-          subTitle:
-            simDirection === 'levantamiento'
-              ? 'Tarea EmpresaX · Levantamiento Suelo a Estantería'
-              : 'Tarea EmpresaX · Descenso de Estantería a Nivel Bajo',
-          scoreBadge:
-            progress < 0.26
-              ? simDirection === 'levantamiento'
-                ? `Origen: Carga Abajo (V=${simVCm} cm)`
-                : `Origen: Carga Arriba (V=${simVCm} cm)`
-              : progress < 0.82
-                ? simDirection === 'levantamiento'
-                  ? 'Elevación de Carga'
-                  : 'Descenso Controlado'
-                : simDirection === 'levantamiento'
-                  ? `Destino: Sobre Hombros (V=${simVCm} cm)`
-                  : `Destino: Nivel Bajo (V=${simVCm} cm)`,
-          focusZone: 'full_body',
-          cameraPreset: 'sagittal_right',
-          pose: simSolved.pose,
-          angleArcs: [],
-          forceVectors: [],
-          noteBottom: `Operario ${workerHeightCm} cm · Carga ${loadWeightKg} kg · V=${simVCm} cm`,
-        };
+        const frame = buildCeneaSampleFrameSpec(demoSpec, progress, workerHeightCm);
 
         renderInteractivePose3DToCanvas(
-          simPanel,
+          frame.panelSpec,
           offCanvas,
           width,
           height,
-          { azimuthDeg: -14, elevationDeg: 6, zoom: 1.04 },
+          frame.orbit,
           1,
           'anatomical_skin',
           false,
@@ -1110,21 +1081,21 @@ export const VideoBiomechExtractor: React.FC<VideoBiomechExtractorProps> = ({
       setMovementModeHint(simDirection);
       setTaskEvaluated(
         simDirection === 'levantamiento'
-          ? 'Levantamiento manual de cajas desde suelo/tarima hacia estantería media-alta'
-          : 'Descenso manual de cajas desde estantería superior hacia tarima baja',
+          ? 'Aproximación, toma bimanual en tarima (V=28 cm), caminata con giro parcial y estiba en rack (V=114 cm)'
+          : 'Aproximación a estantería (V=114 cm), retiro bimanual, traslado con giro parcial y depósito en tarima (V=28 cm)',
       );
 
       const ext = recordedBlob.type.includes('mp4') ? 'mp4' : 'webm';
       const generatedFile = new File(
         [recordedBlob],
-        `${simDirection}_caja_empresax_3d.${ext}`,
+        `${simDirection}_tarea_humanizada_3d.${ext}`,
         { type: recordedBlob.type || 'video/webm' },
       );
 
       rawUploadedFileRef.current = generatedFile;
       hasAttemptedAutoNormalizeRef.current = true;
       pendingAutoRunFileRef.current = autoRunAfterGenerate ? generatedFile : null;
-      replaceActiveBlobUrl(generatedFile, 3.4, false);
+      replaceActiveBlobUrl(generatedFile, 4.8, false);
     } catch (err) {
       setErrorMsg(
         err instanceof Error
@@ -1188,7 +1159,7 @@ export const VideoBiomechExtractor: React.FC<VideoBiomechExtractorProps> = ({
 
       recorder.start(120);
 
-      const totalDurationMs = 3800;
+      const totalDurationMs = 4800;
       const fps = 20;
       const totalSteps = Math.round((totalDurationMs / 1000) * fps);
       const stepMs = Math.round(1000 / fps);
@@ -1232,7 +1203,7 @@ export const VideoBiomechExtractor: React.FC<VideoBiomechExtractorProps> = ({
       rawUploadedFileRef.current = generatedFile;
       hasAttemptedAutoNormalizeRef.current = true;
       pendingAutoRunFileRef.current = autoRunAfterGenerate ? generatedFile : null;
-      replaceActiveBlobUrl(generatedFile, 3.8, false);
+      replaceActiveBlobUrl(generatedFile, 4.8, false);
     } catch (err) {
       setErrorMsg(
         err instanceof Error

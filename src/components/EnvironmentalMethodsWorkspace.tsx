@@ -20,6 +20,7 @@ import {
 } from '../types/ergonomics';
 import { METHOD_CATALOG, createDefaultPayloads, createNewStudyTab } from '../utils/defaults';
 import {
+  computeFangerMetrics,
   evaluateFanger,
   evaluateIso2631,
   evaluateIso5349,
@@ -58,13 +59,28 @@ interface EnvPresetItem {
 
 const ENV_PRESETS: EnvPresetItem[] = [
   {
+    id: 'fanger_planilla_logistica_12_4',
+    method: MethodId.FANGER,
+    label: 'Planilla Multipunto Cap. 12 Tabla 12.4 — 3 Sectores Empresa Logística (Fig. 12.1)',
+    taskTitle: 'Relevamiento higrotérmico comparativo en 3 sectores de centro logístico',
+    instruments: 'Estación microclimática interior ISO 7726 (ta, tr, HR, va) por sector operativo',
+    apply: (def) => ({
+      fanger: {
+        ...def[MethodId.FANGER],
+        useMultiSectorSheet: true,
+      },
+    }),
+  },
+  {
     id: 'fanger_oficina_cat_a',
     method: MethodId.FANGER,
     label: 'Oficina Climatizada — Categoría A (ISO 7730 · Cap. 7.2)',
     taskTitle: 'Puesto administrativo y análisis técnico en oficina climatizada',
     instruments: 'Termohigrómetro de globo y anemómetro de hilo caliente (ISO 7726)',
-    apply: () => ({
+    apply: (def) => ({
       fanger: {
+        ...def[MethodId.FANGER],
+        useMultiSectorSheet: false,
         airTempC: 23.5,
         radiantTempC: 23.5,
         relativeHumidityPct: 50,
@@ -80,8 +96,10 @@ const ENV_PRESETS: EnvPresetItem[] = [
     label: 'Nave de Ensamble Ligero — Disconfort Cálido Moderado (Cap. 7.4)',
     taskTitle: 'Inspección y control de calidad de pie en nave interior sin radiación intensa',
     instruments: 'Estación microclimática interior ISO 7726 (ta, tr, HR, va)',
-    apply: () => ({
+    apply: (def) => ({
       fanger: {
+        ...def[MethodId.FANGER],
+        useMultiSectorSheet: false,
         airTempC: 27.0,
         radiantTempC: 28.0,
         relativeHumidityPct: 60,
@@ -97,8 +115,10 @@ const ENV_PRESETS: EnvPresetItem[] = [
     label: 'Sala de Acondicionamiento Alimentario Fresca (15 °C · Disconfort Frío)',
     taskTitle: 'Clasificación y envasado en sala climatizada a temperatura controlada',
     instruments: 'Termoanemómetro omnidireccional y sonda de temperatura radiante media',
-    apply: () => ({
+    apply: (def) => ({
       fanger: {
+        ...def[MethodId.FANGER],
+        useMultiSectorSheet: false,
         airTempC: 15.0,
         radiantTempC: 14.5,
         relativeHumidityPct: 65,
@@ -183,14 +203,31 @@ function computePpdFromPmv(pmv: number): number {
 }
 
 /**
- * Curva interactiva PMV–PPD de Fanger (ISO 7730 — Figura 7.2 del Libro Guía)
+ * Curva interactiva PMV–PPD de Fanger (ISO 7730 — Figuras 7.2 y 12.1 del Libro Guía)
+ * Soporta tanto evaluación puntual como trazado simultáneo de múltiples sectores cargados en planilla.
  */
 const FangerPmvPpdCurveSvg: React.FC<{ data: FangerData; result: MethodEvaluationResult }> = ({
+  data,
   result,
 }) => {
   const pmvMatch = result.primaryScoreText.match(/([-+]?\d+(?:\.\d+)?)/);
   const pmvVal = pmvMatch ? Math.max(-3, Math.min(3, parseFloat(pmvMatch[1]))) : 0;
   const ppdVal = computePpdFromPmv(pmvVal);
+
+  const isMulti = Boolean(data.useMultiSectorSheet && data.multiSectorSamples && data.multiSectorSamples.length > 0);
+  const multiPoints = useMemo(() => {
+    if (!isMulti || !data.multiSectorSamples) return [];
+    return data.multiSectorSamples.map((row, idx) => {
+      const m = computeFangerMetrics(row);
+      return {
+        idx: idx + 1,
+        label: row.sectorLabel,
+        pmv: Math.max(-3, Math.min(3, m.pmv)),
+        ppd: m.ppd,
+        outOfComfort: Math.abs(m.pmv) > 0.5 || m.ppd > 10,
+      };
+    });
+  }, [isMulti, data.multiSectorSamples]);
 
   const svgW = 580;
   const svgH = 250;
@@ -219,14 +256,16 @@ const FangerPmvPpdCurveSvg: React.FC<{ data: FangerData; result: MethodEvaluatio
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
           <h4 className="text-xs font-bold text-slate-900">
-            Curva Característica PMV – PPD de Fanger (ISO 7730 · Fig. 7.2 del Libro)
+            Curva Característica PMV – PPD de Fanger (ISO 7730 · {isMulti ? 'Fig. 12.1 Multipunto' : 'Fig. 7.2'})
           </h4>
           <p className="text-[11px] text-slate-500">
-            Relación analítica entre el Voto Medio Estimado (−3 frío a +3 calor) y el Porcentaje de Insatisfechos (mínimo teórico 5% en neutralidad)
+            {isMulti
+              ? 'Ubicación simultánea de los sectores relevados en planilla respecto del umbral del 10 % de insatisfechos'
+              : 'Relación analítica entre el Voto Medio Estimado (−3 frío a +3 calor) y el Porcentaje de Insatisfechos (mín. 5%)'}
           </p>
         </div>
         <span className="font-mono text-xs font-semibold text-sky-800 tabular-nums">
-          PMV = {pmvVal >= 0 ? '+' : ''}
+          {isMulti ? `Crítico: ` : ''}PMV = {pmvVal >= 0 ? '+' : ''}
           {pmvVal.toFixed(2)} · PPD = {ppdVal.toFixed(1)}%
         </span>
       </div>
@@ -237,7 +276,6 @@ const FangerPmvPpdCurveSvg: React.FC<{ data: FangerData; result: MethodEvaluatio
         role="img"
         aria-label="Curva PMV versus PPD según método de Fanger ISO 7730"
       >
-        {/* Franjas normativas ISO 7730 Categorías C (-0.7..+0.7), B (-0.5..+0.5), A (-0.2..+0.2) */}
         <rect
           x={xOfPmv(-0.7)}
           y={padT}
@@ -263,7 +301,6 @@ const FangerPmvPpdCurveSvg: React.FC<{ data: FangerData; result: MethodEvaluatio
           opacity="0.75"
         />
 
-        {/* Líneas guía horizontales PPD */}
         {[5, 10, 25, 50, 75, 100].map((tick) => (
           <g key={tick}>
             <line
@@ -286,7 +323,6 @@ const FangerPmvPpdCurveSvg: React.FC<{ data: FangerData; result: MethodEvaluatio
           </g>
         ))}
 
-        {/* Líneas guía verticales PMV */}
         {[-3, -2, -1, -0.5, 0, 0.5, 1, 2, 3].map((pTick) => (
           <g key={pTick}>
             <line
@@ -309,7 +345,6 @@ const FangerPmvPpdCurveSvg: React.FC<{ data: FangerData; result: MethodEvaluatio
           </g>
         ))}
 
-        {/* Ejes */}
         <line
           x1={padL}
           y1={padT + plotH}
@@ -320,41 +355,86 @@ const FangerPmvPpdCurveSvg: React.FC<{ data: FangerData; result: MethodEvaluatio
         />
         <line x1={padL} y1={padT} x2={padL} y2={padT + plotH} stroke="#475569" strokeWidth={1.3} />
 
-        {/* Etiquetas térmicas inferiores */}
         <text x={xOfPmv(-2.3)} y={svgH - 6} textAnchor="middle" className="fill-sky-700 text-[10px] font-semibold">
           ← Disconfort por Frío
         </text>
         <text x={xOfPmv(0)} y={svgH - 6} textAnchor="middle" className="fill-emerald-800 text-[10px] font-semibold">
-          Zona Confort (±0,5)
+          Zona Confort (±0,5 · ≤10%)
         </text>
         <text x={xOfPmv(2.3)} y={svgH - 6} textAnchor="middle" className="fill-orange-700 text-[10px] font-semibold">
           Disconfort por Calor →
         </text>
 
-        {/* Curva ISO 7730 */}
         <path d={pathPoints.join(' ')} fill="none" stroke="#0369a1" strokeWidth={2.6} />
 
-        {/* Punto operativo actual */}
-        <line
-          x1={curX}
-          y1={padT + plotH}
-          x2={curX}
-          y2={curY}
-          stroke="#dc2626"
-          strokeDasharray="3 3"
-          strokeWidth={1.3}
-        />
-        <line
-          x1={padL}
-          y1={curY}
-          x2={curX}
-          y2={curY}
-          stroke="#dc2626"
-          strokeDasharray="3 3"
-          strokeWidth={1.3}
-        />
-        <circle cx={curX} cy={curY} r={5.5} fill="#dc2626" stroke="#ffffff" strokeWidth={2} />
+        {isMulti
+          ? multiPoints.map((pt) => {
+              const px = xOfPmv(pt.pmv);
+              const py = yOfPpd(pt.ppd);
+              const color = pt.outOfComfort ? '#dc2626' : '#0f766e';
+              return (
+                <g key={pt.idx}>
+                  <line
+                    x1={px}
+                    y1={padT + plotH}
+                    x2={px}
+                    y2={py}
+                    stroke={color}
+                    strokeDasharray="2 2"
+                    strokeWidth={1.1}
+                    opacity={0.75}
+                  />
+                  <circle cx={px} cy={py} r={7.5} fill={color} stroke="#ffffff" strokeWidth={1.8} />
+                  <text
+                    x={px}
+                    y={py + 3.2}
+                    textAnchor="middle"
+                    className="fill-white text-[9px] font-bold font-mono"
+                  >
+                    {pt.idx}
+                  </text>
+                </g>
+              );
+            })
+          : (
+              <>
+                <line
+                  x1={curX}
+                  y1={padT + plotH}
+                  x2={curX}
+                  y2={curY}
+                  stroke="#dc2626"
+                  strokeDasharray="3 3"
+                  strokeWidth={1.3}
+                />
+                <line
+                  x1={padL}
+                  y1={curY}
+                  x2={curX}
+                  y2={curY}
+                  stroke="#dc2626"
+                  strokeDasharray="3 3"
+                  strokeWidth={1.3}
+                />
+                <circle cx={curX} cy={curY} r={5.5} fill="#dc2626" stroke="#ffffff" strokeWidth={2} />
+              </>
+            )}
       </svg>
+
+      {isMulti && multiPoints.length > 0 && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pt-1 border-t border-slate-100 text-[11px] text-slate-700">
+          {multiPoints.map((pt) => (
+            <span key={pt.idx} className="inline-flex items-center gap-1.5 font-mono tabular-nums">
+              <strong className={pt.outOfComfort ? 'text-red-700' : 'text-teal-800'}>[{pt.idx}]</strong>
+              <span className="font-sans text-slate-800">{pt.label}:</span>
+              <span>
+                PMV {pt.pmv >= 0 ? '+' : ''}
+                {pt.pmv.toFixed(2)} ({pt.ppd.toFixed(1)}%)
+              </span>
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 };

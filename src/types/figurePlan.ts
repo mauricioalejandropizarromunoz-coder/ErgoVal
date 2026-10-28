@@ -81,10 +81,12 @@ export interface PosturePose3D {
   elbowRFlexionDeg: number; // 0 = straight arm, 90 = right angle
   elbowLFlexionDeg: number;
   forearmRPronationDeg: number; // 0 = neutral, +80 pronation, -80 supination
+  forearmLPronationDeg?: number;
   forearmRCrossMidline?: boolean;
   wristRFlexionDeg: number; // + palmar flexion, - dorsal extension
   wristRDeviationDeg: number; // + ulnar, - radial
   wristLFlexionDeg?: number;
+  wristLDeviationDeg?: number;
   hipRFlexionDeg: number; // 0 = standing straight, 90 = seated
   kneeRFlexionDeg: number; // 0 = straight, 90 = 90° bend
   ankleRDorsiflexionDeg: number; // + dorsiflexion, - plantarflexion
@@ -95,7 +97,13 @@ export interface PosturePose3D {
   prop?: ScenePropType;
   loadKg?: number;
   highlightGroup?: 'none' | 'rula_groups' | 'sagittal_split' | 'l5s1_disc';
-  handGripMode?: 'relaxed' | 'pinch' | 'power_grip';
+  handGripMode?: 'relaxed' | 'pinch' | 'power_grip' | 'box_cradle';
+  /** Desplazamiento y orientación espacial del operario en el estudio (metros / grados) para tareas dinámicas y movimiento libre */
+  rootOffsetX?: number;
+  rootOffsetZ?: number;
+  rootYawDeg?: number;
+  /** Estado de acoplamiento de la carga respecto al mobiliario fijo en secuencias humanizadas */
+  loadDetachedPhase?: 'origin_rest' | 'carried' | 'dest_rest';
 }
 
 export interface AngleArcAnnotation {
@@ -132,6 +140,11 @@ export interface Panel3DSpec {
   focusZone: FocusZone;
   cameraPreset: CameraPreset;
   pose: PosturePose3D;
+  orbitOverride?: {
+    azimuthDeg: number;
+    elevationDeg: number;
+    zoom: number;
+  };
   angleArcs?: AngleArcAnnotation[];
   forceVectors?: ForceVectorAnnotation[];
   dimensions?: DimensionAnnotation[];

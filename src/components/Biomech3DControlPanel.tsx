@@ -13,9 +13,13 @@ import { RebaData, RebaSideInput, RulaData, RulaSideInput } from '../types/ergon
 import { AngleArcAnnotation, CameraPreset, FocusZone, Panel3DSpec } from '../types/figurePlan';
 import {
   BiomechSegmentCategory,
+  BOOK_FIGURE_CATALOG,
   CHAPTER4_SENT_PLATES,
   Chapter4SentPlateMeta,
+  getEffectiveFigurePhotoUrl,
   makeNeutralPose,
+  subscribeFigurePhotoOverrides,
+  subscribeFigurePoseOverrides,
 } from '../utils/figurePlanCatalog';
 import {
   CameraOrbitOverride,
@@ -256,9 +260,20 @@ export const Biomech3DControlPanel: React.FC<Biomech3DControlProps> = (props) =>
   const [plateImgFailed, setPlateImgFailed] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    return subscribeAvatarGlbLoaded(() => {
+    const unsubGlb = subscribeAvatarGlbLoaded(() => {
       setGlbReadyTick((t) => t + 1);
     });
+    const unsubPose = subscribeFigurePoseOverrides(() => {
+      setGlbReadyTick((t) => t + 1);
+    });
+    const unsubPhoto = subscribeFigurePhotoOverrides(() => {
+      setGlbReadyTick((t) => t + 1);
+    });
+    return () => {
+      unsubGlb();
+      unsubPose();
+      unsubPhoto();
+    };
   }, []);
 
   // Continuous kinematic state (degrees) synced bidirectionally with discrete form scores
@@ -376,12 +391,111 @@ export const Biomech3DControlPanel: React.FC<Biomech3DControlProps> = (props) =>
   }, [plateFilterMode, method]);
 
   const activePlate = useMemo<Chapter4SentPlateMeta>(() => {
-    return (
+    void glbReadyTick;
+    const base =
       CHAPTER4_SENT_PLATES.find((p) => p.figId === selectedPlateId) ||
       visiblePlates[0] ||
-      CHAPTER4_SENT_PLATES[0]
-    );
-  }, [selectedPlateId, visiblePlates]);
+      CHAPTER4_SENT_PLATES[0];
+    const spec = BOOK_FIGURE_CATALOG.find((f) => f.id === base.figId);
+    const effectiveUrl = (spec ? getEffectiveFigurePhotoUrl(spec) : undefined) || base.url;
+    return { ...base, url: effectiveUrl };
+  }, [selectedPlateId, visiblePlates, glbReadyTick]);
+
+  const activeCatalogPanels = useMemo<Panel3DSpec[]>(() => {
+    void glbReadyTick;
+    return BOOK_FIGURE_CATALOG.find((f) => f.id === activePlate.figId)?.panels || [];
+  }, [activePlate.figId, glbReadyTick]);
+
+  const handleAdoptCatalogReferenceBody = (refPanel: Panel3DSpec) => {
+    const p = refPanel.pose;
+    const isLeft = (props.method === 'RULA' || props.method === 'REBA') && props.activeSide === 'left';
+    const nextArm = Math.round(isLeft ? p.shoulderLFlexionDeg : p.shoulderRFlexionDeg);
+    const nextElb = Math.round(isLeft ? p.elbowLFlexionDeg : p.elbowRFlexionDeg);
+    const nextWri = Math.round(isLeft ? (p.wristLFlexionDeg ?? p.wristRFlexionDeg) : p.wristRFlexionDeg);
+    const nextNeck = Math.round(p.neckFlexionDeg);
+    const nextTrunk = Math.round(p.trunkFlexionDeg);
+    const nextKnee = Math.round(p.kneeRFlexionDeg);
+
+    setArmFlexDeg(nextArm);
+    setElbowFlexDeg(nextElb);
+    setWristFlexDeg(nextWri);
+    setNeckFlexDeg(nextNeck);
+    setTrunkFlexDeg(nextTrunk);
+    setKneeFlexDeg(nextKnee);
+    setCameraPreset(refPanel.cameraPreset);
+    setOrbit(refPanel.orbitOverride ? { ...refPanel.orbitOverride } : DEFAULT_ORBIT_OVERRIDE);
+
+    if (props.method === 'RULA') {
+      const side = props.data[props.activeSide];
+      const isSeated = p.stanceMode === 'seated';
+      props.onChange({
+        ...props.data,
+        neckPos: mapRulaNeckDegToScore(nextNeck),
+        neckRotated: Math.abs(p.neckTwistDeg || 0) >= 15,
+        neckSideBending: Math.abs(p.neckLateralDeg || 0) >= 12,
+        trunkPos: mapRulaTrunkDegToScore(nextTrunk, isSeated),
+        trunkTwisted: Math.abs(p.trunkTwistDeg || 0) >= 15,
+        trunkSideBending: Math.abs(p.trunkLateralDeg || 0) >= 12,
+        legsPos: p.stanceMode === 'one_leg' ? 2 : 1,
+        [props.activeSide]: {
+          ...side,
+          upperArmPos: mapArmDegToScore(nextArm),
+          armAbducted: (isLeft ? p.shoulderLAbductionDeg : p.shoulderRAbductionDeg) >= 25,
+          shoulderRaised: Boolean(p.shoulderRElevated),
+          armSupported: p.prop === 'work_desk_support',
+          lowerArmPos: mapForearmDegToScore(nextElb),
+          lowerArmCrossMidline: Boolean(p.forearmRCrossMidline),
+          wristPos: mapRulaWristDegToScore(nextWri),
+          wristDeviated: Math.abs(isLeft ? (p.wristLDeviationDeg ?? 0) : p.wristRDeviationDeg) >= 10,
+          wristTwist: Math.abs(p.forearmRPronationDeg || 0) >= 55 ? 2 : 1,
+        },
+      });
+    } else if (props.method === 'REBA') {
+      const side = props.data[props.activeSide];
+      props.onChange({
+        ...props.data,
+        neckPos: mapRebaNeckDegToScore(nextNeck),
+        neckTwistedOrSide: Math.abs(p.neckTwistDeg || 0) >= 15 || Math.abs(p.neckLateralDeg || 0) >= 12,
+        trunkPos: mapRebaTrunkDegToScore(nextTrunk),
+        trunkTwistedOrSide: Math.abs(p.trunkTwistDeg || 0) >= 15 || Math.abs(p.trunkLateralDeg || 0) >= 12,
+        legsBase: p.stanceMode === 'one_leg' ? 2 : 1,
+        legsKneeFlexion: mapRebaKneeDegToScore(nextKnee),
+        [props.activeSide]: {
+          ...side,
+          upperArmPos: mapArmDegToScore(nextArm),
+          armAbducted: (isLeft ? p.shoulderLAbductionDeg : p.shoulderRAbductionDeg) >= 25,
+          shoulderRaised: Boolean(p.shoulderRElevated),
+          armSupported: p.prop === 'work_desk_support',
+          lowerArmPos: mapForearmDegToScore(nextElb),
+          wristPos: mapRebaWristDegToScore(nextWri),
+          wristTwistedOrDeviated:
+            Math.abs(p.forearmRPronationDeg || 0) >= 50 || Math.abs(p.wristRDeviationDeg || 0) >= 12,
+        },
+      });
+    } else {
+      const twisted = Math.abs(p.trunkTwistDeg || 0) >= 15 || Math.abs(p.trunkLateralDeg || 0) >= 15;
+      const bent = nextTrunk >= 20;
+      const nextBack: 1 | 2 | 3 | 4 = bent ? (twisted ? 4 : 2) : twisted ? 3 : 1;
+      const bothUp = p.shoulderRFlexionDeg >= 90 && p.shoulderLFlexionDeg >= 90;
+      const oneUp = p.shoulderRFlexionDeg >= 90 || p.shoulderLFlexionDeg >= 90;
+      const nextArms: 1 | 2 | 3 = bothUp ? 3 : oneUp ? 2 : 1;
+      const nextLegs: 1 | 2 | 3 | 4 | 5 | 6 | 7 =
+        p.stanceMode === 'seated'
+          ? 1
+          : p.stanceMode === 'kneeling'
+            ? 6
+            : p.stanceMode === 'walking'
+              ? 7
+              : p.stanceMode === 'one_leg'
+                ? nextKnee >= 35
+                  ? 5
+                  : 3
+                : nextKnee >= 35
+                  ? 4
+                  : 2;
+      props.onChangeCodes({ back: nextBack, arms: nextArms, legs: nextLegs });
+    }
+  };
 
   // Update form scores from continuous joint degree changes
   const applyArmDegChange = (deg: number) => {
@@ -1014,9 +1128,32 @@ export const Biomech3DControlPanel: React.FC<Biomech3DControlProps> = (props) =>
                         <span className="text-xs text-slate-500">Imagen de referencia no disponible</span>
                       )}
                     </div>
-                    <div className="pt-1.5 px-1 flex items-center justify-between text-[11px] text-slate-500">
-                      <span>Lámina de referencia Cap. 4</span>
-                      <span className="font-mono">{activePlate.figId}.png</span>
+                    <div className="pt-1.5 px-1 space-y-1.5">
+                      <div className="flex items-center justify-between text-[11px] text-slate-500">
+                        <span>Lámina de referencia Cap. 4</span>
+                        <span className="font-mono">{activePlate.figId}.png</span>
+                      </div>
+                      {activeCatalogPanels.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                          <span className="text-[10px] font-semibold text-slate-600 mr-0.5">
+                            Adoptar referencia:
+                          </span>
+                          {activeCatalogPanels.map((refP, rIdx) => {
+                            const bodyLet = ['A', 'B', 'C', 'D'][rIdx] || String(rIdx + 1);
+                            return (
+                              <button
+                                key={`adopt-${activePlate.figId}-${rIdx}`}
+                                type="button"
+                                onClick={() => handleAdoptCatalogReferenceBody(refP)}
+                                className="px-2 py-0.5 rounded border border-sky-300 bg-sky-50 hover:bg-sky-100 text-[10px] font-semibold text-sky-900 whitespace-nowrap cursor-pointer"
+                                title={refP.subTitle}
+                              >
+                                {activeCatalogPanels.length > 1 ? `Cuerpo ${bodyLet}` : 'Postura Ref.'}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>

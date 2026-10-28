@@ -96,12 +96,12 @@ function computeShoulderSagittalWorld(
   hipDeg: number;
   ankleDeg: number;
 } {
-  // Con la planta del pie apoyada en el suelo: ankleDeg = kneeDeg - hipDeg (dorsiflexión fisiológica hasta 36°)
+  // Con la planta del pie apoyada plana en el suelo (y = 0): hipDeg = kneeDeg - ankleDeg (cero levantamiento de puntas)
   const ankleDeg =
-    kneeDeg <= 6
+    kneeDeg <= 4
       ? 0
-      : clamp(kneeDeg * 0.27 + Math.max(0, 26 - trunkDeg) * 0.1, 0, 36);
-  const hipDeg = clamp(kneeDeg - ankleDeg + Math.max(0, trunkDeg - 45) * 0.08, -10, 108);
+      : clamp(kneeDeg * 0.28 + Math.max(0, 26 - trunkDeg) * 0.08, 0, 34);
+  const hipDeg = clamp(kneeDeg - ankleDeg, -10, 108);
 
   // Desde tobillo (z = 0, y = ANKLE_HEIGHT_M) hacia arriba por la tibia:
   // En mundo, la tibia se inclina hacia adelante (+Z) el ángulo (kneeDeg - hipDeg)
@@ -259,7 +259,7 @@ export function solveAvatarLiftPoseForTarget(input: LiftTargetPoseInput): Solved
   const trunkWorldPitchDeg = trunkDeg;
   const shoulderLocalFlexDeg = clamp(Math.round(upperArmWorldDeg + trunkWorldPitchDeg), -25, 172);
 
-  // En levantamiento higiénico con espalda recta, mirada al frente (cuello neutro 4°–10°)
+  // Alineación cervical natural: cuando el tronco se inclina >35°, el cuello extiende levemente (-4°..-12°) para mirar la carga y no enterrar el mentón
   const neckFlexDeg =
     vCm >= 145
       ? -12
@@ -267,9 +267,11 @@ export function solveAvatarLiftPoseForTarget(input: LiftTargetPoseInput): Solved
         ? -4
         : isSquatPattern && trunkDeg <= 26
           ? 6
-          : vCm < 55
-            ? clamp(Math.round(20 - trunkDeg * 0.16), 4, 24)
-            : 8;
+          : trunkDeg >= 48
+            ? clamp(Math.round(12 - (trunkDeg - 36) * 0.65), -14, 8)
+            : vCm < 55
+              ? clamp(Math.round(14 - trunkDeg * 0.22), 2, 14)
+              : 6;
 
   const achievedArmWorldRad = (shoulderLocalFlexDeg - trunkWorldPitchDeg) * DEG2RAD;
   const elbowWorldZ = fk.shoulderZ + L1 * Math.sin(achievedArmWorldRad);
@@ -283,21 +285,24 @@ export function solveAvatarLiftPoseForTarget(input: LiftTargetPoseInput): Solved
   const finalHip = Math.round(fk.hipDeg);
   const finalAnkle = Math.round(fk.ankleDeg);
 
-  // Convergencia bimanual (-8° de abducción = aducción suave) para abrazar lateralmente la caja de 31 cm
+  // Convergencia bimanual simétrica (-6°) con supinación suave (-18°) y acople palmar 'box_cradle' en las paredes laterales de la caja
   const pose = makeNeutralPose({
     trunkFlexionDeg: finalTrunk,
     trunkTwistDeg: Math.round(asymDeg),
     neckFlexionDeg: neckFlexDeg,
     shoulderRFlexionDeg: shoulderLocalFlexDeg,
     shoulderLFlexionDeg: shoulderLocalFlexDeg,
-    shoulderRAbductionDeg: -8,
-    shoulderLAbductionDeg: -8,
+    shoulderRAbductionDeg: -6,
+    shoulderLAbductionDeg: -6,
     shoulderRElevated: vCm >= 142,
     elbowRFlexionDeg: elbowFlexDeg,
     elbowLFlexionDeg: elbowFlexDeg,
-    forearmRPronationDeg: vCm < 65 ? 12 : 20,
-    wristRFlexionDeg: vCm >= 140 ? -10 : 4,
-    wristLFlexionDeg: vCm >= 140 ? -10 : 4,
+    forearmRPronationDeg: -18,
+    forearmLPronationDeg: 18,
+    wristRFlexionDeg: vCm >= 140 ? -8 : -4,
+    wristLFlexionDeg: vCm >= 140 ? -8 : -4,
+    wristRDeviationDeg: 6,
+    wristLDeviationDeg: -6,
     hipRFlexionDeg: finalHip,
     hipLFlexionDeg: finalHip,
     kneeRFlexionDeg: finalKnee,
@@ -306,7 +311,7 @@ export function solveAvatarLiftPoseForTarget(input: LiftTargetPoseInput): Solved
     ankleLDorsiflexionDeg: finalAnkle,
     stanceMode: finalKnee >= 50 ? 'squatting' : 'standing',
     prop: 'box_load',
-    handGripMode: 'power_grip',
+    handGripMode: 'box_cradle',
     loadKg,
     highlightGroup: 'l5s1_disc',
   });
@@ -387,18 +392,19 @@ export function parseAvatarQuickTextCorrection(rawText: string): ParsedQuickText
     summaryApplied.push('Preset óptimo: Carga en nudillos-cintura (V=78 cm, H=26 cm)');
   }
 
-  if (/\bconductor|volante|autobus|autobús\b/.test(txt)) {
+  if (/\bconductor|chofer|volante|omnibus|ómnibus|colectivo|autobus|autobús\b/.test(txt)) {
     posePatch.stanceMode = 'seated';
     posePatch.prop = 'bus_driver_seat';
     posePatch.trunkFlexionDeg = -10;
-    posePatch.neckFlexionDeg = 8;
-    posePatch.shoulderRFlexionDeg = 38;
-    posePatch.shoulderLFlexionDeg = 38;
-    posePatch.shoulderRAbductionDeg = -12;
-    posePatch.shoulderLAbductionDeg = -12;
-    posePatch.elbowRFlexionDeg = 64;
-    posePatch.elbowLFlexionDeg = 64;
-    posePatch.forearmRPronationDeg = 35;
+    posePatch.neckFlexionDeg = 6;
+    posePatch.shoulderRFlexionDeg = 22;
+    posePatch.shoulderLFlexionDeg = 22;
+    posePatch.shoulderRAbductionDeg = 6;
+    posePatch.shoulderLAbductionDeg = 6;
+    posePatch.elbowRFlexionDeg = 58;
+    posePatch.elbowLFlexionDeg = 58;
+    posePatch.forearmRPronationDeg = 34;
+    posePatch.forearmLPronationDeg = -34;
     posePatch.wristRFlexionDeg = -6;
     posePatch.wristLFlexionDeg = -6;
     posePatch.handGripMode = 'power_grip';
@@ -408,7 +414,7 @@ export function parseAvatarQuickTextCorrection(rawText: string): ParsedQuickText
     posePatch.kneeLFlexionDeg = 64;
     posePatch.ankleRDorsiflexionDeg = -12;
     posePatch.ankleLDorsiflexionDeg = -8;
-    summaryApplied.push('Postura Ideal: Conductor sentado (Ángulos A–F, manos en volante)');
+    summaryApplied.push('Postura Ideal: Chofer de ómnibus/colectivo (volante bajo 35°, Ángulos A–F)');
   } else if (/\bsentad[oa]\b/.test(txt)) {
     posePatch.stanceMode = 'seated';
     posePatch.prop = 'chair';

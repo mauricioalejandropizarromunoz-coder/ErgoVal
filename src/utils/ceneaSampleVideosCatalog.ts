@@ -302,9 +302,80 @@ function smoothStep(t: number): number {
   return c * c * (3 - 2 * c);
 }
 
+function getCaseSpatialTrajectory(spec: CeneaSampleVideoSpec): {
+  approachStartX: number;
+  approachStartZ: number;
+  originX: number;
+  originZ: number;
+  originYawDeg: number;
+  destX: number;
+  destZ: number;
+  destYawDeg: number;
+} {
+  switch (spec.prop) {
+    case 'pallet_jack_rack':
+      return {
+        approachStartX: -0.18,
+        approachStartZ: -0.34,
+        originX: -0.04,
+        originZ: -0.06,
+        originYawDeg: -8,
+        destX: 0.08,
+        destZ: 0.14,
+        destYawDeg: 24,
+      };
+    case 'hopper_sack_pour':
+      return {
+        approachStartX: -0.16,
+        approachStartZ: -0.32,
+        originX: -0.04,
+        originZ: -0.06,
+        originYawDeg: -10,
+        destX: 0.04,
+        destZ: 0.12,
+        destYawDeg: 18,
+      };
+    case 'conveyor_veg_line':
+      return {
+        approachStartX: -0.14,
+        approachStartZ: -0.26,
+        originX: 0.0,
+        originZ: -0.02,
+        originYawDeg: 6,
+        destX: 0.12,
+        destZ: 0.10,
+        destYawDeg: -26,
+      };
+    case 'bin_to_cart':
+      return {
+        approachStartX: -0.16,
+        approachStartZ: -0.28,
+        originX: -0.02,
+        originZ: -0.02,
+        originYawDeg: -6,
+        destX: 0.12,
+        destZ: 0.08,
+        destYawDeg: 30,
+      };
+    default:
+      return {
+        approachStartX: -0.18,
+        approachStartZ: -0.34,
+        originX: -0.02,
+        originZ: -0.04,
+        originYawDeg: -6,
+        destX: 0.12,
+        destZ: 0.16,
+        destYawDeg: 28,
+      };
+  }
+}
+
 /**
- * Interpola cuadro a cuadro la cinemática 3D de cualquiera de los 8 casos prácticos
- * para generar un video sintético realista o previsualizar Origen y Destino en el Avatar.
+ * Interpola cuadro a cuadro la cinemática 3D humanizada de cualquiera de los 8 casos prácticos
+ * inspirados en la playlist de ergonomía aplicada (aproximación caminando, toma bimanual en origen,
+ * acercamiento al centro de masa, caminata corta con giro corporal parcial, depósito en destino
+ * sin arrastrar el mobiliario fijo y recuperación postural erguida).
  */
 export function buildCeneaSampleFrameSpec(
   spec: CeneaSampleVideoSpec,
@@ -318,45 +389,46 @@ export function buildCeneaSampleFrameSpec(
 } {
   const p = Math.max(0, Math.min(1, progress0to1));
 
-  // Fase temporal suave: 0..0.22 pausa en Origen, 0.22..0.80 transición suave, 0.80..1.00 pausa en Destino
-  let phase = 0;
-  if (p < 0.22) {
-    phase = 0;
-  } else if (p <= 0.80) {
-    phase = smoothStep((p - 0.22) / 0.58);
-  } else {
-    phase = 1;
-  }
-
-  // Casos cíclicos especiales: Empuje de carro (6) y OCRA repetitivos en banda (7)
+  // Caso 6: Empuje bimanual de carro con caminata real progresiva sobre la planta
   if (spec.id === 'cenea_empuje_traccion') {
-    const stride = Math.sin(p * Math.PI * 2);
-    const impulseFactor = p < 0.35 ? smoothStep(p / 0.35) : 1;
+    const stride = Math.sin(p * Math.PI * 4);
+    const impulseFactor = p < 0.28 ? smoothStep(p / 0.28) : 1;
+    const travelZ = lerp(-0.36, 0.34, smoothStep(p));
+    const travelYaw = Math.round(lerp(0, 8, smoothStep(Math.max(0, (p - 0.55) / 0.45))));
+
     const pose: PosturePose3D = makeNeutralPose({
-      trunkFlexionDeg: Math.round(14 - 4 * impulseFactor),
-      neckFlexionDeg: 6,
-      shoulderRFlexionDeg: Math.round(52 + 8 * impulseFactor),
-      shoulderLFlexionDeg: Math.round(52 + 8 * impulseFactor),
-      shoulderRAbductionDeg: 10,
-      shoulderLAbductionDeg: 10,
-      elbowRFlexionDeg: Math.round(68 - 14 * impulseFactor),
-      elbowLFlexionDeg: Math.round(68 - 14 * impulseFactor),
+      stanceMode: 'walking',
+      trunkFlexionDeg: Math.round(16 - 5 * impulseFactor),
+      neckFlexionDeg: 4,
+      shoulderRFlexionDeg: Math.round(50 + 8 * impulseFactor),
+      shoulderLFlexionDeg: Math.round(50 + 8 * impulseFactor),
+      shoulderRAbductionDeg: 8,
+      shoulderLAbductionDeg: 8,
+      elbowRFlexionDeg: Math.round(66 - 14 * impulseFactor),
+      elbowLFlexionDeg: Math.round(66 - 14 * impulseFactor),
       forearmRPronationDeg: 65,
+      forearmLPronationDeg: -65,
       wristRFlexionDeg: 4,
       wristLFlexionDeg: 4,
-      hipRFlexionDeg: Math.round(28 + 14 * stride),
-      kneeRFlexionDeg: Math.round(24 + 12 * Math.max(0, stride)),
-      ankleRDorsiflexionDeg: Math.round(10 + 6 * stride),
-      hipLFlexionDeg: Math.round(18 - 14 * stride),
-      kneeLFlexionDeg: Math.round(18 + 12 * Math.max(0, -stride)),
-      ankleLDorsiflexionDeg: Math.round(8 - 5 * stride),
+      handGripMode: 'power_grip',
+      hipRFlexionDeg: Math.round(24 + 16 * stride),
+      kneeRFlexionDeg: Math.round(22 + 14 * Math.max(0, stride)),
+      ankleRDorsiflexionDeg: Math.round(8 + 6 * stride),
+      hipLFlexionDeg: Math.round(20 - 16 * stride),
+      kneeLFlexionDeg: Math.round(20 + 14 * Math.max(0, -stride)),
+      ankleLDorsiflexionDeg: Math.round(8 - 6 * stride),
       prop: 'cart_push_dynamo',
+      rootOffsetX: 0,
+      rootOffsetZ: Number(travelZ.toFixed(3)),
+      rootYawDeg: travelYaw,
     });
 
     const stageLabel =
-      p < 0.32
-        ? 'Fase Inicial: Vencimiento de Inercia (F inicial)'
-        : 'Fase Sostenida: Empuje Continuo (V=96 cm)';
+      p < 0.28
+        ? '1. Impulso Inicial: Vencimiento de Inercia (240 N)'
+        : p < 0.72
+          ? '2. Marcha Continua: Empuje Sostenido (145 N)'
+          : '3. Maniobra de Alineación y Frenado Controlado';
 
     return {
       panelSpec: {
@@ -372,14 +444,14 @@ export function buildCeneaSampleFrameSpec(
             dx: 1,
             dy: 0,
             lengthPx: 48,
-            label: p < 0.32 ? 'F inic. 240 N' : 'F sost. 145 N',
+            label: p < 0.28 ? 'F inic. 240 N' : 'F sost. 145 N',
             color: 'blue',
           },
         ],
-        noteBottom: `${spec.sector} · Manillar V=96 cm · ${spec.normativeFocus}`,
+        noteBottom: `${spec.sector} · Traslado real 2,5 m · Manillar V=96 cm · ${spec.normativeFocus}`,
       },
       orbit: {
-        azimuthDeg: Math.round(spec.orbit.azimuthDeg + 5 * Math.sin(p * Math.PI)),
+        azimuthDeg: Math.round(spec.orbit.azimuthDeg + 6 * Math.sin(p * Math.PI)),
         elevationDeg: spec.orbit.elevationDeg,
         zoom: spec.orbit.zoom,
       },
@@ -388,43 +460,55 @@ export function buildCeneaSampleFrameSpec(
     };
   }
 
+  // Caso 7: Ciclos repetitivos bimanuales frente a banda continua con transferencia lateral y cambio de peso
   if (spec.id === 'cenea_ocra_repetitivos') {
-    const cycleWave = 0.5 - 0.5 * Math.cos(p * Math.PI * 4); // 2 ciclos completos de alcance-prensión
+    const cycleWave = 0.5 - 0.5 * Math.cos(p * Math.PI * 4);
+    const weightShift = Math.sin(p * Math.PI * 2);
     const curV = Math.round(lerp(spec.vOriginCm, spec.vDestCm, cycleWave));
     const curH = Math.round(lerp(spec.hOriginCm, spec.hDestCm, cycleWave));
     const pose: PosturePose3D = makeNeutralPose({
-      trunkFlexionDeg: Math.round(lerp(8, 16, cycleWave)),
-      trunkTwistDeg: Math.round(lerp(-8, 14, cycleWave)),
-      neckFlexionDeg: Math.round(lerp(14, 22, cycleWave)),
-      shoulderRFlexionDeg: Math.round(lerp(28, 56, cycleWave)),
-      shoulderLFlexionDeg: Math.round(lerp(22, 42, 1 - cycleWave)),
-      shoulderRAbductionDeg: Math.round(lerp(12, 26, cycleWave)),
-      shoulderLAbductionDeg: Math.round(lerp(10, 18, 1 - cycleWave)),
-      elbowRFlexionDeg: Math.round(lerp(86, 48, cycleWave)),
-      elbowLFlexionDeg: Math.round(lerp(82, 62, 1 - cycleWave)),
-      forearmRPronationDeg: 65,
-      wristRFlexionDeg: Math.round(lerp(6, 22, cycleWave)),
+      trunkFlexionDeg: Math.round(lerp(8, 15, cycleWave)),
+      trunkTwistDeg: Math.round(lerp(-6, 10, cycleWave)),
+      neckFlexionDeg: Math.round(lerp(12, 18, cycleWave)),
+      neckTwistDeg: Math.round(lerp(-8, 12, cycleWave)),
+      shoulderRFlexionDeg: Math.round(lerp(32, 58, cycleWave)),
+      shoulderLFlexionDeg: Math.round(lerp(28, 52, 1 - cycleWave * 0.6)),
+      shoulderRAbductionDeg: Math.round(lerp(8, 22, cycleWave)),
+      shoulderLAbductionDeg: Math.round(lerp(8, 18, 1 - cycleWave)),
+      elbowRFlexionDeg: Math.round(lerp(82, 46, cycleWave)),
+      elbowLFlexionDeg: Math.round(lerp(78, 52, 1 - cycleWave * 0.6)),
+      forearmRPronationDeg: 55,
+      forearmLPronationDeg: -55,
+      wristRFlexionDeg: Math.round(lerp(6, 20, cycleWave)),
       wristRDeviationDeg: Math.round(lerp(4, 14, cycleWave)),
-      kneeRFlexionDeg: 6,
-      kneeLFlexionDeg: 6,
-      hipRFlexionDeg: 4,
-      hipLFlexionDeg: 4,
+      wristLFlexionDeg: Math.round(lerp(4, 14, 1 - cycleWave)),
+      handGripMode: cycleWave > 0.35 ? 'box_cradle' : 'pinch',
+      kneeRFlexionDeg: Math.round(8 + 4 * Math.max(0, weightShift)),
+      hipRFlexionDeg: Math.round(6 + 3 * Math.max(0, weightShift)),
+      ankleRDorsiflexionDeg: 2,
+      kneeLFlexionDeg: Math.round(8 + 4 * Math.max(0, -weightShift)),
+      hipLFlexionDeg: Math.round(6 + 3 * Math.max(0, -weightShift)),
+      ankleLDorsiflexionDeg: 2,
       prop: 'conveyor_veg_line',
+      loadDetachedPhase: cycleWave > 0.25 && cycleWave < 0.85 ? 'carried' : 'origin_rest',
+      rootOffsetX: Number((0.05 * weightShift).toFixed(3)),
+      rootOffsetZ: 0,
+      rootYawDeg: Math.round(12 * weightShift),
     });
 
     return {
       panelSpec: {
         subTitle: spec.title,
         scoreBadge:
-          cycleWave < 0.5
-            ? `Toma en Banda (V=${curV} cm · H=${curH} cm)`
-            : `Alcance y Clasificación (Hombro ${pose.shoulderRFlexionDeg}°)`,
+          cycleWave < 0.45
+            ? `1. Alcance y Selección en Banda (V=${curV} cm)`
+            : `2. Clasificación Bimanual y Giro Parcial (${pose.shoulderRFlexionDeg}°)`,
         focusZone: 'full_body',
         cameraPreset: spec.cameraPreset,
         pose,
         angleArcs: [],
         forceVectors: [],
-        noteBottom: `${spec.sector} · Cadencia alta · ${spec.normativeFocus}`,
+        noteBottom: `${spec.sector} · Tarea bimanual continua · ${spec.normativeFocus}`,
       },
       orbit: {
         azimuthDeg: Math.round(spec.orbit.azimuthDeg + 6 * Math.sin(p * Math.PI)),
@@ -436,38 +520,221 @@ export function buildCeneaSampleFrameSpec(
     };
   }
 
-  // Casos de Manipulación Manual de Cargas (Levantamiento o Descenso entre V_origen y V_destino)
-  const curVCm = Math.round(lerp(spec.vOriginCm, spec.vDestCm, phase));
-  const curHCm = Math.round(lerp(spec.hOriginCm, spec.hDestCm, phase));
-  const curTrunkDeg = Math.round(lerp(spec.trunkOriginDeg, spec.trunkDestDeg, phase));
-  const curKneeDeg = Math.round(lerp(spec.kneeOriginDeg, spec.kneeDestDeg, phase));
-  const curTwistDeg = Math.round(lerp(spec.asymmetryOriginDeg, spec.asymmetryDestDeg, phase));
-  const activeStyle: LiftPostureStyle = phase < 0.5 ? spec.liftStyleOrigin : spec.liftStyleDest;
+  // =========================================================================
+  // TAREA HUMANIZADA DE 5 ETAPAS (APROXIMACIÓN -> TOMA -> PORTE -> TRASLADO/GIRO -> DEPÓSITO)
+  // =========================================================================
+  const traj = getCaseSpatialTrajectory(spec);
+  const vCarryCm = Math.round(Math.max(72, Math.min(84, (spec.vOriginCm + spec.vDestCm) * 0.52)));
+  const hCarryCm = 27;
 
-  const solved = solveAvatarLiftPoseForTarget({
-    vCm: curVCm,
-    hCm: curHCm,
+  // Pose de origen exacta (cuando el operario toma la carga)
+  const originSolved = solveAvatarLiftPoseForTarget({
+    vCm: spec.vOriginCm,
+    hCm: spec.hOriginCm,
     workerHeightCm,
-    trunkFlexHintDeg: curTrunkDeg,
-    kneeFlexHintDeg: curKneeDeg,
-    asymmetryDeg: curTwistDeg,
+    trunkFlexHintDeg: spec.trunkOriginDeg,
+    kneeFlexHintDeg: spec.kneeOriginDeg,
+    asymmetryDeg: spec.asymmetryOriginDeg,
     loadKg: spec.loadWeightKg,
-    liftStyle: activeStyle,
+    liftStyle: spec.liftStyleOrigin,
   });
 
-  const poseWithProp: PosturePose3D = {
-    ...solved.pose,
-    prop: spec.prop,
-  };
+  // Pose intermedia de porte pegado al cuerpo (cintura-nudillos) para caminar y girar de forma humana
+  const carrySolved = solveAvatarLiftPoseForTarget({
+    vCm: vCarryCm,
+    hCm: hCarryCm,
+    workerHeightCm,
+    trunkFlexHintDeg: 8,
+    kneeFlexHintDeg: 14,
+    asymmetryDeg: 0,
+    loadKg: spec.loadWeightKg,
+    liftStyle: 'hygienic_squat',
+  });
 
-  const badgeText =
-    p < 0.25
-      ? `Origen: V=${curVCm} cm · H=${curHCm} cm`
-      : p < 0.78
-        ? spec.movementDirection === 'descenso'
-          ? `Descenso de Carga (${spec.loadWeightKg} kg)`
-          : `Elevación de Carga (${spec.loadWeightKg} kg)`
-        : `Destino: V=${curVCm} cm · H=${curHCm} cm`;
+  // Pose de destino exacta (cuando el operario deposita la carga en el mueble receptor)
+  const destSolved = solveAvatarLiftPoseForTarget({
+    vCm: spec.vDestCm,
+    hCm: spec.hDestCm,
+    workerHeightCm,
+    trunkFlexHintDeg: spec.trunkDestDeg,
+    kneeFlexHintDeg: spec.kneeDestDeg,
+    asymmetryDeg: spec.asymmetryDestDeg,
+    loadKg: spec.loadWeightKg,
+    liftStyle: spec.liftStyleDest,
+  });
+
+  function blendPoses(a: PosturePose3D, b: PosturePose3D, tRaw: number): PosturePose3D {
+    const t = smoothStep(tRaw);
+    return {
+      ...b,
+      trunkFlexionDeg: Math.round(lerp(a.trunkFlexionDeg, b.trunkFlexionDeg, t)),
+      trunkLateralDeg: Math.round(lerp(a.trunkLateralDeg, b.trunkLateralDeg, t)),
+      trunkTwistDeg: Math.round(lerp(a.trunkTwistDeg, b.trunkTwistDeg, t)),
+      neckFlexionDeg: Math.round(lerp(a.neckFlexionDeg, b.neckFlexionDeg, t)),
+      neckLateralDeg: Math.round(lerp(a.neckLateralDeg, b.neckLateralDeg, t)),
+      neckTwistDeg: Math.round(lerp(a.neckTwistDeg, b.neckTwistDeg, t)),
+      shoulderRFlexionDeg: Math.round(lerp(a.shoulderRFlexionDeg, b.shoulderRFlexionDeg, t)),
+      shoulderRAbductionDeg: Math.round(lerp(a.shoulderRAbductionDeg, b.shoulderRAbductionDeg, t)),
+      shoulderLFlexionDeg: Math.round(lerp(a.shoulderLFlexionDeg, b.shoulderLFlexionDeg, t)),
+      shoulderLAbductionDeg: Math.round(lerp(a.shoulderLAbductionDeg, b.shoulderLAbductionDeg, t)),
+      elbowRFlexionDeg: Math.round(lerp(a.elbowRFlexionDeg, b.elbowRFlexionDeg, t)),
+      elbowLFlexionDeg: Math.round(lerp(a.elbowLFlexionDeg, b.elbowLFlexionDeg, t)),
+      forearmRPronationDeg: Math.round(lerp(a.forearmRPronationDeg, b.forearmRPronationDeg, t)),
+      forearmLPronationDeg: Math.round(
+        lerp(a.forearmLPronationDeg ?? -a.forearmRPronationDeg, b.forearmLPronationDeg ?? -b.forearmRPronationDeg, t),
+      ),
+      wristRFlexionDeg: Math.round(lerp(a.wristRFlexionDeg, b.wristRFlexionDeg, t)),
+      wristRDeviationDeg: Math.round(lerp(a.wristRDeviationDeg, b.wristRDeviationDeg, t)),
+      wristLFlexionDeg: Math.round(lerp(a.wristLFlexionDeg ?? a.wristRFlexionDeg, b.wristLFlexionDeg ?? b.wristRFlexionDeg, t)),
+      wristLDeviationDeg: Math.round(
+        lerp(a.wristLDeviationDeg ?? a.wristRDeviationDeg, b.wristLDeviationDeg ?? b.wristRDeviationDeg, t),
+      ),
+      hipRFlexionDeg: Math.round(lerp(a.hipRFlexionDeg, b.hipRFlexionDeg, t)),
+      kneeRFlexionDeg: Math.round(lerp(a.kneeRFlexionDeg, b.kneeRFlexionDeg, t)),
+      ankleRDorsiflexionDeg: Math.round(lerp(a.ankleRDorsiflexionDeg, b.ankleRDorsiflexionDeg, t)),
+      hipLFlexionDeg: Math.round(lerp(a.hipLFlexionDeg, b.hipLFlexionDeg, t)),
+      kneeLFlexionDeg: Math.round(lerp(a.kneeLFlexionDeg, b.kneeLFlexionDeg, t)),
+      ankleLDorsiflexionDeg: Math.round(lerp(a.ankleLDorsiflexionDeg, b.ankleLDorsiflexionDeg, t)),
+      stanceMode: t < 0.5 ? a.stanceMode : b.stanceMode,
+      handGripMode: t < 0.5 ? a.handGripMode : b.handGripMode,
+    };
+  }
+
+  const standingApproachBase = makeNeutralPose({
+    stanceMode: 'walking',
+    trunkFlexionDeg: 6,
+    neckFlexionDeg: 8,
+    shoulderRFlexionDeg: 18,
+    shoulderLFlexionDeg: 18,
+    shoulderRAbductionDeg: 5,
+    shoulderLAbductionDeg: 5,
+    elbowRFlexionDeg: 28,
+    elbowLFlexionDeg: 28,
+    handGripMode: 'relaxed',
+    hipRFlexionDeg: 10,
+    kneeRFlexionDeg: 14,
+    ankleRDorsiflexionDeg: 4,
+    hipLFlexionDeg: -6,
+    kneeLFlexionDeg: 10,
+    ankleLDorsiflexionDeg: 2,
+    loadKg: spec.loadWeightKg,
+  });
+
+  let activePose: PosturePose3D;
+  let curVCm = spec.vOriginCm;
+  let curHCm = spec.hOriginCm;
+  let badgeText = '';
+  let rootX = traj.originX;
+  let rootZ = traj.originZ;
+  let rootYaw = traj.originYawDeg;
+  let detachedPhase: 'origin_rest' | 'carried' | 'dest_rest' = 'carried';
+
+  if (p < 0.14) {
+    // Etapa 1: Caminata de aproximación (carga quieta en el mueble de origen)
+    const u = p / 0.14;
+    const gait = Math.sin(u * Math.PI * 2);
+    const baseBlend = blendPoses(standingApproachBase, originSolved.pose, u * 0.45);
+    activePose = {
+      ...baseBlend,
+      stanceMode: 'walking',
+      handGripMode: 'relaxed',
+      hipRFlexionDeg: Math.round(baseBlend.hipRFlexionDeg + 12 * gait),
+      kneeRFlexionDeg: Math.round(baseBlend.kneeRFlexionDeg + 10 * Math.max(0, gait)),
+      hipLFlexionDeg: Math.round(baseBlend.hipLFlexionDeg - 12 * gait),
+      kneeLFlexionDeg: Math.round(baseBlend.kneeLFlexionDeg + 10 * Math.max(0, -gait)),
+    };
+    rootX = lerp(traj.approachStartX, traj.originX, smoothStep(u));
+    rootZ = lerp(traj.approachStartZ, traj.originZ, smoothStep(u));
+    rootYaw = Math.round(lerp(0, traj.originYawDeg, smoothStep(u)));
+    detachedPhase = 'origin_rest';
+    curVCm = spec.vOriginCm;
+    curHCm = spec.hOriginCm;
+    badgeText = `1. Aproximación al puesto (V=${spec.vOriginCm} cm)`;
+  } else if (p < 0.30) {
+    // Etapa 2: Descenso postural y acople bimanual en Origen (ventana clave para captura de Origen)
+    const u = (p - 0.14) / 0.16;
+    const reachIn = u < 0.35 ? u / 0.35 : 1;
+    activePose = reachIn < 1 ? blendPoses(standingApproachBase, originSolved.pose, 0.45 + 0.55 * reachIn) : originSolved.pose;
+    activePose.handGripMode = 'box_cradle';
+    rootX = traj.originX;
+    rootZ = traj.originZ;
+    rootYaw = traj.originYawDeg;
+    detachedPhase = u < 0.25 ? 'origin_rest' : 'carried';
+    curVCm = spec.vOriginCm;
+    curHCm = spec.hOriginCm;
+    badgeText = `2. Toma Bimanual en Origen (V=${curVCm} cm · H=${curHCm} cm)`;
+  } else if (p < 0.50) {
+    // Etapa 3: Levantamiento / acercamiento de la carga hacia la pelvis (zona de porte segura)
+    const u = (p - 0.30) / 0.20;
+    activePose = blendPoses(originSolved.pose, carrySolved.pose, u);
+    activePose.handGripMode = 'box_cradle';
+    rootX = lerp(traj.originX, (traj.originX + traj.destX) * 0.35, smoothStep(u));
+    rootZ = lerp(traj.originZ, (traj.originZ + traj.destZ) * 0.35, smoothStep(u));
+    rootYaw = Math.round(lerp(traj.originYawDeg, (traj.originYawDeg + traj.destYawDeg) * 0.35, smoothStep(u)));
+    detachedPhase = 'carried';
+    curVCm = Math.round(lerp(spec.vOriginCm, vCarryCm, smoothStep(u)));
+    curHCm = Math.round(lerp(spec.hOriginCm, hCarryCm, smoothStep(u)));
+    badgeText = `3. Acercamiento al Cuerpo (${spec.loadWeightKg} kg · V=${curVCm} cm)`;
+  } else if (p < 0.72) {
+    // Etapa 4: Caminata corta de traslado + giro corporal parcial hacia el mueble de destino
+    const u = (p - 0.50) / 0.22;
+    const stepWave = Math.sin(u * Math.PI * 2);
+    const carryWalk = blendPoses(carrySolved.pose, destSolved.pose, u * 0.35);
+    activePose = {
+      ...carryWalk,
+      stanceMode: 'walking',
+      handGripMode: 'box_cradle',
+      hipRFlexionDeg: Math.round(carryWalk.hipRFlexionDeg + 14 * stepWave),
+      kneeRFlexionDeg: Math.round(carryWalk.kneeRFlexionDeg + 12 * Math.max(0, stepWave)),
+      ankleRDorsiflexionDeg: Math.round(carryWalk.ankleRDorsiflexionDeg + 4 * stepWave),
+      hipLFlexionDeg: Math.round(carryWalk.hipLFlexionDeg - 14 * stepWave),
+      kneeLFlexionDeg: Math.round(carryWalk.kneeLFlexionDeg + 12 * Math.max(0, -stepWave)),
+      ankleLDorsiflexionDeg: Math.round(carryWalk.ankleLDorsiflexionDeg - 4 * stepWave),
+    };
+    rootX = lerp((traj.originX + traj.destX) * 0.35, traj.destX, smoothStep(u));
+    rootZ = lerp((traj.originZ + traj.destZ) * 0.35, traj.destZ, smoothStep(u));
+    rootYaw = Math.round(lerp((traj.originYawDeg + traj.destYawDeg) * 0.35, traj.destYawDeg, smoothStep(u)));
+    detachedPhase = 'carried';
+    curVCm = Math.round(lerp(vCarryCm, spec.vDestCm, smoothStep(u) * 0.45));
+    curHCm = Math.round(lerp(hCarryCm, spec.hDestCm, smoothStep(u) * 0.45));
+    badgeText = `4. Caminata y Giro Corporal (${rootYaw > 0 ? '+' : ''}${rootYaw}°)`;
+  } else if (p < 0.90) {
+    // Etapa 5a: Posicionamiento y depósito controlado sobre el destino fijo (ventana clave para Destino)
+    const u = (p - 0.72) / 0.18;
+    const settle = u < 0.45 ? u / 0.45 : 1;
+    activePose = settle < 1 ? blendPoses(carrySolved.pose, destSolved.pose, 0.35 + 0.65 * settle) : destSolved.pose;
+    activePose.handGripMode = 'box_cradle';
+    rootX = traj.destX;
+    rootZ = traj.destZ;
+    rootYaw = traj.destYawDeg;
+    detachedPhase = 'carried';
+    curVCm = spec.vDestCm;
+    curHCm = spec.hDestCm;
+    badgeText = `5. Depósito en Destino (V=${curVCm} cm · H=${curHCm} cm)`;
+  } else {
+    // Etapa 5b: Liberación de la carga en destino y recuperación erguida del operario
+    const u = (p - 0.90) / 0.10;
+    activePose = blendPoses(destSolved.pose, standingApproachBase, u);
+    activePose.stanceMode = 'standing';
+    activePose.handGripMode = 'relaxed';
+    rootX = lerp(traj.destX, traj.destX - 0.05, smoothStep(u));
+    rootZ = lerp(traj.destZ, traj.destZ - 0.08, smoothStep(u));
+    rootYaw = traj.destYawDeg;
+    detachedPhase = 'dest_rest';
+    curVCm = spec.vDestCm;
+    curHCm = spec.hDestCm;
+    badgeText = `Ciclo Completado · Recuperación Postural`;
+  }
+
+  const poseWithProp: PosturePose3D = {
+    ...activePose,
+    prop: spec.prop,
+    loadKg: spec.loadWeightKg,
+    rootOffsetX: Number(rootX.toFixed(3)),
+    rootOffsetZ: Number(rootZ.toFixed(3)),
+    rootYawDeg: rootYaw,
+    loadDetachedPhase: detachedPhase,
+  };
 
   return {
     panelSpec: {
@@ -481,7 +748,7 @@ export function buildCeneaSampleFrameSpec(
       noteBottom: `${spec.sector} · Carga ${spec.loadWeightKg} kg · V=${curVCm} cm · H=${curHCm} cm`,
     },
     orbit: {
-      azimuthDeg: Math.round(spec.orbit.azimuthDeg + 6 * phase),
+      azimuthDeg: Math.round(spec.orbit.azimuthDeg + 8 * smoothStep(p)),
       elevationDeg: spec.orbit.elevationDeg,
       zoom: spec.orbit.zoom,
     },

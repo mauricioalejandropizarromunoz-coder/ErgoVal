@@ -2011,7 +2011,7 @@ export function applyPoseToPhotorealRig(
   const effPronoR = needsPronatedWristRef ? 86 : pose.forearmRPronationDeg;
 
   def.armR.forearmTwistGrp.rotation.set(0, effPronoR * DEG2RAD, 0);
-  def.armL.forearmTwistGrp.rotation.set(0, 0, 0);
+  def.armL.forearmTwistGrp.rotation.set(0, -(pose.forearmLPronationDeg ?? 0) * DEG2RAD, 0);
 
   // Exact anatomical radiocarpal axes inside wristGrp:
   // +Z rotation = palmar flexion (+X), -Z rotation = dorsal extension (-X)
@@ -2021,10 +2021,17 @@ export function applyPoseToPhotorealRig(
     0,
     pose.wristRFlexionDeg * DEG2RAD,
   );
-  j.wristL.rotation.set(0, 0, (pose.wristLFlexionDeg ?? 0) * DEG2RAD);
+  j.wristL.rotation.set(
+    -(pose.wristLDeviationDeg ?? 0) * DEG2RAD,
+    0,
+    (pose.wristLFlexionDeg ?? 0) * DEG2RAD,
+  );
 
   // Finger articulation (natural organic curvature)
-  const applyHandFingerCurl = (arm: ArmOrganicRig, mode: 'relaxed' | 'pinch' | 'power_grip') => {
+  const applyHandFingerCurl = (
+    arm: ArmOrganicRig,
+    mode: 'relaxed' | 'pinch' | 'power_grip' | 'box_cradle',
+  ) => {
     const s = arm.side === 'r' ? 1 : -1;
     if (mode === 'pinch') {
       arm.thumbPivot.rotation.set(0.32, -s * 0.14, -s * 0.46);
@@ -2036,6 +2043,14 @@ export function applyPoseToPhotorealRig(
       arm.fingerPips.forEach((g, idx) => g.rotation.set(0, 0, s * pipCurls[idx]));
       arm.fingerDips.forEach((g, idx) => g.rotation.set(0, 0, s * dipCurls[idx]));
       arm.pinchObject.visible = arm.side === 'r';
+    } else if (mode === 'box_cradle') {
+      arm.thumbPivot.rotation.set(0.24, 0, -s * 0.22);
+      arm.thumbDistal.rotation.set(0, 0, -s * 0.16);
+      const cradleCurls = [-0.36, -0.40, -0.44, -0.48];
+      arm.fingerMcps.forEach((g, idx) => g.rotation.set(0, 0, s * cradleCurls[idx]));
+      arm.fingerPips.forEach((g, idx) => g.rotation.set(0, 0, s * cradleCurls[idx] * 0.9));
+      arm.fingerDips.forEach((g, idx) => g.rotation.set(0, 0, s * cradleCurls[idx] * 0.55));
+      arm.pinchObject.visible = false;
     } else if (mode === 'power_grip') {
       arm.thumbPivot.rotation.set(0.34, 0, -s * 0.52);
       arm.thumbDistal.rotation.set(0, 0, -s * 0.42);
@@ -2068,7 +2083,10 @@ export function applyPoseToPhotorealRig(
       : 'relaxed');
 
   applyHandFingerCurl(def.armR, gripMode);
-  applyHandFingerCurl(def.armL, gripMode === 'power_grip' ? 'power_grip' : 'relaxed');
+  applyHandFingerCurl(
+    def.armL,
+    gripMode === 'power_grip' || gripMode === 'box_cradle' ? gripMode : 'relaxed',
+  );
 
   j.hipR.rotation.set(-effHipR * DEG2RAD, 0, 0);
   j.kneeR.rotation.set(effKneeR * DEG2RAD, 0, 0);

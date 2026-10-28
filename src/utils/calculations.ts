@@ -1753,15 +1753,34 @@ export function evaluateBipolar(scores: number[]): MethodEvaluationResult {
 }
 
 // ============================================================================
-// 12. MÉTODO DE FANGER — PMV / PPD (Capítulo 7.2 y 7.4 — Ecuación ISO 7730)
+// 12. MÉTODO DE FANGER — PMV / PPD (Capítulo 7.2, 7.4 y Planilla Cap. 12 Tabla 12.4)
 // ============================================================================
-export function evaluateFanger(data: FangerData): MethodEvaluationResult {
-  const ta = data.airTempC;
-  const tr = data.radiantTempC;
-  const vel = Math.max(0.0, data.airVelocityMs);
-  const rh = clamp(data.relativeHumidityPct, 0, 100);
-  const met = Math.max(0.8, data.metabolicRateMet);
-  const clo = clamp(data.clothingInsulationClo, 0, 3);
+export interface FangerComputedPoint {
+  pmv: number;
+  ppd: number;
+  mWm2: number;
+  tclC: number;
+  categoryCode: 'A' | 'B' | 'C' | 'Disconfort';
+  categoryThermal: string;
+  sensation: string;
+  severity: RiskSeverity;
+  deadline: MethodEvaluationResult['recommendedDeadline'];
+}
+
+export function computeFangerMetrics(input: {
+  airTempC: number;
+  radiantTempC: number;
+  relativeHumidityPct: number;
+  airVelocityMs: number;
+  metabolicRateMet: number;
+  clothingInsulationClo: number;
+}): FangerComputedPoint {
+  const ta = input.airTempC;
+  const tr = input.radiantTempC;
+  const vel = Math.max(0.0, input.airVelocityMs);
+  const rh = clamp(input.relativeHumidityPct, 0, 100);
+  const met = Math.max(0.8, input.metabolicRateMet);
+  const clo = clamp(input.clothingInsulationClo, 0, 3);
 
   const metToWm2 = getMethodParam(MethodId.FANGER, 'metToWm2', 58.15);
   const cloToM2KW = getMethodParam(MethodId.FANGER, 'cloToM2KW', 0.155);
@@ -1826,22 +1845,28 @@ export function evaluateFanger(data: FangerData): MethodEvaluationResult {
   );
 
   const absPmv = Math.abs(pmv);
-  let categoryThermal = 'Categoría A (Alta calidad térmica)';
+  let categoryCode: FangerComputedPoint['categoryCode'] = 'A';
+  let categoryThermal = 'Categoría A — Alta calidad térmica (PPD < 6%)';
   let severity: RiskSeverity = 'bajo';
   let deadline: MethodEvaluationResult['recommendedDeadline'] = 'Sin plazo específico';
 
   if (absPmv <= catALimit) {
+    categoryCode = 'A';
     categoryThermal = 'Categoría A — Alta calidad térmica (PPD < 6%)';
     severity = 'bajo';
   } else if (absPmv <= catBLimit) {
+    categoryCode = 'B';
     categoryThermal = 'Categoría B — Ambiente aceptable (PPD < 10%)';
     severity = 'bajo';
   } else if (absPmv <= catCLimit) {
+    categoryCode = 'C';
     categoryThermal = 'Categoría C — Aceptable con reservas (PPD < 15%)';
     severity = 'moderado';
     deadline = 'Medio plazo';
   } else {
-    categoryThermal = pmv > 0 ? 'Fuera de criterio — Disconfort por calor' : 'Fuera de criterio — Disconfort por frío';
+    categoryCode = 'Disconfort';
+    categoryThermal =
+      pmv > 0 ? 'Fuera de criterio — Disconfort por calor' : 'Fuera de criterio — Disconfort por frío';
     severity = absPmv > highLimit ? 'alto' : 'moderado';
     deadline = absPmv > highLimit ? 'Corto plazo' : 'Medio plazo';
   }
@@ -1861,7 +1886,89 @@ export function evaluateFanger(data: FangerData): MethodEvaluationResult {
                 ? 'Frío (-2)'
                 : 'Mucho frío (-3)';
 
+  return {
+    pmv,
+    ppd,
+    mWm2: m,
+    tclC: tcl,
+    categoryCode,
+    categoryThermal,
+    sensation,
+    severity,
+    deadline,
+  };
+}
+
+export function evaluateFanger(data: FangerData): MethodEvaluationResult {
+  const catBLimit = getMethodParam(MethodId.FANGER, 'catBLimit', 0.5);
   const meta = METHOD_CATALOG.find((m) => m.id === MethodId.FANGER)!;
+
+  if (data.useMultiSectorSheet && Array.isArray(data.multiSectorSamples) && data.multiSectorSamples.length > 0) {
+    const evaluatedRows = data.multiSectorSamples.map((row) => ({
+      row,
+      metrics: computeFangerMetrics(row),
+    }));
+
+    const worstEntry = evaluatedRows.reduce((worst, cur) =>
+      Math.abs(cur.metrics.pmv) > Math.abs(worst.metrics.pmv) ? cur : worst,
+    );
+    const outOfComfortCount = evaluatedRows.filter((e) => Math.abs(e.metrics.pmv) > catBLimit).length;
+
+    const pmv = worstEntry.metrics.pmv;
+    const ppd = worstEntry.metrics.ppd;
+    const absPmv = Math.abs(pmv);
+
+    const sectorBreakdownRows: MethodEvaluationResult['breakdownRows'] = evaluatedRows.map((entry, idx) => ({
+      parameter: `${idx + 1}. ${entry.row.sectorLabel || `Sector ${idx + 1}`}`,
+      value: `PMV = ${entry.metrics.pmv >= 0 ? '+' : ''}${entry.metrics.pmv.toFixed(2)} · PPD = ${entry.metrics.ppd.toFixed(1)}%`,
+      reference: `ta=${entry.row.airTempC}°C, tr=${entry.row.radiantTempC}°C, HR=${entry.row.relativeHumidityPct}%, va=${entry.row.airVelocityMs} m/s, ${entry.row.metabolicRateMet} met, ${entry.row.clothingInsulationClo} clo → Cat. ${entry.metrics.categoryCode}`,
+    }));
+
+    return {
+      methodId: MethodId.FANGER,
+      methodName: meta.fullName,
+      category: meta.category,
+      categoryLabel: meta.categoryLabel,
+      hierarchyOrder: meta.hierarchyOrder,
+      primaryScoreText: `PMV = ${pmv >= 0 ? '+' : ''}${pmv.toFixed(2)}`,
+      secondaryScoreText: `PPD máx. = ${ppd.toFixed(1)}% (${evaluatedRows.length} sectores · ${outOfComfortCount === 0 ? 'Todos en confort' : `${outOfComfortCount} fuera de ±${catBLimit.toFixed(1)}`})`,
+      severity: worstEntry.metrics.severity,
+      riskLabel: `${worstEntry.metrics.categoryThermal} (${worstEntry.row.sectorLabel})`,
+      actionLevelText:
+        absPmv <= catBLimit
+          ? `Planilla conforme: todos los sectores en ±${catBLimit.toFixed(2)} (PPD < 10%)`
+          : `Sector crítico fuera de intervalo óptimo (±${catBLimit.toFixed(2)})`,
+      recommendedDeadline: worstEntry.metrics.deadline,
+      interpretation:
+        outOfComfortCount === 0
+          ? `Se relevaron ${evaluatedRows.length} sectores en planilla de confort térmico ISO 7730, ubicándose todos dentro del intervalo de confort aceptable (±${catBLimit.toFixed(2)}, PPD ≤ 10%).`
+          : `De los ${evaluatedRows.length} sectores relevados en planilla, ${outOfComfortCount} supera(n) el límite del 10% de insatisfechos (±${catBLimit.toFixed(2)}). El punto más desfavorable corresponde a "${worstEntry.row.sectorLabel}" con PMV = ${pmv >= 0 ? '+' : ''}${pmv.toFixed(2)} y PPD = ${ppd.toFixed(1)}%.`,
+      breakdownRows: [
+        ...sectorBreakdownRows,
+        {
+          parameter: 'Resumen Global de Planilla Térmica',
+          value: `${evaluatedRows.length - outOfComfortCount}/${evaluatedRows.length} sectores en confort (PPD ≤ 10%)`,
+          reference: `Crítico: ${worstEntry.row.sectorLabel} (PPD ${ppd.toFixed(1)}%)`,
+        },
+      ],
+      suggestedMeasures:
+        pmv > catBLimit
+          ? [
+              `Mejorar ventilación/climatización y aislamiento de cubiertas en "${worstEntry.row.sectorLabel}" para reducir PMV bajo +${catBLimit.toFixed(1)}.`,
+              'Adecuar aislamiento térmico de vestimenta laboral (clo) según estación y carga metabólica de cada sector.',
+            ]
+          : pmv < -catBLimit
+            ? [
+                `Reducir infiltraciones/corrientes de aire frío en "${worstEntry.row.sectorLabel}" y proveer abrigo laboral calibrado en clo.`,
+              ]
+            : ['Mantener registro estacional en planilla de confort térmico (invierno/verano) y limpieza de sistemas HVAC.'],
+    };
+  }
+
+  const single = computeFangerMetrics(data);
+  const { pmv, ppd, mWm2, categoryThermal, sensation, severity, deadline } = single;
+  const absPmv = Math.abs(pmv);
+
   return {
     methodId: MethodId.FANGER,
     methodName: meta.fullName,
@@ -1882,8 +1989,8 @@ export function evaluateFanger(data: FangerData): MethodEvaluationResult {
         ? `El Voto Medio Estimado (${pmv.toFixed(2)}) se ubica dentro del rango de aceptabilidad (±${catBLimit.toFixed(2)}) de la Tabla 7.7, con un ${ppd.toFixed(1)}% de insatisfechos.`
         : `El PMV (${pmv.toFixed(2)}) y el PPD (${ppd.toFixed(1)}%) superan el umbral de confort, indicando ${pmv > 0 ? 'exceso térmico cálido' : 'ambiente frío'}.`,
     breakdownRows: [
-      { parameter: 'Temperaturas (Aire ta / Radiante tr)', value: `${ta.toFixed(1)} °C / ${tr.toFixed(1)} °C`, reference: `HR: ${rh}% · va: ${vel.toFixed(2)} m/s` },
-      { parameter: 'Variables personales (M / Ropa)', value: `${met.toFixed(1)} met (${Math.round(m)} W/m²) · ${clo.toFixed(2)} clo`, reference: 'Tablas 7.3 y 7.4' },
+      { parameter: 'Temperaturas (Aire ta / Radiante tr)', value: `${data.airTempC.toFixed(1)} °C / ${data.radiantTempC.toFixed(1)} °C`, reference: `HR: ${clamp(data.relativeHumidityPct, 0, 100)}% · va: ${Math.max(0, data.airVelocityMs).toFixed(2)} m/s` },
+      { parameter: 'Variables personales (M / Ropa)', value: `${Math.max(0.8, data.metabolicRateMet).toFixed(1)} met (${Math.round(mWm2)} W/m²) · ${clamp(data.clothingInsulationClo, 0, 3).toFixed(2)} clo`, reference: 'Tablas 7.3 y 7.4' },
       { parameter: 'Voto Medio Estimado (PMV)', value: `${pmv >= 0 ? '+' : ''}${pmv.toFixed(2)}`, reference: sensation },
       { parameter: 'Porcentaje de Insatisfechos (PPD)', value: `${ppd.toFixed(1)} %`, reference: categoryThermal },
     ],

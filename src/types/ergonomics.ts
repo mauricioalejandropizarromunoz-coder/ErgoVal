@@ -310,7 +310,18 @@ export interface BipolarData {
   scores: number[]; // 15 items from 0 to 10
 }
 
-// 12. Fanger (Cap. 7.2)
+// 12. Fanger (Cap. 7.2 y Planilla Multipunto Cap. 12 Tabla 12.4)
+export interface FangerSampleRow {
+  id: string;
+  sectorLabel: string;
+  airTempC: number;
+  radiantTempC: number;
+  relativeHumidityPct: number;
+  airVelocityMs: number;
+  metabolicRateMet: number;
+  clothingInsulationClo: number;
+}
+
 export interface FangerData {
   airTempC: number;
   radiantTempC: number;
@@ -318,6 +329,9 @@ export interface FangerData {
   airVelocityMs: number;
   metabolicRateMet: number;
   clothingInsulationClo: number;
+  useMultiSectorSheet?: boolean;
+  multiSectorSamples?: FangerSampleRow[];
+  selectedSampleId?: string;
 }
 
 // 13. WBGT (Cap. 7.3)

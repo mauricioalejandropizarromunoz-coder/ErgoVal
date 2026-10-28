@@ -545,6 +545,740 @@ async function startServer() {
     res.json({ status: 'ok' });
   });
 
+  // =========================================================================
+  // ALMACENAMIENTO DEFINITIVO DE IMÁGENES REEMPLAZADAS DEL PLAN DE FIGURAS
+  // =========================================================================
+  const customFiguresDir = path.resolve(__dirname, 'public', 'assets', 'custom-figures');
+  const customFiguresManifestPath = path.join(customFiguresDir, 'manifest.json');
+
+  async function readCustomFiguresManifest(): Promise<Record<string, string>> {
+    try {
+      if (!fs.existsSync(customFiguresManifestPath)) return {};
+      const raw = await fs.promises.readFile(customFiguresManifestPath, 'utf-8');
+      const parsed = JSON.parse(raw) as Record<string, string>;
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  async function writeCustomFiguresManifest(manifest: Record<string, string>): Promise<void> {
+    await fs.promises.mkdir(customFiguresDir, { recursive: true });
+    await fs.promises.writeFile(customFiguresManifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
+    const distCustomDir = path.resolve(__dirname, 'dist', 'assets', 'custom-figures');
+    if (fs.existsSync(path.resolve(__dirname, 'dist'))) {
+      await fs.promises.mkdir(distCustomDir, { recursive: true }).catch(() => undefined);
+      await fs.promises
+        .writeFile(path.join(distCustomDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf-8')
+        .catch(() => undefined);
+    }
+  }
+
+  app.get('/api/figures/overrides', async (_req: Request, res: Response) => {
+    const overrides = await readCustomFiguresManifest();
+    res.json({ overrides });
+  });
+
+  app.post('/api/figures/override', async (req: Request, res: Response) => {
+    try {
+      const { figId, dataUrl } = (req.body || {}) as { figId?: string; dataUrl?: string };
+      if (!figId || !/^[\w.-]+$/.test(figId) || typeof dataUrl !== 'string') {
+        res.status(400).json({ error: 'Identificador de figura o imagen inválido.' });
+        return;
+      }
+
+      const match = dataUrl.match(/^data:image\/(png|jpe?g|webp);base64,(.+)$/i);
+      if (!match) {
+        res.status(400).json({ error: 'Formato de imagen no admitido. Use PNG, JPG o WebP.' });
+        return;
+      }
+
+      const rawExt = match[1].toLowerCase();
+      const ext = rawExt === 'jpeg' ? 'jpg' : rawExt;
+      const buffer = Buffer.from(match[2], 'base64');
+      const safeBase = figId.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const fileName = `${safeBase}.${ext}`;
+
+      await fs.promises.mkdir(customFiguresDir, { recursive: true });
+      const targetPath = path.join(customFiguresDir, fileName);
+      await fs.promises.writeFile(targetPath, buffer);
+
+      // Si existe build de producción en dist/, espejar archivo también allí
+      const distRoot = path.resolve(__dirname, 'dist');
+      if (fs.existsSync(distRoot)) {
+        const distCustomDir = path.join(distRoot, 'assets', 'custom-figures');
+        await fs.promises.mkdir(distCustomDir, { recursive: true }).catch(() => undefined);
+        await fs.promises.writeFile(path.join(distCustomDir, fileName), buffer).catch(() => undefined);
+      }
+
+      const publicUrl = `/assets/custom-figures/${fileName}?v=${Date.now()}`;
+      const manifest = await readCustomFiguresManifest();
+      manifest[figId] = publicUrl;
+      await writeCustomFiguresManifest(manifest);
+
+      res.json({ ok: true, figId, url: publicUrl });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'No se pudo almacenar la imagen definitiva.';
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  app.delete('/api/figures/override/:figId', async (req: Request, res: Response) => {
+    try {
+      const figId = String(req.params.figId || '');
+      if (!figId || !/^[\w.-]+$/.test(figId)) {
+        res.status(400).json({ error: 'Identificador de figura inválido.' });
+        return;
+      }
+      const manifest = await readCustomFiguresManifest();
+      const prevUrl = manifest[figId];
+      delete manifest[figId];
+      await writeCustomFiguresManifest(manifest);
+
+      if (prevUrl) {
+        const cleanRel = prevUrl.split('?')[0].replace(/^\/+/, '');
+        const fullPrev = path.resolve(__dirname, 'public', cleanRel);
+        if (fullPrev.startsWith(customFiguresDir)) {
+          await fs.promises.unlink(fullPrev).catch(() => undefined);
+        }
+      }
+      res.json({ ok: true, figId });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'No se pudo restaurar la figura original.';
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  // =========================================================================
+  // POSTURAS DE REFERENCIA CALIBRADAS (pose-overrides.json + figurePlanCatalog.ts)
+  // =========================================================================
+  interface ServerCatalogPoseOverride {
+    bodiesRule: '1' | '2' | 'diagrama';
+    widthPx: number;
+    heightPx: number;
+    renderMode: '3d_single' | '3d_dual' | 'diagram' | 'real_chart';
+    panels: Array<Record<string, unknown>>;
+    updatedAt?: string;
+  }
+
+  const poseOverridesManifestPath = path.join(customFiguresDir, 'pose-overrides.json');
+  const catalogSourceFilePath = path.resolve(__dirname, 'src', 'utils', 'figurePlanCatalog.ts');
+
+  const VALID_FOCUS_ZONES = new Set([
+    'wrist_hand',
+    'elbow_forearm',
+    'shoulder_arm',
+    'neck_cervical',
+    'lumbar_l5s1',
+    'trunk_pelvis',
+    'legs_knees',
+    'ankle_foot',
+    'full_body',
+  ]);
+  const VALID_CAMERA_PRESETS = new Set([
+    'sagittal_right',
+    'sagittal_left',
+    'frontal',
+    'dorsal',
+    'top',
+    'isometric',
+    'perspective_oblique',
+  ]);
+  const VALID_STANCE_MODES = new Set(['standing', 'seated', 'kneeling', 'squatting', 'one_leg', 'walking']);
+  const VALID_HAND_GRIPS = new Set(['relaxed', 'pinch', 'power_grip', 'box_cradle']);
+  const VALID_SCENE_PROPS = new Set([
+    'none',
+    'chair',
+    'work_desk_support',
+    'box_load',
+    'electrical_panel',
+    'trench_shovel',
+    'iron_tamper_low',
+    'iron_tamper_high',
+    'crane_levers',
+    'office_desk_corner_monitor',
+    'office_desk_lateral',
+    'loading_dock_van',
+    'bin_to_cart',
+    'floor_pouches',
+    'cart_push_dynamo',
+    'cart_pull_dynamo',
+    'high_scanner_desk',
+    'pallet_cooler',
+    'cold_room_high_shelf',
+    'bus_driver_seat',
+    'conveyor_veg_line',
+    'hopper_sack_pour',
+    'pallet_jack_rack',
+  ]);
+
+  function normalizeFullPoseObject(rawPose: unknown): Record<string, unknown> {
+    const p = (rawPose && typeof rawPose === 'object' ? rawPose : {}) as Record<string, unknown>;
+    const normalized: Record<string, unknown> = {
+      trunkFlexionDeg: clampRound(p.trunkFlexionDeg, 0, -45, 130),
+      trunkLateralDeg: clampRound(p.trunkLateralDeg, 0, -45, 45),
+      trunkTwistDeg: clampRound(p.trunkTwistDeg, 0, -75, 75),
+      neckFlexionDeg: clampRound(p.neckFlexionDeg, 0, -55, 75),
+      neckLateralDeg: clampRound(p.neckLateralDeg, 0, -45, 45),
+      neckTwistDeg: clampRound(p.neckTwistDeg, 0, -75, 75),
+      shoulderRFlexionDeg: clampRound(p.shoulderRFlexionDeg, 4, -65, 180),
+      shoulderRAbductionDeg: clampRound(p.shoulderRAbductionDeg, 5, 0, 170),
+      shoulderLFlexionDeg: clampRound(p.shoulderLFlexionDeg, 4, -65, 180),
+      shoulderLAbductionDeg: clampRound(p.shoulderLAbductionDeg, 5, 0, 170),
+      elbowRFlexionDeg: clampRound(p.elbowRFlexionDeg, 10, 0, 160),
+      elbowLFlexionDeg: clampRound(p.elbowLFlexionDeg, 10, 0, 160),
+      forearmRPronationDeg: clampRound(p.forearmRPronationDeg, 0, -90, 90),
+      wristRFlexionDeg: clampRound(p.wristRFlexionDeg, 0, -75, 75),
+      wristRDeviationDeg: clampRound(p.wristRDeviationDeg, 0, -40, 40),
+      hipRFlexionDeg: clampRound(p.hipRFlexionDeg, 0, -35, 135),
+      kneeRFlexionDeg: clampRound(p.kneeRFlexionDeg, 2, 0, 150),
+      ankleRDorsiflexionDeg: clampRound(p.ankleRDorsiflexionDeg, 0, -45, 45),
+      hipLFlexionDeg: clampRound(p.hipLFlexionDeg, clampRound(p.hipRFlexionDeg, 0, -35, 135), -35, 135),
+      kneeLFlexionDeg: clampRound(p.kneeLFlexionDeg, clampRound(p.kneeRFlexionDeg, 2, 0, 150), 0, 150),
+      ankleLDorsiflexionDeg: clampRound(
+        p.ankleLDorsiflexionDeg,
+        clampRound(p.ankleRDorsiflexionDeg, 0, -45, 45),
+        -45,
+        45,
+      ),
+    };
+
+    if (typeof p.forearmLPronationDeg === 'number' && Number.isFinite(p.forearmLPronationDeg)) {
+      normalized.forearmLPronationDeg = clampRound(p.forearmLPronationDeg, 0, -90, 90);
+    }
+    if (typeof p.wristLFlexionDeg === 'number' && Number.isFinite(p.wristLFlexionDeg)) {
+      normalized.wristLFlexionDeg = clampRound(p.wristLFlexionDeg, 0, -75, 75);
+    }
+    if (typeof p.wristLDeviationDeg === 'number' && Number.isFinite(p.wristLDeviationDeg)) {
+      normalized.wristLDeviationDeg = clampRound(p.wristLDeviationDeg, 0, -40, 40);
+    }
+    if (typeof p.shoulderRElevated === 'boolean') {
+      normalized.shoulderRElevated = p.shoulderRElevated;
+    }
+    if (typeof p.forearmRCrossMidline === 'boolean') {
+      normalized.forearmRCrossMidline = p.forearmRCrossMidline;
+    }
+    const stance = typeof p.stanceMode === 'string' && VALID_STANCE_MODES.has(p.stanceMode) ? p.stanceMode : 'standing';
+    normalized.stanceMode = stance;
+
+    const prop = typeof p.prop === 'string' && VALID_SCENE_PROPS.has(p.prop) ? p.prop : 'none';
+    normalized.prop = prop;
+
+    if (typeof p.loadKg === 'number' && Number.isFinite(p.loadKg) && p.loadKg > 0) {
+      normalized.loadKg = clampRound(p.loadKg, 12, 1, 80);
+    }
+    if (
+      typeof p.highlightGroup === 'string' &&
+      ['none', 'rula_groups', 'sagittal_split', 'l5s1_disc'].includes(p.highlightGroup)
+    ) {
+      normalized.highlightGroup = p.highlightGroup;
+    }
+    const grip = typeof p.handGripMode === 'string' && VALID_HAND_GRIPS.has(p.handGripMode) ? p.handGripMode : 'relaxed';
+    normalized.handGripMode = grip;
+
+    if (typeof p.rootOffsetX === 'number' && Number.isFinite(p.rootOffsetX) && Math.abs(p.rootOffsetX) > 0.001) {
+      normalized.rootOffsetX = Math.round(Math.max(-2.5, Math.min(2.5, p.rootOffsetX)) * 100) / 100;
+    }
+    if (typeof p.rootOffsetZ === 'number' && Number.isFinite(p.rootOffsetZ) && Math.abs(p.rootOffsetZ) > 0.001) {
+      normalized.rootOffsetZ = Math.round(Math.max(-2.5, Math.min(2.5, p.rootOffsetZ)) * 100) / 100;
+    }
+    if (typeof p.rootYawDeg === 'number' && Number.isFinite(p.rootYawDeg) && Math.abs(p.rootYawDeg) > 0.1) {
+      normalized.rootYawDeg = clampRound(p.rootYawDeg, 0, -180, 180);
+    }
+    if (
+      typeof p.loadDetachedPhase === 'string' &&
+      ['origin_rest', 'carried', 'dest_rest'].includes(p.loadDetachedPhase)
+    ) {
+      normalized.loadDetachedPhase = p.loadDetachedPhase;
+    }
+    return normalized;
+  }
+
+  function normalizePanelSpecObject(rawPanel: unknown, idx: number): Record<string, unknown> {
+    const p = (rawPanel && typeof rawPanel === 'object' ? rawPanel : {}) as Record<string, unknown>;
+    const bodyLetters = ['A', 'B', 'C', 'D'];
+    const subTitle =
+      typeof p.subTitle === 'string' && p.subTitle.trim().length > 0
+        ? p.subTitle.trim().slice(0, 96)
+        : `Cuerpo ${bodyLetters[idx] || idx + 1}`;
+    const focusZone =
+      typeof p.focusZone === 'string' && VALID_FOCUS_ZONES.has(p.focusZone) ? p.focusZone : 'full_body';
+    const cameraPreset =
+      typeof p.cameraPreset === 'string' && VALID_CAMERA_PRESETS.has(p.cameraPreset)
+        ? p.cameraPreset
+        : 'sagittal_right';
+
+    const panelObj: Record<string, unknown> = {
+      subTitle,
+      ...(typeof p.scoreBadge === 'string' && p.scoreBadge.trim()
+        ? { scoreBadge: p.scoreBadge.trim().slice(0, 48) }
+        : {}),
+      focusZone,
+      cameraPreset,
+      pose: normalizeFullPoseObject(p.pose),
+    };
+
+    if (p.orbitOverride && typeof p.orbitOverride === 'object') {
+      const orb = p.orbitOverride as Record<string, unknown>;
+      const az = clampRound(orb.azimuthDeg, 0, -180, 180);
+      const el = clampRound(orb.elevationDeg, 0, -65, 65);
+      const zmRaw = typeof orb.zoom === 'number' ? orb.zoom : Number(orb.zoom);
+      const zm = Number.isFinite(zmRaw) ? Math.round(Math.max(0.45, Math.min(2.5, zmRaw)) * 100) / 100 : 1;
+      if (az !== 0 || el !== 0 || Math.abs(zm - 1) > 0.01) {
+        panelObj.orbitOverride = { azimuthDeg: az, elevationDeg: el, zoom: zm };
+      }
+    }
+
+    if (Array.isArray(p.angleArcs) && p.angleArcs.length > 0) {
+      panelObj.angleArcs = p.angleArcs;
+    }
+    if (Array.isArray(p.forceVectors) && p.forceVectors.length > 0) {
+      panelObj.forceVectors = p.forceVectors;
+    }
+    if (Array.isArray(p.dimensions) && p.dimensions.length > 0) {
+      panelObj.dimensions = p.dimensions;
+    }
+    if (typeof p.noteBottom === 'string' && p.noteBottom.trim()) {
+      panelObj.noteBottom = p.noteBottom.trim().slice(0, 140);
+    }
+
+    return panelObj;
+  }
+
+  function serializeTsLiteral(value: unknown, indent = 0): string {
+    const pad = ' '.repeat(indent);
+    const childPad = ' '.repeat(indent + 2);
+    if (value === null || value === undefined) return 'undefined';
+    if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '0';
+    if (typeof value === 'boolean') return value ? 'true' : 'false';
+    if (typeof value === 'string') {
+      const escaped = value
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/\r/g, '')
+        .replace(/\n/g, '\\n');
+      return `'${escaped}'`;
+    }
+    if (Array.isArray(value)) {
+      if (value.length === 0) return '[]';
+      const items = value.map((item) => `${childPad}${serializeTsLiteral(item, indent + 2)}`);
+      return `[\n${items.join(',\n')},\n${pad}]`;
+    }
+    if (typeof value === 'object') {
+      const entries = Object.entries(value as Record<string, unknown>).filter(([, v]) => v !== undefined);
+      if (entries.length === 0) return '{}';
+      const lines = entries.map(([k, v]) => {
+        const safeKey = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(k) ? k : serializeTsLiteral(k, 0);
+        return `${childPad}${safeKey}: ${serializeTsLiteral(v, indent + 2)}`;
+      });
+      return `{\n${lines.join(',\n')},\n${pad}}`;
+    }
+    return 'undefined';
+  }
+
+  function findMatchingBracketInTs(src: string, openIdx: number, openChar: '{' | '[', closeChar: '}' | ']'): number {
+    let depth = 0;
+    let mode: 'code' | 'single' | 'double' | 'template' | 'line_comment' | 'block_comment' = 'code';
+    for (let i = openIdx; i < src.length; i++) {
+      const ch = src[i];
+      const next = src[i + 1];
+      if (mode === 'code') {
+        if (ch === "'") mode = 'single';
+        else if (ch === '"') mode = 'double';
+        else if (ch === '`') mode = 'template';
+        else if (ch === '/' && next === '/') {
+          mode = 'line_comment';
+          i++;
+        } else if (ch === '/' && next === '*') {
+          mode = 'block_comment';
+          i++;
+        } else if (ch === openChar) {
+          depth++;
+        } else if (ch === closeChar) {
+          depth--;
+          if (depth === 0) return i;
+        }
+      } else if (mode === 'single') {
+        if (ch === '\\') i++;
+        else if (ch === "'") mode = 'code';
+      } else if (mode === 'double') {
+        if (ch === '\\') i++;
+        else if (ch === '"') mode = 'code';
+      } else if (mode === 'template') {
+        if (ch === '\\') i++;
+        else if (ch === '`') mode = 'code';
+      } else if (mode === 'line_comment') {
+        if (ch === '\n') mode = 'code';
+      } else if (mode === 'block_comment') {
+        if (ch === '*' && next === '/') {
+          mode = 'code';
+          i++;
+        }
+      }
+    }
+    return -1;
+  }
+
+  async function updateFigurePlanCatalogSourceFile(
+    figId: string,
+    override: ServerCatalogPoseOverride,
+  ): Promise<boolean> {
+    try {
+      if (!fs.existsSync(catalogSourceFilePath)) return false;
+      const src = await fs.promises.readFile(catalogSourceFilePath, 'utf-8');
+      const rawCatStart = src.indexOf('RAW_BOOK_FIGURE_CATALOG');
+      const catalogStart = rawCatStart !== -1 ? rawCatStart : src.indexOf('BOOK_FIGURE_CATALOG');
+      if (catalogStart === -1) return false;
+
+      const escapedId = figId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const idRegex = new RegExp(`\\bid\\s*:\\s*['"]${escapedId}['"]`);
+      const relMatch = idRegex.exec(src.slice(catalogStart));
+      if (!relMatch) return false;
+
+      const absIdIdx = catalogStart + relMatch.index;
+      let entryOpenIdx = -1;
+      for (let i = absIdIdx; i >= catalogStart; i--) {
+        if (src[i] === '{') {
+          entryOpenIdx = i;
+          break;
+        }
+      }
+      if (entryOpenIdx === -1) return false;
+
+      const entryCloseIdx = findMatchingBracketInTs(src, entryOpenIdx, '{', '}');
+      if (entryCloseIdx === -1) return false;
+
+      let entryText = src.slice(entryOpenIdx, entryCloseIdx + 1);
+      entryText = entryText.replace(/\bbodiesRule\s*:\s*['"][^'"]+['"]/, `bodiesRule: '${override.bodiesRule}'`);
+      entryText = entryText.replace(/\bwidthPx\s*:\s*\d+/, `widthPx: ${override.widthPx}`);
+      entryText = entryText.replace(/\bheightPx\s*:\s*\d+/, `heightPx: ${override.heightPx}`);
+      entryText = entryText.replace(/\brenderMode\s*:\s*['"][^'"]+['"]/, `renderMode: '${override.renderMode}'`);
+
+      const panelsPropMatch = /\bpanels\s*:\s*\[/.exec(entryText);
+      const serializedPanels = serializeTsLiteral(override.panels, 4);
+      if (panelsPropMatch) {
+        const openArrIdx = entryText.indexOf('[', panelsPropMatch.index);
+        const closeArrIdx = findMatchingBracketInTs(entryText, openArrIdx, '[', ']');
+        if (closeArrIdx === -1) return false;
+        entryText =
+          entryText.slice(0, openArrIdx) + serializedPanels + entryText.slice(closeArrIdx + 1);
+      } else {
+        entryText = entryText.replace(
+          /(\brenderMode\s*:\s*['"][^'"]+['"]\s*,?)/,
+          `$1\n    panels: ${serializedPanels},`,
+        );
+      }
+
+      // Verificación léxica de cierre exacto del bloque antes de persistir en disco
+      if (findMatchingBracketInTs(entryText, 0, '{', '}') !== entryText.length - 1) {
+        return false;
+      }
+
+      const updatedSrc = src.slice(0, entryOpenIdx) + entryText + src.slice(entryCloseIdx + 1);
+      await fs.promises.writeFile(catalogSourceFilePath, updatedSrc, 'utf-8');
+      return true;
+    } catch (err) {
+      console.error('[figurePlanCatalog updater] Error:', err);
+      return false;
+    }
+  }
+
+  async function readPoseOverridesManifest(): Promise<Record<string, ServerCatalogPoseOverride>> {
+    try {
+      if (!fs.existsSync(poseOverridesManifestPath)) return {};
+      const raw = await fs.promises.readFile(poseOverridesManifestPath, 'utf-8');
+      const parsed = JSON.parse(raw) as Record<string, ServerCatalogPoseOverride>;
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  async function writePoseOverridesManifest(manifest: Record<string, ServerCatalogPoseOverride>): Promise<void> {
+    await fs.promises.mkdir(customFiguresDir, { recursive: true });
+    await fs.promises.writeFile(poseOverridesManifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
+    const distRoot = path.resolve(__dirname, 'dist');
+    if (fs.existsSync(distRoot)) {
+      const distCustomDir = path.join(distRoot, 'assets', 'custom-figures');
+      await fs.promises.mkdir(distCustomDir, { recursive: true }).catch(() => undefined);
+      await fs.promises
+        .writeFile(path.join(distCustomDir, 'pose-overrides.json'), JSON.stringify(manifest, null, 2), 'utf-8')
+        .catch(() => undefined);
+    }
+  }
+
+  app.get('/api/figures/pose-overrides', async (_req: Request, res: Response) => {
+    const overrides = await readPoseOverridesManifest();
+    res.json({ overrides });
+  });
+
+  app.post('/api/figures/pose-override', async (req: Request, res: Response) => {
+    try {
+      const body = (req.body || {}) as {
+        figId?: string;
+        panels?: unknown[];
+        widthPx?: number;
+        heightPx?: number;
+      };
+      const figId = String(body.figId || '').trim();
+      if (!figId || !/^[\w.-]+$/.test(figId) || !Array.isArray(body.panels) || body.panels.length === 0) {
+        res.status(400).json({ error: 'Identificador de figura o paneles de postura inválidos.' });
+        return;
+      }
+
+      const normalizedPanels = body.panels
+        .slice(0, 4)
+        .map((panel, idx) => normalizePanelSpecObject(panel, idx));
+      const isMulti = normalizedPanels.length >= 2;
+      const overrideEntry: ServerCatalogPoseOverride = {
+        bodiesRule: isMulti ? '2' : '1',
+        widthPx: clampRound(body.widthPx, isMulti ? 800 : 480, 320, 1400),
+        heightPx: clampRound(body.heightPx, isMulti ? 520 : 640, 320, 1200),
+        renderMode: isMulti ? '3d_dual' : '3d_single',
+        panels: normalizedPanels,
+        updatedAt: new Date().toISOString(),
+      };
+
+      const manifest = await readPoseOverridesManifest();
+      manifest[figId] = overrideEntry;
+      await writePoseOverridesManifest(manifest);
+
+      const sourceUpdated = await updateFigurePlanCatalogSourceFile(figId, overrideEntry);
+      res.json({
+        ok: true,
+        figId,
+        override: overrideEntry,
+        catalogFileUpdated: sourceUpdated,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'No se pudo guardar la postura de referencia.';
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  app.delete('/api/figures/pose-override/:figId', async (req: Request, res: Response) => {
+    try {
+      const figId = String(req.params.figId || '').trim();
+      if (!figId || !/^[\w.-]+$/.test(figId)) {
+        res.status(400).json({ error: 'Identificador de figura inválido.' });
+        return;
+      }
+      const manifest = await readPoseOverridesManifest();
+      delete manifest[figId];
+      await writePoseOverridesManifest(manifest);
+      res.json({ ok: true, figId });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'No se pudo restaurar la postura original.';
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  // =========================================================================
+  // EXTRACCIÓN MULTIMODAL DE POSTURA DESDE IMAGEN HACIA AVATAR 3D (Cuerpos A..D)
+  // =========================================================================
+  app.post('/api/figures/extract-pose', async (req: Request, res: Response) => {
+    try {
+      const body = (req.body || {}) as {
+        imageDataUrl?: string;
+        figId?: string;
+        title?: string;
+        bookDescription?: string;
+        expectedBodiesCount?: number;
+      };
+
+      const rawImg = String(body.imageDataUrl || '').trim();
+      if (!rawImg) {
+        res.status(400).json({ error: 'No se recibió la imagen de referencia para analizar la postura.' });
+        return;
+      }
+
+      let mimeType = 'image/png';
+      let base64Data = '';
+
+      const dataUrlMatch = rawImg.match(/^data:(image\/(?:png|jpe?g|webp));base64,(.+)$/i);
+      if (dataUrlMatch) {
+        mimeType = dataUrlMatch[1].toLowerCase() === 'image/jpg' ? 'image/jpeg' : dataUrlMatch[1].toLowerCase();
+        base64Data = dataUrlMatch[2];
+      } else if (rawImg.startsWith('/')) {
+        const cleanRel = rawImg.split('?')[0].replace(/^\/+/, '');
+        const candidatePath = path.resolve(__dirname, 'public', cleanRel);
+        const publicRoot = path.resolve(__dirname, 'public');
+        if (!candidatePath.startsWith(publicRoot) || !fs.existsSync(candidatePath)) {
+          res.status(404).json({ error: 'No se encontró el archivo de imagen de referencia en el servidor.' });
+          return;
+        }
+        const buf = await fs.promises.readFile(candidatePath);
+        base64Data = buf.toString('base64');
+        const ext = path.extname(candidatePath).toLowerCase();
+        mimeType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : 'image/png';
+      } else {
+        res.status(400).json({ error: 'Formato de imagen no válido para extracción postural.' });
+        return;
+      }
+
+      const forcedCount =
+        typeof body.expectedBodiesCount === 'number' &&
+        body.expectedBodiesCount >= 1 &&
+        body.expectedBodiesCount <= 4
+          ? Math.round(body.expectedBodiesCount)
+          : 0;
+
+      const countInstruction =
+        forcedCount > 0
+          ? `Extrae EXACTAMENTE ${forcedCount} cuerpo(s) humano(s) ordenados de izquierda a derecha (Cuerpo A, Cuerpo B${forcedCount >= 3 ? ', Cuerpo C' : ''}${forcedCount >= 4 ? ', Cuerpo D' : ''}).`
+          : 'Detecta automáticamente cuántas figuras humanas independientes aparecen de izquierda a derecha en la lámina (1, 2, 3 o máximo 4 cuerpos) y devuelve un panel completo por cada cuerpo en orden de izquierda a derecha.';
+
+      const promptText = `Analiza esta lámina ergonómica / fotografía de puesto de trabajo y replica con máxima exactitud goniométrica la postura de cada figura humana para nuestro motor biomecánico 3D.
+Contexto del ítem:
+- ID: ${body.figId || 'figura'}
+- Título: ${body.title || 'Evaluación postural'}
+- Descripción técnica: ${body.bookDescription || 'Sin descripción adicional'}
+- Regla de cuerpos: ${countInstruction}
+
+CONVENCIÓN GONIOMÉTRICA OBLIGATORIA DEL AVATAR 3D (0° = posición anatómica neutra de pie con brazos colgando verticales a los costados):
+1. cameraPreset:
+   - 'sagittal_right': perfil mirando hacia la DERECHA de la imagen.
+   - 'sagittal_left': perfil mirando hacia la IZQUIERDA de la imagen.
+   - 'frontal': vista de frente mirando hacia el observador.
+   - 'dorsal': vista de espaldas.
+   - 'isometric' o 'perspective_oblique': vista oblicua 3/4 (ajusta azimuthDeg entre -45 y +45 para calzar el giro exacto de cámara).
+2. focusZone:
+   - Usa 'full_body' si se ve el cuerpo entero o de rodillas arriba; 'wrist_hand' si es primer plano exclusivo de mano/muñeca; 'elbow_forearm' si es primer plano de antebrazo/codo; 'neck_cervical' si es detalle de cabeza/cuello; 'legs_knees' si es detalle inferior.
+3. Ángulos articulares en grados:
+   - trunkFlexionDeg: 0° = columna vertical erguida; +20° a +85° = inclinación hacia adelante; -5° a -20° = extensión hacia atrás.
+   - trunkLateralDeg: inclinación lateral (-35° a +35°). trunkTwistDeg: giro axial (-45° a +45°).
+   - neckFlexionDeg: respecto al tronco (0° = cuello alineado con el eje del tronco; +15° a +45° = barbilla hacia el pecho; -15° a -30° = cuello extendido hacia atrás).
+   - shoulderRFlexionDeg / shoulderLFlexionDeg: 0° = brazo colgando vertical hacia abajo; +45° = adelantado 45°; +90° = brazo horizontal al frente; +135° a +170° = brazo elevado sobre el hombro/cabeza; -20° = brazo hacia atrás en extensión.
+   - shoulderRAbductionDeg / shoulderLAbductionDeg: 5° = pegado al torso; +35° a +90° = separado lateralmente en plano frontal.
+   - elbowRFlexionDeg / elbowLFlexionDeg: 0° = codo totalmente recto/estirado; 90° = codo en ángulo recto L; 115° = codo muy cerrado. ¡NUNCA uses 180° para brazo estirado!
+   - forearmRPronationDeg / forearmLPronationDeg: 0° = neutro pulgar arriba; +75° = pronación palma abajo; -75° = supinación palma arriba.
+   - wristRFlexionDeg / wristLFlexionDeg: 0° = recta; +20° a +45° = flexión palmar; -20° a -45° = extensión dorsal.
+   - hipRFlexionDeg / hipLFlexionDeg: 0° = de pie recto; 85° a 95° = sentado o cadera flexionada.
+   - kneeRFlexionDeg / kneeLFlexionDeg: 0° = pierna recta; 40° a 65° = semiflexión; 85° a 115° = sentado 90°, cuclillas o arrodillado.
+   - stanceMode: 'standing' | 'seated' | 'kneeling' | 'squatting' | 'one_leg' | 'walking'.
+   - prop: usa 'none' si es figura limpia sin muebles, 'chair' si está sentado en silla, 'work_desk_support' si apoya el brazo en mesa, 'box_load' si sujeta una caja con las manos, 'bus_driver_seat' si conduce colectivo.`;
+
+      const ai = getGenAIClient(28000);
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { inlineData: { mimeType, data: base64Data } },
+              { text: promptText },
+            ],
+          },
+        ],
+        config: {
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              panels: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    subTitle: { type: Type.STRING },
+                    scoreBadge: { type: Type.STRING },
+                    focusZone: { type: Type.STRING },
+                    cameraPreset: { type: Type.STRING },
+                    azimuthDeg: { type: Type.NUMBER },
+                    elevationDeg: { type: Type.NUMBER },
+                    zoom: { type: Type.NUMBER },
+                    pose: {
+                      type: Type.OBJECT,
+                      properties: {
+                        trunkFlexionDeg: { type: Type.NUMBER },
+                        trunkLateralDeg: { type: Type.NUMBER },
+                        trunkTwistDeg: { type: Type.NUMBER },
+                        neckFlexionDeg: { type: Type.NUMBER },
+                        neckLateralDeg: { type: Type.NUMBER },
+                        neckTwistDeg: { type: Type.NUMBER },
+                        shoulderRFlexionDeg: { type: Type.NUMBER },
+                        shoulderRAbductionDeg: { type: Type.NUMBER },
+                        shoulderRElevated: { type: Type.BOOLEAN },
+                        shoulderLFlexionDeg: { type: Type.NUMBER },
+                        shoulderLAbductionDeg: { type: Type.NUMBER },
+                        elbowRFlexionDeg: { type: Type.NUMBER },
+                        elbowLFlexionDeg: { type: Type.NUMBER },
+                        forearmRPronationDeg: { type: Type.NUMBER },
+                        forearmLPronationDeg: { type: Type.NUMBER },
+                        forearmRCrossMidline: { type: Type.BOOLEAN },
+                        wristRFlexionDeg: { type: Type.NUMBER },
+                        wristRDeviationDeg: { type: Type.NUMBER },
+                        wristLFlexionDeg: { type: Type.NUMBER },
+                        wristLDeviationDeg: { type: Type.NUMBER },
+                        hipRFlexionDeg: { type: Type.NUMBER },
+                        kneeRFlexionDeg: { type: Type.NUMBER },
+                        ankleRDorsiflexionDeg: { type: Type.NUMBER },
+                        hipLFlexionDeg: { type: Type.NUMBER },
+                        kneeLFlexionDeg: { type: Type.NUMBER },
+                        ankleLDorsiflexionDeg: { type: Type.NUMBER },
+                        stanceMode: { type: Type.STRING },
+                        prop: { type: Type.STRING },
+                        handGripMode: { type: Type.STRING },
+                      },
+                      required: [
+                        'trunkFlexionDeg',
+                        'neckFlexionDeg',
+                        'shoulderRFlexionDeg',
+                        'shoulderLFlexionDeg',
+                        'elbowRFlexionDeg',
+                        'elbowLFlexionDeg',
+                        'wristRFlexionDeg',
+                        'hipRFlexionDeg',
+                        'kneeRFlexionDeg',
+                        'stanceMode',
+                      ],
+                    },
+                  },
+                  required: ['subTitle', 'focusZone', 'cameraPreset', 'pose'],
+                },
+              },
+            },
+            required: ['panels'],
+          },
+        },
+      });
+
+      const rawText = stripMarkdownJsonFences(response.text || '{}');
+      const parsed = JSON.parse(rawText) as { panels?: Array<Record<string, unknown>> };
+      const rawPanels = Array.isArray(parsed.panels) ? parsed.panels.slice(0, 4) : [];
+      if (rawPanels.length === 0) {
+        res.status(422).json({ error: 'No se detectaron figuras posturales en la imagen analizada.' });
+        return;
+      }
+
+      const normalizedPanels = rawPanels.map((rp, idx) => {
+        const withOrbit: Record<string, unknown> = {
+          ...rp,
+          orbitOverride: {
+            azimuthDeg: clampRound(rp.azimuthDeg, 0, -180, 180),
+            elevationDeg: clampRound(rp.elevationDeg, 0, -60, 60),
+            zoom:
+              typeof rp.zoom === 'number' && Number.isFinite(rp.zoom)
+                ? Math.max(0.6, Math.min(1.8, rp.zoom))
+                : 1,
+          },
+        };
+        return normalizePanelSpecObject(withOrbit, idx);
+      });
+
+      res.json({
+        ok: true,
+        bodiesCount: normalizedPanels.length,
+        panels: normalizedPanels,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Error al extraer postura biomecánica desde la imagen.';
+      console.error('[/api/figures/extract-pose] Error:', msg);
+      res.status(500).json({ error: msg });
+    }
+  });
+
   app.post('/api/biomech/extract-video', async (req: Request, res: Response) => {
     try {
       const body = (req.body || {}) as ExtractVideoRequestBody;

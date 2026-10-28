@@ -1271,17 +1271,55 @@ const RAW_BOOK_FIGURE_CATALOG: BookFigureFileSpec[] = [
     title: 'Posiciones de la espalda en OWAS (b): Flexionada y/o con torsión (Códigos 2 a 4)',
     bookDescription:
       'Tabla 4.38 OWAS — Código 2: flexionada (≥20°); Código 3: con torsión o inclinación lateral; Código 4: flexionada y girada simultáneamente.',
-    bodiesRule: '1',
-    widthPx: 480,
-    heightPx: 640,
-    renderMode: '3d_single',
+    bodiesRule: '2',
+    widthPx: 800,
+    heightPx: 520,
+    renderMode: '3d_dual',
     panels: [
       {
-        subTitle: 'Códigos 2–4: Flexión ≥ 20° y/o torsión axial',
-        scoreBadge: 'Dígitos 2–4',
+        subTitle: 'Código 2: Espalda flexionada (≥ 20°)',
+        scoreBadge: 'Dígito 2',
+        focusZone: 'full_body',
+        cameraPreset: 'sagittal_right',
+        pose: makeNeutralPose({
+          trunkFlexionDeg: 38,
+          neckFlexionDeg: 8,
+          shoulderRFlexionDeg: 34,
+          shoulderLFlexionDeg: 34,
+          elbowRFlexionDeg: 24,
+          elbowLFlexionDeg: 24,
+        }),
+        angleArcs: [{ joint: 'l5s1', refType: 'vertical_up', toJoint: 'c7', label: '≥ 20°' }],
+      },
+      {
+        subTitle: 'Código 3: Con giro o inclinación lateral',
+        scoreBadge: 'Dígito 3',
+        focusZone: 'full_body',
+        cameraPreset: 'frontal',
+        pose: makeNeutralPose({
+          trunkFlexionDeg: 6,
+          trunkLateralDeg: 18,
+          trunkTwistDeg: 26,
+          shoulderRFlexionDeg: 14,
+          shoulderLFlexionDeg: 10,
+          elbowRFlexionDeg: 22,
+          elbowLFlexionDeg: 18,
+        }),
+      },
+      {
+        subTitle: 'Código 4: Flexionada y girada',
+        scoreBadge: 'Dígito 4',
         focusZone: 'full_body',
         cameraPreset: 'isometric',
-        pose: makeNeutralPose({ trunkFlexionDeg: 40, trunkTwistDeg: 26, shoulderRFlexionDeg: 36, shoulderLFlexionDeg: 32, elbowRFlexionDeg: 28 }),
+        pose: makeNeutralPose({
+          trunkFlexionDeg: 42,
+          trunkLateralDeg: 14,
+          trunkTwistDeg: 28,
+          shoulderRFlexionDeg: 38,
+          shoulderLFlexionDeg: 32,
+          elbowRFlexionDeg: 28,
+          elbowLFlexionDeg: 26,
+        }),
         angleArcs: [{ joint: 'l5s1', refType: 'vertical_up', toJoint: 'c7', label: 'Flex. + Giro' }],
       },
     ],
@@ -1328,26 +1366,42 @@ const RAW_BOOK_FIGURE_CATALOG: BookFigureFileSpec[] = [
     title: 'Posiciones de los brazos en OWAS (b): Brazo(s) sobre nivel del hombro (Códigos 2 y 3)',
     bookDescription:
       'Tabla 4.39 OWAS — Código 2: un brazo al nivel o sobre el hombro; Código 3: ambos brazos al nivel o por encima de los hombros.',
-    bodiesRule: '1',
-    widthPx: 480,
-    heightPx: 640,
-    renderMode: '3d_single',
+    bodiesRule: '2',
+    widthPx: 800,
+    heightPx: 520,
+    renderMode: '3d_dual',
     panels: [
       {
-        subTitle: 'Códigos 2–3: Elevación sobre nivel del hombro',
-        scoreBadge: 'Dígitos 2–3',
+        subTitle: 'Código 2: Un brazo al nivel o sobre hombro',
+        scoreBadge: 'Dígito 2',
         focusZone: 'full_body',
         cameraPreset: 'frontal',
         pose: makeNeutralPose({
-          shoulderLFlexionDeg: 125,
-          shoulderLAbductionDeg: 38,
-          elbowLFlexionDeg: 38,
+          shoulderLFlexionDeg: 132,
+          shoulderLAbductionDeg: 36,
+          elbowLFlexionDeg: 34,
           shoulderRFlexionDeg: 4,
           shoulderRAbductionDeg: 5,
           elbowRFlexionDeg: 10,
           handGripMode: 'relaxed',
         }),
-        angleArcs: [{ joint: 'shoulderL', refType: 'vertical_down', toJoint: 'elbowL', label: 'Sobre hombro' }],
+        angleArcs: [{ joint: 'shoulderL', refType: 'vertical_down', toJoint: 'elbowL', label: '1 brazo ↑' }],
+      },
+      {
+        subTitle: 'Código 3: Ambos brazos sobre nivel de hombros',
+        scoreBadge: 'Dígito 3',
+        focusZone: 'full_body',
+        cameraPreset: 'frontal',
+        pose: makeNeutralPose({
+          shoulderLFlexionDeg: 138,
+          shoulderLAbductionDeg: 34,
+          elbowLFlexionDeg: 32,
+          shoulderRFlexionDeg: 138,
+          shoulderRAbductionDeg: 34,
+          elbowRFlexionDeg: 32,
+          handGripMode: 'relaxed',
+        }),
+        angleArcs: [{ joint: 'shoulderR', refType: 'vertical_down', toJoint: 'elbowR', label: '2 brazos ↑' }],
       },
     ],
   },
@@ -1542,9 +1596,21 @@ const RAW_BOOK_FIGURE_CATALOG: BookFigureFileSpec[] = [
         cameraPreset: 'sagittal_right',
         pose: makeNeutralPose({
           trunkFlexionDeg: 45,
+          neckFlexionDeg: -8,
           shoulderRFlexionDeg: 55,
+          shoulderLFlexionDeg: 55,
+          shoulderRAbductionDeg: -6,
+          shoulderLAbductionDeg: -6,
           elbowRFlexionDeg: 35,
+          elbowLFlexionDeg: 35,
+          hipRFlexionDeg: 14,
+          kneeRFlexionDeg: 18,
+          ankleRDorsiflexionDeg: 4,
+          hipLFlexionDeg: 14,
+          kneeLFlexionDeg: 18,
+          ankleLDorsiflexionDeg: 4,
           prop: 'box_load',
+          handGripMode: 'box_cradle',
           loadKg: 18,
           highlightGroup: 'l5s1_disc',
         }),
@@ -1593,7 +1659,7 @@ const RAW_BOOK_FIGURE_CATALOG: BookFigureFileSpec[] = [
           elbowRFlexionDeg: 32,
           elbowLFlexionDeg: 32,
           prop: 'box_load',
-          handGripMode: 'power_grip',
+          handGripMode: 'box_cradle',
           loadKg: 15,
         }),
         dimensions: [
@@ -2007,20 +2073,28 @@ const RAW_BOOK_FIGURE_CATALOG: BookFigureFileSpec[] = [
         cameraPreset: 'sagittal_right',
         pose: makeNeutralPose({
           prop: 'trench_shovel',
-          trunkFlexionDeg: 68,
-          trunkTwistDeg: 15,
-          neckFlexionDeg: 18,
-          shoulderRFlexionDeg: 62,
-          elbowRFlexionDeg: 48,
-          wristRFlexionDeg: 22,
-          hipRFlexionDeg: 25,
-          kneeRFlexionDeg: 22,
-          hipLFlexionDeg: 20,
-          kneeLFlexionDeg: 18,
+          trunkFlexionDeg: 62,
+          trunkTwistDeg: 12,
+          neckFlexionDeg: 2,
+          shoulderRFlexionDeg: 44,
+          shoulderRAbductionDeg: 6,
+          elbowRFlexionDeg: 58,
+          wristRFlexionDeg: 10,
+          shoulderLFlexionDeg: 68,
+          shoulderLAbductionDeg: -6,
+          elbowLFlexionDeg: 28,
+          wristLFlexionDeg: 12,
+          handGripMode: 'power_grip',
+          hipRFlexionDeg: 38,
+          kneeRFlexionDeg: 48,
+          ankleRDorsiflexionDeg: 10,
+          hipLFlexionDeg: 28,
+          kneeLFlexionDeg: 40,
+          ankleLDorsiflexionDeg: 12,
         }),
         angleArcs: [
-          { joint: 'l5s1', refType: 'vertical_up', toJoint: 'c7', label: 'Tronco 68° (4)' },
-          { joint: 'shoulderR', refType: 'trunk_axis', toJoint: 'elbowR', label: 'Brazo 62° (3)' },
+          { joint: 'l5s1', refType: 'vertical_up', toJoint: 'c7', label: 'Tronco 62° (4)' },
+          { joint: 'kneeR', refType: 'vertical_down', toJoint: 'ankleR', label: 'Rodilla 48° (2)' },
         ],
         forceVectors: [{ atJoint: 'l5s1', dx: 0.35, dy: 0.9, lengthPx: 54, label: 'Fc L5/S1 elevada' }],
         noteBottom: 'Esquema técnico anónimo — Puntuación C=6, D=7 → RULA Final = 7',
@@ -2122,17 +2196,26 @@ const RAW_BOOK_FIGURE_CATALOG: BookFigureFileSpec[] = [
         pose: makeNeutralPose({
           prop: 'crane_levers',
           trunkFlexionDeg: 12,
-          trunkLateralDeg: 10,
-          neckFlexionDeg: -15,
-          shoulderRFlexionDeg: 62,
-          elbowRFlexionDeg: 42,
+          trunkLateralDeg: 8,
+          neckFlexionDeg: -10,
+          shoulderRFlexionDeg: 58,
+          shoulderRAbductionDeg: 4,
+          elbowRFlexionDeg: 44,
+          forearmRPronationDeg: 45,
+          shoulderLFlexionDeg: 54,
+          shoulderLAbductionDeg: 4,
+          elbowLFlexionDeg: 48,
+          forearmLPronationDeg: -45,
+          handGripMode: 'power_grip',
           hipRFlexionDeg: 22,
           kneeRFlexionDeg: 36,
+          ankleRDorsiflexionDeg: 14,
           hipLFlexionDeg: 22,
           kneeLFlexionDeg: 36,
+          ankleLDorsiflexionDeg: 14,
         }),
         angleArcs: [
-          { joint: 'shoulderR', refType: 'trunk_axis', toJoint: 'elbowR', label: 'Brazo 62° (3)' },
+          { joint: 'shoulderR', refType: 'trunk_axis', toJoint: 'elbowR', label: 'Brazos 54°–58° (3)' },
           { joint: 'kneeR', refType: 'vertical_down', toJoint: 'ankleR', label: 'Rodillas 36° (3)' },
         ],
         noteBottom: 'Grupo A = 3 · Grupo B = 4 · Actividad = 0 → Puntuación Final REBA = 3',
@@ -2206,9 +2289,13 @@ const RAW_BOOK_FIGURE_CATALOG: BookFigureFileSpec[] = [
           kneeRFlexionDeg: 90,
           hipLFlexionDeg: 90,
           kneeLFlexionDeg: 90,
-          neckFlexionDeg: 14,
-          shoulderRFlexionDeg: 12,
+          neckFlexionDeg: 10,
+          shoulderRFlexionDeg: 14,
+          shoulderLFlexionDeg: 14,
           elbowRFlexionDeg: 88,
+          elbowLFlexionDeg: 88,
+          forearmRPronationDeg: 65,
+          forearmLPronationDeg: -65,
         }),
         angleArcs: [
           { joint: 'elbowR', refType: 'vertical_down', toJoint: 'wristR', label: 'Codo ~90°' },
@@ -2294,16 +2381,16 @@ const RAW_BOOK_FIGURE_CATALOG: BookFigureFileSpec[] = [
           prop: 'bin_to_cart',
           trunkFlexionDeg: 54,
           trunkTwistDeg: 22,
-          neckFlexionDeg: 24,
+          neckFlexionDeg: -6,
           shoulderRFlexionDeg: 62,
           shoulderLFlexionDeg: 58,
-          shoulderRAbductionDeg: -8,
-          shoulderLAbductionDeg: -8,
-          elbowRFlexionDeg: 26,
-          elbowLFlexionDeg: 28,
-          wristRFlexionDeg: 18,
-          wristLFlexionDeg: 18,
-          handGripMode: 'power_grip',
+          shoulderRAbductionDeg: -6,
+          shoulderLAbductionDeg: -6,
+          elbowRFlexionDeg: 28,
+          elbowLFlexionDeg: 30,
+          wristRFlexionDeg: 8,
+          wristLFlexionDeg: 8,
+          handGripMode: 'box_cradle',
           hipRFlexionDeg: 32,
           kneeRFlexionDeg: 42,
           ankleRDorsiflexionDeg: 10,
@@ -2314,8 +2401,7 @@ const RAW_BOOK_FIGURE_CATALOG: BookFigureFileSpec[] = [
         }),
         angleArcs: [
           { joint: 'l5s1', refType: 'vertical_up', toJoint: 'c7', label: 'Tronco 54° (+giro)' },
-          { joint: 'c7', refType: 'vertical_up', toJoint: 'head', label: 'Cuello > 20°' },
-          { joint: 'shoulderR', refType: 'trunk_axis', toJoint: 'elbowR', label: 'Brazo 62°' },
+          { joint: 'shoulderR', refType: 'trunk_axis', toJoint: 'elbowR', label: 'Brazos 58°–62°' },
           { joint: 'kneeR', refType: 'vertical_down', toJoint: 'ankleR', label: 'Rodilla 42°' },
         ],
         forceVectors: [{ atJoint: 'handR', dx: 0, dy: 1, lengthPx: 46, label: 'Bulto 10 kg (V₁=45 cm → carro 35 cm)' }],
@@ -2361,18 +2447,27 @@ const RAW_BOOK_FIGURE_CATALOG: BookFigureFileSpec[] = [
         cameraPreset: 'sagittal_right',
         pose: makeNeutralPose({
           prop: 'floor_pouches',
-          trunkFlexionDeg: 74,
-          neckFlexionDeg: 22,
-          shoulderRFlexionDeg: 78,
-          elbowRFlexionDeg: 28,
-          hipRFlexionDeg: 12,
-          kneeRFlexionDeg: 4,
-          hipLFlexionDeg: 12,
-          kneeLFlexionDeg: 4,
+          trunkFlexionDeg: 66,
+          neckFlexionDeg: -14,
+          shoulderRFlexionDeg: 68,
+          shoulderLFlexionDeg: 64,
+          shoulderRAbductionDeg: 4,
+          shoulderLAbductionDeg: 4,
+          elbowRFlexionDeg: 26,
+          elbowLFlexionDeg: 28,
+          forearmRPronationDeg: 55,
+          forearmLPronationDeg: -55,
+          handGripMode: 'pinch',
+          hipRFlexionDeg: 6,
+          kneeRFlexionDeg: 8,
+          ankleRDorsiflexionDeg: 2,
+          hipLFlexionDeg: 6,
+          kneeLFlexionDeg: 8,
+          ankleLDorsiflexionDeg: 2,
         }),
         angleArcs: [
-          { joint: 'l5s1', refType: 'vertical_up', toJoint: 'c7', label: 'Tronco > 70°' },
-          { joint: 'kneeR', refType: 'vertical_down', toJoint: 'ankleR', label: 'Rodilla ~0° (recta)' },
+          { joint: 'l5s1', refType: 'vertical_up', toJoint: 'c7', label: 'Tronco 66° (>60°)' },
+          { joint: 'kneeR', refType: 'vertical_down', toJoint: 'ankleR', label: 'Rodillas ~8° (extendidas)' },
         ],
         forceVectors: [{ atJoint: 'l5s1', dx: 0.4, dy: 0.9, lengthPx: 52, label: 'Fc L5/S1' }],
         noteBottom: 'Medida correctora: incorporar mesas de clasificación de 70 cm de altura',
@@ -2480,11 +2575,15 @@ const RAW_BOOK_FIGURE_CATALOG: BookFigureFileSpec[] = [
         cameraPreset: 'sagittal_right',
         pose: makeNeutralPose({
           prop: 'high_scanner_desk',
-          trunkFlexionDeg: 14,
-          neckFlexionDeg: 26,
+          trunkFlexionDeg: 12,
+          neckFlexionDeg: 22,
           shoulderRFlexionDeg: 36,
+          shoulderLFlexionDeg: 30,
           elbowRFlexionDeg: 78,
+          elbowLFlexionDeg: 82,
           wristRFlexionDeg: 12,
+          wristLFlexionDeg: 8,
+          handGripMode: 'power_grip',
         }),
         angleArcs: [
           { joint: 'c7', refType: 'vertical_up', toJoint: 'head', label: 'Cuello > 20° (3)' },
@@ -2518,19 +2617,20 @@ const RAW_BOOK_FIGURE_CATALOG: BookFigureFileSpec[] = [
         pose: makeNeutralPose({
           prop: 'pallet_cooler',
           trunkFlexionDeg: 44,
+          neckFlexionDeg: -6,
           hipRFlexionDeg: 38,
           kneeRFlexionDeg: 48,
-          ankleRDorsiflexionDeg: 12,
+          ankleRDorsiflexionDeg: 10,
           hipLFlexionDeg: 38,
           kneeLFlexionDeg: 48,
-          ankleLDorsiflexionDeg: 12,
+          ankleLDorsiflexionDeg: 10,
           shoulderRFlexionDeg: 48,
           shoulderLFlexionDeg: 48,
-          shoulderRAbductionDeg: -8,
-          shoulderLAbductionDeg: -8,
+          shoulderRAbductionDeg: -6,
+          shoulderLAbductionDeg: -6,
           elbowRFlexionDeg: 28,
           elbowLFlexionDeg: 28,
-          handGripMode: 'power_grip',
+          handGripMode: 'box_cradle',
           loadKg: 15,
         }),
         angleArcs: [{ joint: 'l5s1', refType: 'vertical_up', toJoint: 'c7', label: 'Tronco 44°' }],
@@ -2561,12 +2661,15 @@ const RAW_BOOK_FIGURE_CATALOG: BookFigureFileSpec[] = [
         cameraPreset: 'sagittal_right',
         pose: makeNeutralPose({
           prop: 'cold_room_high_shelf',
-          trunkFlexionDeg: -8,
-          neckFlexionDeg: -20,
-          shoulderRFlexionDeg: 122,
-          shoulderLFlexionDeg: 122,
-          elbowRFlexionDeg: 40,
-          elbowLFlexionDeg: 40,
+          trunkFlexionDeg: -6,
+          neckFlexionDeg: -16,
+          shoulderRFlexionDeg: 118,
+          shoulderLFlexionDeg: 118,
+          shoulderRAbductionDeg: -6,
+          shoulderLAbductionDeg: -6,
+          elbowRFlexionDeg: 38,
+          elbowLFlexionDeg: 38,
+          handGripMode: 'box_cradle',
           loadKg: 12,
         }),
         angleArcs: [{ joint: 'shoulderR', refType: 'trunk_axis', toJoint: 'elbowR', label: 'Brazo > 115°' }],
@@ -2618,20 +2721,22 @@ const RAW_BOOK_FIGURE_CATALOG: BookFigureFileSpec[] = [
         pose: makeNeutralPose({
           stanceMode: 'seated',
           prop: 'bus_driver_seat',
-          trunkFlexionDeg: -10,
-          neckFlexionDeg: 8,
-          shoulderRFlexionDeg: 36,
-          shoulderLFlexionDeg: 36,
-          shoulderRAbductionDeg: -7,
-          shoulderLAbductionDeg: -7,
-          elbowRFlexionDeg: 62, // apertura interior F ~118° (95°-135°)
-          elbowLFlexionDeg: 62,
-          forearmRPronationDeg: 18,
-          wristRFlexionDeg: -5,
-          wristRDeviationDeg: -8,
-          wristLFlexionDeg: -5,
+          trunkFlexionDeg: -8,
+          neckFlexionDeg: 6,
+          shoulderRFlexionDeg: 22,
+          shoulderLFlexionDeg: 22,
+          shoulderRAbductionDeg: 6,
+          shoulderLAbductionDeg: 6,
+          elbowRFlexionDeg: 58, // apertura interior F ~122° (95°-135°)
+          elbowLFlexionDeg: 58,
+          forearmRPronationDeg: 34,
+          forearmLPronationDeg: -34,
+          wristRFlexionDeg: -4,
+          wristRDeviationDeg: -6,
+          wristLFlexionDeg: -4,
+          wristLDeviationDeg: -6,
           handGripMode: 'power_grip',
-          hipRFlexionDeg: 86, // apertura tronco-muslo A ~104° (90°-110°)
+          hipRFlexionDeg: 86, // apertura tronco-muslo A ~102° (90°-110°)
           kneeRFlexionDeg: 64, // apertura interior B ~116° (110°-120°)
           ankleRDorsiflexionDeg: -12, // apertura C ~102° (100°-115°) sobre pedal
           hipLFlexionDeg: 86,
@@ -2645,7 +2750,7 @@ const RAW_BOOK_FIGURE_CATALOG: BookFigureFileSpec[] = [
           { joint: 'shoulderR', refType: 'trunk_axis', toJoint: 'elbowR', label: 'E: 10°–40°' },
           { joint: 'elbowR', refType: 'segment', parentJoint: 'shoulderR', toJoint: 'wristR', label: 'F: 95°–135°' },
         ],
-        noteBottom: 'Volante automotriz SAE J1100 (25°) · Manos en 9 y 3 · D (visión): 155°–175° · REBA = 2',
+        noteBottom: 'Volante de ómnibus / colectivo Ø 430 mm (VDV 234 / ISO 16121, 35°) · Manos 9 y 3 · REBA = 2',
       },
     ],
   },
@@ -2691,9 +2796,45 @@ export const BOOK_FIGURE_CATALOG: BookFigureFileSpec[] = RAW_BOOK_FIGURE_CATALOG
 
 const FIGURE_PHOTO_OVERRIDES_KEY = 'ergoeval_figure_photo_overrides_v1';
 let cachedPhotoOverrides: Record<string, string> | null = null;
+let serverOverridesHydrated = false;
 const photoOverrideListeners = new Set<() => void>();
 
+function persistOverridesToLocalStorage(map: Record<string, string>): void {
+  try {
+    if (Object.keys(map).length === 0) {
+      localStorage.removeItem(FIGURE_PHOTO_OVERRIDES_KEY);
+    } else {
+      localStorage.setItem(FIGURE_PHOTO_OVERRIDES_KEY, JSON.stringify(map));
+    }
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+export function hydrateServerFigureOverrides(): void {
+  if (serverOverridesHydrated || typeof window === 'undefined') return;
+  serverOverridesHydrated = true;
+  fetch('/api/figures/overrides')
+    .then((res) => (res.ok ? res.json() : null))
+    .then((data: { overrides?: Record<string, string> } | null) => {
+      if (!data?.overrides || typeof data.overrides !== 'object') return;
+      const serverEntries = Object.entries(data.overrides);
+      if (serverEntries.length === 0) return;
+      const current = readPhotoOverrides();
+      const merged = { ...current, ...data.overrides };
+      cachedPhotoOverrides = merged;
+      persistOverridesToLocalStorage(merged);
+      photoOverrideListeners.forEach((fn) => fn());
+    })
+    .catch(() => {
+      // Ignore network fallback in offline mode
+    });
+}
+
 function readPhotoOverrides(): Record<string, string> {
+  if (!serverOverridesHydrated && typeof window !== 'undefined') {
+    hydrateServerFigureOverrides();
+  }
   if (cachedPhotoOverrides) return cachedPhotoOverrides;
   try {
     const raw = localStorage.getItem(FIGURE_PHOTO_OVERRIDES_KEY);
@@ -2726,31 +2867,65 @@ export function hasCustomFigurePhotoOverride(figId: string): boolean {
 export function setCustomFigurePhotoOverride(figId: string, dataUrl: string): void {
   const next = { ...readPhotoOverrides(), [figId]: dataUrl };
   cachedPhotoOverrides = next;
-  try {
-    localStorage.setItem(FIGURE_PHOTO_OVERRIDES_KEY, JSON.stringify(next));
-  } catch {
-    // Ignore quota errors, keep in memory
-  }
+  persistOverridesToLocalStorage(next);
   photoOverrideListeners.forEach((fn) => fn());
+}
+
+/**
+ * Sube y almacena en el servidor de la app una imagen definitiva para reemplazar una figura del catálogo,
+ * sincronizando tanto el almacenamiento persistente `/public/assets/custom-figures/` como la sesión local.
+ */
+export async function saveDefinitiveFigureImageToApp(
+  figId: string,
+  dataUrl: string,
+): Promise<{ ok: boolean; url?: string; error?: string }> {
+  setCustomFigurePhotoOverride(figId, dataUrl);
+  try {
+    const res = await fetch('/api/figures/override', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ figId, dataUrl }),
+    });
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      return {
+        ok: false,
+        url: dataUrl,
+        error: errBody?.error || 'Guardado localmente; el servidor no pudo almacenar el archivo.',
+      };
+    }
+    const payload = (await res.json()) as { ok?: boolean; url?: string };
+    if (payload.url) {
+      setCustomFigurePhotoOverride(figId, payload.url);
+      return { ok: true, url: payload.url };
+    }
+    return { ok: true, url: dataUrl };
+  } catch {
+    return {
+      ok: true,
+      url: dataUrl,
+      error: 'Guardado en navegador local (modo sin conexión al servidor).',
+    };
+  }
 }
 
 export function clearCustomFigurePhotoOverride(figId: string): void {
   const next = { ...readPhotoOverrides() };
   delete next[figId];
   cachedPhotoOverrides = next;
-  try {
-    if (Object.keys(next).length === 0) {
-      localStorage.removeItem(FIGURE_PHOTO_OVERRIDES_KEY);
-    } else {
-      localStorage.setItem(FIGURE_PHOTO_OVERRIDES_KEY, JSON.stringify(next));
-    }
-  } catch {
-    // Ignore
-  }
+  persistOverridesToLocalStorage(next);
   photoOverrideListeners.forEach((fn) => fn());
+  if (typeof window !== 'undefined') {
+    fetch(`/api/figures/override/${encodeURIComponent(figId)}`, {
+      method: 'DELETE',
+    }).catch(() => {
+      // Ignore network errors
+    });
+  }
 }
 
 export function subscribeFigurePhotoOverrides(listener: () => void): () => void {
+  hydrateServerFigureOverrides();
   photoOverrideListeners.add(listener);
   return () => {
     photoOverrideListeners.delete(listener);
@@ -2759,6 +2934,280 @@ export function subscribeFigurePhotoOverrides(listener: () => void): () => void 
 
 export function countAssignedFigurePhotos(): number {
   return BOOK_FIGURE_CATALOG.filter((f) => Boolean(getEffectiveFigurePhotoUrl(f))).length;
+}
+
+// =========================================================================
+// CALIBRACIÓN Y PERSISTENCIA DE POSTURAS DE REFERENCIA EN CATÁLOGO 3D
+// =========================================================================
+
+export interface CatalogFigurePoseOverride {
+  bodiesRule: '1' | '2' | 'diagrama';
+  widthPx: number;
+  heightPx: number;
+  renderMode: '3d_single' | '3d_dual' | 'diagram' | 'real_chart';
+  panels: Panel3DSpec[];
+  updatedAt?: string;
+}
+
+const FIGURE_POSE_OVERRIDES_KEY = 'ergoeval_figure_pose_overrides_v1';
+let cachedPoseOverrides: Record<string, CatalogFigurePoseOverride> | null = null;
+let serverPoseOverridesHydrated = false;
+const poseOverrideListeners = new Set<() => void>();
+
+function clonePanelsDeep(panels: Panel3DSpec[] | undefined): Panel3DSpec[] | undefined {
+  if (!panels) return undefined;
+  return JSON.parse(JSON.stringify(panels)) as Panel3DSpec[];
+}
+
+const ORIGINAL_CATALOG_SNAPSHOT = new Map<
+  string,
+  {
+    bodiesRule: BookFigureFileSpec['bodiesRule'];
+    widthPx: number;
+    heightPx: number;
+    renderMode: BookFigureFileSpec['renderMode'];
+    panels?: Panel3DSpec[];
+  }
+>(
+  BOOK_FIGURE_CATALOG.map((item) => [
+    item.id,
+    {
+      bodiesRule: item.bodiesRule,
+      widthPx: item.widthPx,
+      heightPx: item.heightPx,
+      renderMode: item.renderMode,
+      panels: clonePanelsDeep(item.panels),
+    },
+  ]),
+);
+
+function applyPoseOverrideToCatalogEntry(figId: string, override: CatalogFigurePoseOverride): void {
+  const target = BOOK_FIGURE_CATALOG.find((f) => f.id === figId);
+  if (!target || !Array.isArray(override.panels) || override.panels.length === 0) return;
+  const cloned = clonePanelsDeep(override.panels) || [];
+  const isMulti = cloned.length >= 2;
+  target.bodiesRule = isMulti ? '2' : '1';
+  target.renderMode = isMulti ? '3d_dual' : '3d_single';
+  target.widthPx = override.widthPx || (isMulti ? 800 : 480);
+  target.heightPx = override.heightPx || (isMulti ? 520 : 640);
+  target.panels = cloned;
+}
+
+function restoreCatalogEntryFromSnapshot(figId: string): CatalogFigurePoseOverride | null {
+  const snap = ORIGINAL_CATALOG_SNAPSHOT.get(figId);
+  const target = BOOK_FIGURE_CATALOG.find((f) => f.id === figId);
+  if (!snap || !target) return null;
+  target.bodiesRule = snap.bodiesRule;
+  target.widthPx = snap.widthPx;
+  target.heightPx = snap.heightPx;
+  target.renderMode = snap.renderMode;
+  target.panels = clonePanelsDeep(snap.panels);
+  if (!target.panels) return null;
+  return {
+    bodiesRule: snap.bodiesRule,
+    widthPx: snap.widthPx,
+    heightPx: snap.heightPx,
+    renderMode: snap.renderMode,
+    panels: clonePanelsDeep(snap.panels) || [],
+  };
+}
+
+function persistPoseOverridesToLocalStorage(map: Record<string, CatalogFigurePoseOverride>): void {
+  try {
+    if (Object.keys(map).length === 0) {
+      localStorage.removeItem(FIGURE_POSE_OVERRIDES_KEY);
+    } else {
+      localStorage.setItem(FIGURE_POSE_OVERRIDES_KEY, JSON.stringify(map));
+    }
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+function readPoseOverrides(): Record<string, CatalogFigurePoseOverride> {
+  if (cachedPoseOverrides) return cachedPoseOverrides;
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(FIGURE_POSE_OVERRIDES_KEY) : null;
+    if (raw) {
+      const parsed = JSON.parse(raw) as Record<string, CatalogFigurePoseOverride>;
+      if (parsed && typeof parsed === 'object') {
+        cachedPoseOverrides = parsed;
+        Object.entries(parsed).forEach(([figId, ov]) => applyPoseOverrideToCatalogEntry(figId, ov));
+        return cachedPoseOverrides;
+      }
+    }
+  } catch {
+    // Ignore storage errors
+  }
+  cachedPoseOverrides = {};
+  return cachedPoseOverrides;
+}
+
+export function hydrateServerFigurePoseOverrides(): void {
+  if (serverPoseOverridesHydrated || typeof window === 'undefined') return;
+  serverPoseOverridesHydrated = true;
+  // Aplicar primero caché local inmediato
+  readPoseOverrides();
+  fetch('/api/figures/pose-overrides')
+    .then((res) => (res.ok ? res.json() : null))
+    .then((data: { overrides?: Record<string, CatalogFigurePoseOverride> } | null) => {
+      if (!data?.overrides || typeof data.overrides !== 'object') return;
+      const entries = Object.entries(data.overrides);
+      if (entries.length === 0) return;
+      const current = readPoseOverrides();
+      const merged = { ...current, ...data.overrides };
+      cachedPoseOverrides = merged;
+      Object.entries(merged).forEach(([figId, ov]) => applyPoseOverrideToCatalogEntry(figId, ov));
+      persistPoseOverridesToLocalStorage(merged);
+      poseOverrideListeners.forEach((fn) => fn());
+      photoOverrideListeners.forEach((fn) => fn());
+    })
+    .catch(() => {
+      // Ignore network fallback in offline mode
+    });
+}
+
+export function hasCustomFigurePoseOverride(figId: string): boolean {
+  if (!serverPoseOverridesHydrated && typeof window !== 'undefined') {
+    hydrateServerFigurePoseOverrides();
+  }
+  const map = readPoseOverrides();
+  return Boolean(map[figId]);
+}
+
+export function subscribeFigurePoseOverrides(listener: () => void): () => void {
+  hydrateServerFigurePoseOverrides();
+  poseOverrideListeners.add(listener);
+  return () => {
+    poseOverrideListeners.delete(listener);
+  };
+}
+
+export async function saveDefinitiveFigurePoseToCatalog(
+  figId: string,
+  panels: Panel3DSpec[],
+  dimensions?: { widthPx?: number; heightPx?: number },
+): Promise<{ ok: boolean; catalogFileUpdated?: boolean; error?: string }> {
+  const clonedPanels = clonePanelsDeep(panels) || [];
+  const isMulti = clonedPanels.length >= 2;
+  const overrideEntry: CatalogFigurePoseOverride = {
+    bodiesRule: isMulti ? '2' : '1',
+    widthPx: dimensions?.widthPx || (isMulti ? 800 : 480),
+    heightPx: dimensions?.heightPx || (isMulti ? 520 : 640),
+    renderMode: isMulti ? '3d_dual' : '3d_single',
+    panels: clonedPanels,
+    updatedAt: new Date().toISOString(),
+  };
+
+  applyPoseOverrideToCatalogEntry(figId, overrideEntry);
+  const nextMap = { ...readPoseOverrides(), [figId]: overrideEntry };
+  cachedPoseOverrides = nextMap;
+  persistPoseOverridesToLocalStorage(nextMap);
+  poseOverrideListeners.forEach((fn) => fn());
+  photoOverrideListeners.forEach((fn) => fn());
+
+  try {
+    const res = await fetch('/api/figures/pose-override', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        figId,
+        panels: clonedPanels,
+        widthPx: overrideEntry.widthPx,
+        heightPx: overrideEntry.heightPx,
+      }),
+    });
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      return {
+        ok: false,
+        error: errBody?.error || 'Guardado en sesión local; el servidor no pudo actualizar figurePlanCatalog.ts.',
+      };
+    }
+    const payload = (await res.json()) as {
+      ok?: boolean;
+      catalogFileUpdated?: boolean;
+      override?: CatalogFigurePoseOverride;
+    };
+    if (payload.override) {
+      applyPoseOverrideToCatalogEntry(figId, payload.override);
+    }
+    poseOverrideListeners.forEach((fn) => fn());
+    return { ok: true, catalogFileUpdated: Boolean(payload.catalogFileUpdated) };
+  } catch {
+    return {
+      ok: true,
+      catalogFileUpdated: false,
+      error: 'Postura guardada en memoria local (sin conexión al servidor).',
+    };
+  }
+}
+
+export async function clearCustomFigurePoseOverride(figId: string): Promise<void> {
+  const restored = restoreCatalogEntryFromSnapshot(figId);
+  const next = { ...readPoseOverrides() };
+  delete next[figId];
+  cachedPoseOverrides = next;
+  persistPoseOverridesToLocalStorage(next);
+  poseOverrideListeners.forEach((fn) => fn());
+  photoOverrideListeners.forEach((fn) => fn());
+
+  if (typeof window !== 'undefined') {
+    if (restored) {
+      // Restaurar también el bloque fuente en figurePlanCatalog.ts y luego limpiar el override activo
+      await fetch('/api/figures/pose-override', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          figId,
+          panels: restored.panels,
+          widthPx: restored.widthPx,
+          heightPx: restored.heightPx,
+        }),
+      }).catch(() => undefined);
+    }
+    await fetch(`/api/figures/pose-override/${encodeURIComponent(figId)}`, {
+      method: 'DELETE',
+    }).catch(() => undefined);
+  }
+}
+
+export async function extractFigurePoseFromImage(params: {
+  imageDataUrl: string;
+  figId: string;
+  title: string;
+  bookDescription: string;
+  expectedBodiesCount?: number;
+}): Promise<{ ok: boolean; bodiesCount?: number; panels?: Panel3DSpec[]; error?: string }> {
+  try {
+    const res = await fetch('/api/figures/extract-pose', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      bodiesCount?: number;
+      panels?: Panel3DSpec[];
+      error?: string;
+    };
+    if (!res.ok || !data.panels || data.panels.length === 0) {
+      return {
+        ok: false,
+        error: data.error || 'No fue posible extraer automáticamente la postura desde la imagen.',
+      };
+    }
+    return {
+      ok: true,
+      bodiesCount: data.bodiesCount || data.panels.length,
+      panels: data.panels,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'Error de red al analizar la imagen.',
+    };
+  }
 }
 
 /**

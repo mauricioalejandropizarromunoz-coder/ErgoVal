@@ -10,6 +10,7 @@ import {
   ForceVectorAnnotation,
   JointKey,
   Panel3DSpec,
+  PosturePose3D,
   RenderedPngResult,
   ScenePropType,
 } from '../types/figurePlan';
@@ -41,6 +42,8 @@ export interface FigureRenderOptions {
    * (muñeca, tobillo, piernas). Por defecto usa DEFAULT_FORCE_FULL_BODY.
    */
   forceFullBody?: boolean;
+  /** Índice del panel activo (0 = Cuerpo A, 1 = Cuerpo B, ...) para resaltado visual en edición multicuerpo. */
+  activePanelHighlightIdx?: number;
 }
 
 export const DEFAULT_ORBIT_OVERRIDE: CameraOrbitOverride = {
@@ -392,9 +395,9 @@ function configureStudioLighting(
   rimLight.position.set(0.4, 2.4, -2.8);
   scene.add(rimLight);
 
-  // Soft studio contact-shadow catcher plane on floor y = 0
+  // Soft studio contact-shadow catcher plane on floor y = 0 (amplio para desplazamientos a pie)
   const shadowFloor = new THREE.Mesh(
-    new THREE.PlaneGeometry(4.5, 4.5),
+    new THREE.PlaneGeometry(6.8, 6.8),
     new THREE.ShadowMaterial({ color: 0x0f172a, opacity: 0.22 }),
   );
   shadowFloor.rotation.x = -Math.PI / 2;
@@ -779,12 +782,32 @@ function clearPropsGroup(propsRoot: THREE.Group): void {
   }
 }
 
+function computeBimanualBoxPlacement(
+  palmR: THREE.Vector3,
+  palmL: THREE.Vector3,
+  defaultWidth: number,
+  minCenterY: number,
+): { x: number; y: number; z: number; boxW: number } {
+  const spanX = Math.abs(palmL.x - palmR.x);
+  const boxW = Math.max(
+    0.21,
+    Math.min(defaultWidth, spanX > 0.14 ? spanX - 0.018 : defaultWidth),
+  );
+  return {
+    x: (palmR.x + palmL.x) * 0.5,
+    y: Math.max(minCenterY, (palmR.y + palmL.y) * 0.5 + 0.018),
+    z: (palmR.z + palmL.z) * 0.5 + 0.038,
+    boxW,
+  };
+}
+
 function buildSceneProp(
   rig: GlbAvatarRig,
-  prop: ScenePropType,
+  pose: PosturePose3D,
   isSoftwareRenderer: boolean,
 ): void {
   clearPropsGroup(rig.propsRoot);
+  const prop = pose.prop || 'none';
   if (!prop || prop === 'none') return;
 
   const structMat = new THREE.MeshStandardMaterial({
@@ -831,6 +854,8 @@ function buildSceneProp(
   rig.joints.pelvis.getWorldPosition(pelvisWorld);
   const footRWorld = new THREE.Vector3();
   rig.joints.footR.getWorldPosition(footRWorld);
+  const footLWorld = new THREE.Vector3();
+  rig.joints.footL.getWorldPosition(footLWorld);
 
   const palmR = new THREE.Vector3(
     (wristRWorld.x + handWorld.x) * 0.5,
@@ -843,17 +868,19 @@ function buildSceneProp(
     (wristLWorld.z + handLWorld.z) * 0.5,
   );
 
+  const detachedPhase = pose.loadDetachedPhase || 'carried';
+
   switch (prop) {
     case 'chair': {
       const seat = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.04, 0.42), structMat);
-      seat.position.set(0, pelvisWorld.y - 0.08, pelvisWorld.z + 0.04);
+      seat.position.set(pelvisWorld.x, pelvisWorld.y - 0.08, pelvisWorld.z + 0.04);
       const back = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.46, 0.04), structMat);
-      back.position.set(0, pelvisWorld.y + 0.16, pelvisWorld.z - 0.16);
+      back.position.set(pelvisWorld.x, pelvisWorld.y + 0.16, pelvisWorld.z - 0.16);
       const pedH = Math.max(0.18, pelvisWorld.y - 0.1);
       const ped = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, pedH, 16), darkMetalMat);
-      ped.position.set(0, pedH / 2, pelvisWorld.z);
+      ped.position.set(pelvisWorld.x, pedH / 2, pelvisWorld.z);
       const basePlate = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.02, 20), darkMetalMat);
-      basePlate.position.set(0, 0.01, pelvisWorld.z);
+      basePlate.position.set(pelvisWorld.x, 0.01, pelvisWorld.z);
       addPropMesh(seat);
       addPropMesh(back);
       addPropMesh(ped);
@@ -861,87 +888,86 @@ function buildSceneProp(
       break;
     }
     case 'bus_driver_seat': {
-      // Diseño automotriz real según SAE J1100 / ISO 16121 / VDV 234:
-      // 1. Butaca automotriz ergonómica con pétalos laterales, inclinación antideslizamiento (-5°),
-      //    respaldo reclinado (-10°), apoyacabezas de doble vástago y correderas sobre el piso.
+      // Puesto de conducción de Ómnibus / Colectivo Urbano e Interurbano (VDV 234 / ISO 16121 / Tabla 13.4):
+      // 1. Butaca neumática con pétalos laterales, regulación longitudinal en rieles y base de suspensión.
+      const cabX = pelvisWorld.x;
       const seatY = pelvisWorld.y - 0.085;
       const seatZ = pelvisWorld.z + 0.065;
-      const seatPan = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.06, 0.45), structMat);
-      seatPan.position.set(0, seatY, seatZ);
-      seatPan.rotation.x = -5 * DEG2RAD;
+      const seatPan = new THREE.Mesh(new THREE.BoxGeometry(0.47, 0.06, 0.45), structMat);
+      seatPan.position.set(cabX, seatY, seatZ);
+      seatPan.rotation.x = -4 * DEG2RAD;
       addPropMesh(seatPan);
 
-      for (const bx of [-0.215, 0.215]) {
-        const thighBolster = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.078, 0.43), darkMetalMat);
-        thighBolster.position.set(bx, seatY + 0.022, seatZ);
-        thighBolster.rotation.x = -5 * DEG2RAD;
+      for (const bx of [-0.22, 0.22]) {
+        const thighBolster = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.076, 0.43), darkMetalMat);
+        thighBolster.position.set(cabX + bx, seatY + 0.02, seatZ);
+        thighBolster.rotation.x = -4 * DEG2RAD;
         addPropMesh(thighBolster);
       }
 
       const backY = pelvisWorld.y + 0.205;
       const backZ = pelvisWorld.z - 0.175;
-      const backrest = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.53, 0.055), structMat);
-      backrest.position.set(0, backY, backZ);
+      const backrest = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.53, 0.055), structMat);
+      backrest.position.set(cabX, backY, backZ);
       backrest.rotation.x = -10 * DEG2RAD;
       addPropMesh(backrest);
 
-      for (const bx of [-0.205, 0.205]) {
+      for (const bx of [-0.21, 0.21]) {
         const sideBolster = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.46, 0.08), darkMetalMat);
-        sideBolster.position.set(bx, backY - 0.01, backZ + 0.018);
+        sideBolster.position.set(cabX + bx, backY - 0.01, backZ + 0.018);
         sideBolster.rotation.x = -10 * DEG2RAD;
         addPropMesh(sideBolster);
       }
 
       for (const px of [-0.065, 0.065]) {
         const post = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.007, 0.1, 10), darkMetalMat);
-        post.position.set(px, pelvisWorld.y + 0.485, pelvisWorld.z - 0.222);
+        post.position.set(cabX + px, pelvisWorld.y + 0.485, pelvisWorld.z - 0.222);
         post.rotation.x = -10 * DEG2RAD;
         addPropMesh(post);
       }
       const headrest = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.165, 0.065), elastomerMat);
-      headrest.position.set(0, pelvisWorld.y + 0.56, pelvisWorld.z - 0.232);
+      headrest.position.set(cabX, pelvisWorld.y + 0.56, pelvisWorld.z - 0.232);
       headrest.rotation.x = -6 * DEG2RAD;
       addPropMesh(headrest);
 
       const suspH = Math.max(0.14, seatY - 0.04);
       const suspPedestal = new THREE.Mesh(new THREE.BoxGeometry(0.26, suspH, 0.28), darkMetalMat);
-      suspPedestal.position.set(0, suspH * 0.5 + 0.022, pelvisWorld.z + 0.02);
+      suspPedestal.position.set(cabX, suspH * 0.5 + 0.022, pelvisWorld.z + 0.02);
       addPropMesh(suspPedestal);
 
       for (const rx of [-0.155, 0.155]) {
         const slideRail = new THREE.Mesh(new THREE.BoxGeometry(0.036, 0.024, 0.48), elastomerMat);
-        slideRail.position.set(rx, 0.012, pelvisWorld.z + 0.04);
+        slideRail.position.set(cabX + rx, 0.012, pelvisWorld.z + 0.04);
         addPropMesh(slideRail);
       }
 
-      // 2. Volante automotriz real (SAE J1100 ángulo A18 = 25° respecto a la horizontal de columna,
-      //    aro verticalizado a 25° frente al pecho del conductor, centro cóncavo "dished" con módulo airbag,
-      //    3 rayos anatómicos 9-3-6 y apoyos de pulgar).
+      // 2. Volante de Ómnibus / Colectivo (Ø 430 mm, aro más plano inclinado 55° respecto a la vertical = 35° sobre horizontal,
+      //    situado a nivel bajo sobre el regazo/abdomen del chofer, con columna descendente al piso de cabina).
+      const wheelRadius = Math.max(0.195, Math.min(0.22, Math.abs(palmL.x - palmR.x) * 0.52));
+      const wheelTiltRad = 55 * DEG2RAD; // 35° respecto a la horizontal (típico de colectivo/ómnibus VDV 234)
+      const hubDishDepth = 0.032;
+
       const wheelCenter = new THREE.Vector3(
         (palmR.x + palmL.x) * 0.5,
-        (palmR.y + palmL.y) * 0.5,
-        (palmR.z + palmL.z) * 0.5 + 0.012,
+        Math.min(pelvisWorld.y + 0.185, (palmR.y + palmL.y) * 0.5 - 0.008),
+        (palmR.z + palmL.z) * 0.5 + 0.018,
       );
-      const wheelRadius = Math.max(0.165, Math.min(0.195, Math.abs(palmL.x - palmR.x) * 0.5));
-      const wheelTiltRad = 25 * DEG2RAD; // Inclinación automotriz real (25° respecto a la vertical)
-      const hubDishDepth = 0.036; // Profundidad cóncava del núcleo airbag respecto al plano del aro
 
       const wheelAssembly = new THREE.Group();
       wheelAssembly.position.copy(wheelCenter);
       wheelAssembly.rotation.x = wheelTiltRad;
 
-      // Aro circular forrado en elastómero con engrosamientos ergonómicos en 10-2 / 9-3
       const wheelRim = new THREE.Mesh(
-        new THREE.TorusGeometry(wheelRadius, 0.0175, 20, 56),
+        new THREE.TorusGeometry(wheelRadius, 0.0185, 20, 56),
         elastomerMat,
       );
       wheelRim.castShadow = !isSoftwareRenderer;
       wheelRim.receiveShadow = !isSoftwareRenderer;
       wheelAssembly.add(wheelRim);
 
-      for (const gripArcStart of [0.12, Math.PI - 0.54]) {
+      for (const gripArcStart of [0.1, Math.PI - 0.52]) {
         const thumbBolster = new THREE.Mesh(
-          new THREE.TorusGeometry(wheelRadius, 0.0215, 14, 18, 0.42),
+          new THREE.TorusGeometry(wheelRadius, 0.022, 14, 18, 0.42),
           elastomerMat,
         );
         thumbBolster.rotation.z = gripArcStart;
@@ -949,9 +975,8 @@ function buildSceneProp(
         wheelAssembly.add(thumbBolster);
       }
 
-      // Módulo central de airbag / bocina desplazado hacia adelante (+Z local) para concavidad automotriz real
       const airbagPad = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.06, 0.052, 0.038, 24),
+        new THREE.CylinderGeometry(0.064, 0.056, 0.038, 24),
         darkMetalMat,
       );
       airbagPad.rotation.x = Math.PI / 2;
@@ -959,128 +984,101 @@ function buildSceneProp(
       airbagPad.castShadow = !isSoftwareRenderer;
       wheelAssembly.add(airbagPad);
 
-      const emblemRing = new THREE.Mesh(
-        new THREE.TorusGeometry(0.022, 0.0028, 10, 24),
-        binBlueMat,
-      );
-      emblemRing.position.set(0, 0, hubDishDepth - 0.02);
-      wheelAssembly.add(emblemRing);
-
-      // 3 rayos automotrices esculpidos (izquierdo 9h, derecho 3h e inferior doble 6h) desde el cubo cóncavo hasta el aro
-      const spokeSpan = Math.max(0.08, wheelRadius - 0.046);
+      const spokeSpan = Math.max(0.085, wheelRadius - 0.048);
       const dishAngle = Math.atan2(hubDishDepth, spokeSpan);
       const spokeLen = Math.hypot(spokeSpan, hubDishDepth);
 
       for (const sideSign of [-1, 1]) {
         const sideSpoke = new THREE.Mesh(
-          new THREE.BoxGeometry(spokeLen, 0.026, 0.014),
+          new THREE.BoxGeometry(spokeLen, 0.028, 0.015),
           darkMetalMat,
         );
-        sideSpoke.position.set(sideSign * (0.044 + spokeSpan * 0.5), -0.006, hubDishDepth * 0.5);
+        sideSpoke.position.set(sideSign * (0.046 + spokeSpan * 0.5), -0.004, hubDishDepth * 0.5);
         sideSpoke.rotation.y = sideSign * dishAngle;
         sideSpoke.castShadow = !isSoftwareRenderer;
         wheelAssembly.add(sideSpoke);
       }
 
-      for (const bottomOffset of [-0.018, 0.018]) {
+      for (const bottomOffset of [-0.02, 0.02]) {
         const bottomSpoke = new THREE.Mesh(
-          new THREE.BoxGeometry(0.015, spokeLen, 0.014),
+          new THREE.BoxGeometry(0.016, spokeLen, 0.015),
           darkMetalMat,
         );
-        bottomSpoke.position.set(bottomOffset, -(0.044 + spokeSpan * 0.5), hubDishDepth * 0.5);
+        bottomSpoke.position.set(bottomOffset, -(0.046 + spokeSpan * 0.5), hubDishDepth * 0.5);
         bottomSpoke.rotation.x = -dishAngle;
         bottomSpoke.castShadow = !isSoftwareRenderer;
         wheelAssembly.add(bottomSpoke);
       }
 
-      // Carcasa envolvente superior de la columna de dirección + palancas de luces/limpiaparabrisas
       const columnShroud = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.044, 0.056, 0.13, 18),
+        new THREE.CylinderGeometry(0.046, 0.058, 0.14, 18),
         darkMetalMat,
       );
       columnShroud.rotation.x = Math.PI / 2;
-      columnShroud.position.set(0, 0, hubDishDepth + 0.078);
+      columnShroud.position.set(0, 0, hubDishDepth + 0.082);
       columnShroud.castShadow = !isSoftwareRenderer;
       wheelAssembly.add(columnShroud);
 
       for (const stalkSign of [-1, 1]) {
         const stalk = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.0045, 0.006, 0.115, 10),
+          new THREE.CylinderGeometry(0.005, 0.0065, 0.125, 10),
           elastomerMat,
         );
-        stalk.rotation.z = (Math.PI / 2) - stalkSign * 0.18;
-        stalk.position.set(stalkSign * 0.085, 0.014, hubDishDepth + 0.062);
+        stalk.rotation.z = Math.PI / 2 - stalkSign * 0.16;
+        stalk.position.set(stalkSign * 0.09, 0.01, hubDishDepth + 0.065);
         wheelAssembly.add(stalk);
       }
 
       rig.propsRoot.add(wheelAssembly);
 
-      // 3. Columna telescópica proyectada hacia adelante (+Z) e inclinada -25° hacia el torpedo/tablero automotriz
-      const colDir = new THREE.Vector3(
-        0,
-        -Math.sin(wheelTiltRad),
-        Math.cos(wheelTiltRad),
-      ).normalize();
-      const colLen = 0.34;
-      const shaftStart = wheelCenter.clone().addScaledVector(colDir, 0.12);
+      // 3. Columna de dirección de colectivo anclada desde el cubo del volante hasta la caja de dirección en el piso (y = 0)
+      const colFloorBase = new THREE.Vector3(
+        wheelCenter.x,
+        0.04,
+        Math.max(wheelCenter.z + 0.24, footRWorld.z - 0.04),
+      );
+      const colSpanVec = colFloorBase.clone().sub(wheelCenter);
+      const colLen = Math.max(0.28, colSpanVec.length() - 0.08);
+      const colUnit = colSpanVec.clone().normalize();
       const steeringShaft = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.022, 0.026, colLen, 16),
+        new THREE.CylinderGeometry(0.026, 0.032, colLen, 16),
         darkMetalMat,
       );
-      steeringShaft.position.copy(shaftStart).addScaledVector(colDir, colLen * 0.5);
-      steeringShaft.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), colDir.clone().negate());
+      steeringShaft.position.copy(wheelCenter).addScaledVector(colUnit, 0.06 + colLen * 0.5);
+      steeringShaft.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), colUnit.clone().negate());
       addPropMesh(steeringShaft);
 
-      // 4. Tablero frontal automotriz (torpedo + visera curva de cuadro de instrumentos / velocímetro)
-      const dashEntry = shaftStart.clone().addScaledVector(colDir, colLen);
-      const dashFrontZ = Math.max(dashEntry.z + 0.08, footRWorld.z + 0.06);
-      const dashTopY = Math.max(wheelCenter.y + 0.035, dashEntry.y + 0.16);
+      const floorBoot = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.075, 0.08, 16), elastomerMat);
+      floorBoot.position.set(colFloorBase.x, 0.04, colFloorBase.z);
+      addPropMesh(floorBoot);
 
-      const dashUpperCowl = new THREE.Mesh(
-        new THREE.BoxGeometry(0.62, 0.16, 0.24),
+      // 4. Consola/tablero bajo de colectivo (despejando completamente el campo visual frontal D: 155°-175°)
+      const dashFrontZ = Math.max(colFloorBase.z + 0.12, footRWorld.z + 0.08);
+      const dashBodyH = Math.max(0.36, wheelCenter.y - 0.08);
+      const dashConsole = new THREE.Mesh(
+        new THREE.BoxGeometry(0.66, dashBodyH, 0.22),
         structMat,
       );
-      dashUpperCowl.position.set(0, dashTopY - 0.06, dashFrontZ);
-      dashUpperCowl.rotation.x = -8 * DEG2RAD;
-      addPropMesh(dashUpperCowl);
+      dashConsole.position.set(cabX, dashBodyH * 0.5, dashFrontZ);
+      addPropMesh(dashConsole);
 
-      // Visera superior del cuadro de instrumentos (cúpula de relojes frente al conductor)
-      const clusterHood = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.135, 0.145, 0.18, 20, 1, false, 0, Math.PI),
+      const clusterPod = new THREE.Mesh(
+        new THREE.BoxGeometry(0.32, 0.09, 0.14),
         darkMetalMat,
       );
-      clusterHood.rotation.z = Math.PI / 2;
-      clusterHood.rotation.y = Math.PI / 2;
-      clusterHood.position.set(0, dashTopY + 0.015, dashFrontZ - 0.03);
-      addPropMesh(clusterHood);
+      clusterPod.position.set(cabX, dashBodyH + 0.035, dashFrontZ - 0.05);
+      clusterPod.rotation.x = -26 * DEG2RAD;
+      addPropMesh(clusterPod);
 
-      // Pared cortafuegos (firewall) inclinada + piso de pedalera y pedales suspendidos de acelerador y freno
-      const firewallH = Math.max(0.32, dashTopY - 0.12);
-      const firewall = new THREE.Mesh(
-        new THREE.BoxGeometry(0.6, firewallH, 0.06),
-        structMat,
-      );
-      firewall.position.set(0, firewallH * 0.5, dashFrontZ + 0.1);
-      firewall.rotation.x = 18 * DEG2RAD;
-      addPropMesh(firewall);
-
-      const footLWorld = new THREE.Vector3();
-      rig.joints.footL.getWorldPosition(footLWorld);
-
-      // Pedal de acelerador bajo pie derecho (Ángulo C: 100°–115°) y pedal de freno junto al pie izquierdo
-      const accelPad = new THREE.Mesh(new THREE.BoxGeometry(0.065, 0.014, 0.17), elastomerMat);
-      accelPad.position.set(footRWorld.x, Math.max(0.042, footRWorld.y - 0.014), footRWorld.z + 0.015);
-      accelPad.rotation.x = -34 * DEG2RAD;
+      // Pedales de ómnibus (acelerador de piso articulado y pedal de freno neumático)
+      const accelPad = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.015, 0.19), elastomerMat);
+      accelPad.position.set(footRWorld.x, Math.max(0.042, footRWorld.y - 0.012), footRWorld.z + 0.018);
+      accelPad.rotation.x = -32 * DEG2RAD;
       addPropMesh(accelPad);
 
-      const accelArm = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.007, 0.22, 10), darkMetalMat);
-      accelArm.position.set(footRWorld.x, Math.max(0.15, footRWorld.y + 0.09), footRWorld.z + 0.065);
-      accelArm.rotation.x = -22 * DEG2RAD;
-      addPropMesh(accelArm);
-
-      const brakePad = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.016, 0.075), elastomerMat);
-      brakePad.position.set(0.02, Math.max(0.085, footLWorld.y + 0.025), footRWorld.z + 0.01);
-      brakePad.rotation.x = -38 * DEG2RAD;
+      const brakePad = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.016, 0.085), elastomerMat);
+      brakePad.position.set(cabX + 0.02, Math.max(0.075, footLWorld.y + 0.02), footRWorld.z + 0.01);
+      brakePad.rotation.x = -34 * DEG2RAD;
       addPropMesh(brakePad);
       break;
     }
@@ -1091,14 +1089,13 @@ function buildSceneProp(
       const deskH = prop === 'high_scanner_desk' ? 0.99 : Math.max(0.68, handWorld.y - 0.035);
       const deskW = 0.78;
       const deskD = 0.52;
-      const deskZ = handWorld.z + 0.2;
+      const deskZ = 0.44;
 
       const top = new THREE.Mesh(new THREE.BoxGeometry(deskW, 0.032, deskD), structMat);
       top.position.set(0, deskH, deskZ);
       addPropMesh(top);
 
       if (prop === 'high_scanner_desk') {
-        // Mueble cerrado de 99 cm sin hueco para piernas (Fig. 12.7) + terminal de escaneo
         const cabinetBody = new THREE.Mesh(
           new THREE.BoxGeometry(deskW - 0.04, Math.max(0.2, deskH - 0.02), deskD - 0.04),
           binBlueMat,
@@ -1110,8 +1107,12 @@ function buildSceneProp(
         scannerScreen.position.set(0, deskH + 0.14, deskZ + 0.1);
         scannerScreen.rotation.x = -18 * DEG2RAD;
         addPropMesh(scannerScreen);
+
+        // Paquete pequeño en mostrador sostenido por mano izquierda durante el escaneo
+        const smallParcel = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.11, 0.16), loadMat);
+        smallParcel.position.set(0.08, deskH + 0.07, deskZ - 0.08);
+        addPropMesh(smallParcel);
       } else {
-        // 4 patas estructurales apoyadas en suelo (y = 0) + travesaño posterior para realismo físico
         const legH = Math.max(0.2, deskH - 0.016);
         for (const [lx, lz] of [
           [-deskW * 0.44, deskZ - deskD * 0.42],
@@ -1147,86 +1148,101 @@ function buildSceneProp(
       break;
     }
     case 'box_load': {
-      const midX = (palmR.x + palmL.x) * 0.5;
-      const midY = Math.max(0.115, (palmR.y + palmL.y) * 0.5);
-      const midZ = Math.max(palmR.z, palmL.z) + 0.045;
-      const box = new THREE.Mesh(new THREE.BoxGeometry(0.31, 0.22, 0.26), loadMat);
-      box.position.set(midX, midY, midZ);
-      addPropMesh(box);
-      break;
-    }
-    case 'pallet_cooler': {
-      const midX = (palmR.x + palmL.x) * 0.5;
-      const midY = Math.max(0.24, (palmR.y + palmL.y) * 0.5);
-      const midZ = Math.max(palmR.z, palmL.z) + 0.06;
-
-      // Nevera térmica de pedidos (40x50x50 cm escalada proporcionalmente + tapa aislante)
-      const coolerBody = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.26, 0.3), binBlueMat);
-      coolerBody.position.set(midX, midY - 0.01, midZ);
-      const coolerLid = new THREE.Mesh(new THREE.BoxGeometry(0.365, 0.04, 0.315), darkMetalMat);
-      coolerLid.position.set(midX, midY + 0.13, midZ);
-      addPropMesh(coolerBody);
-      addPropMesh(coolerLid);
-
-      // Pallet industrial de madera/plástico apoyado a ras de suelo (y = 0..0.12 m)
-      const palletTop = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.028, 0.54), loadMat);
-      palletTop.position.set(0, 0.106, midZ + 0.02);
-      addPropMesh(palletTop);
-      for (const sx of [-0.26, 0, 0.26]) {
-        const block = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.092, 0.54), darkMetalMat);
-        block.position.set(sx, 0.046, midZ + 0.02);
-        addPropMesh(block);
+      if (detachedPhase === 'origin_rest') {
+        const skid = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.08, 0.42), darkMetalMat);
+        skid.position.set(-0.24, 0.04, 0.36);
+        addPropMesh(skid);
+        const box = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.21, 0.25), loadMat);
+        box.position.set(-0.24, 0.185, 0.36);
+        addPropMesh(box);
+      } else if (detachedPhase === 'dest_rest') {
+        const tableTop = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.03, 0.42), structMat);
+        tableTop.position.set(0.26, 0.86, 0.46);
+        addPropMesh(tableTop);
+        for (const [lx, lz] of [
+          [0.03, 0.29],
+          [0.49, 0.29],
+          [0.03, 0.63],
+          [0.49, 0.63],
+        ]) {
+          const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.85, 10), darkMetalMat);
+          leg.position.set(lx, 0.425, lz);
+          addPropMesh(leg);
+        }
+        const box = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.21, 0.25), loadMat);
+        box.position.set(0.26, 0.98, 0.46);
+        addPropMesh(box);
+      } else {
+        const { x, y, z, boxW } = computeBimanualBoxPlacement(palmR, palmL, 0.28, 0.115);
+        const box = new THREE.Mesh(new THREE.BoxGeometry(boxW, 0.21, 0.25), loadMat);
+        box.position.set(x, y, z);
+        box.rotation.y = (pose.rootYawDeg ?? 0) * DEG2RAD;
+        addPropMesh(box);
       }
       break;
     }
+    case 'pallet_cooler': {
+      // Pallet industrial SIEMPRE FIJO sobre el suelo del estudio (nunca arrastrado por las manos)
+      const palletZ = 0.40;
+      const palletTop = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.028, 0.54), loadMat);
+      palletTop.position.set(0, 0.106, palletZ);
+      addPropMesh(palletTop);
+      for (const sx of [-0.26, 0, 0.26]) {
+        const block = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.092, 0.54), darkMetalMat);
+        block.position.set(sx, 0.046, palletZ);
+        addPropMesh(block);
+      }
+
+      const { x, y, z, boxW } =
+        detachedPhase === 'origin_rest'
+          ? { x: 0, y: 0.26, z: palletZ, boxW: 0.30 }
+          : computeBimanualBoxPlacement(palmR, palmL, 0.30, 0.24);
+
+      const coolerBody = new THREE.Mesh(new THREE.BoxGeometry(boxW, 0.25, 0.28), binBlueMat);
+      coolerBody.position.set(x, y - 0.01, z);
+      const coolerLid = new THREE.Mesh(new THREE.BoxGeometry(boxW + 0.014, 0.038, 0.295), darkMetalMat);
+      coolerLid.position.set(x, y + 0.13, z);
+      addPropMesh(coolerBody);
+      addPropMesh(coolerLid);
+      break;
+    }
     case 'bin_to_cart': {
-      // Fig. 12.3: Operador extrayendo bulto de 10 kg desde el interior de un contenedor BIN hacia un CARRO plataforma
-      const midX = (palmR.x + palmL.x) * 0.5;
-      const midY = Math.max(0.34, (palmR.y + palmL.y) * 0.5);
-      const midZ = Math.max(palmR.z, palmL.z) + 0.045;
-
-      // 1. Bulto de 10 kg sujetado bimanualmente en plena extracción desde el interior del bin
-      const activeParcel = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.19, 0.24), loadMat);
-      activeParcel.position.set(midX, midY, midZ);
-      addPropMesh(activeParcel);
-
-      // 2. Contenedor industrial BIN (con pared derecha -X rebajada en corte técnico para ver manos y bultos en el interior)
-      const binZ = midZ + 0.03;
-      const binW = 0.62;
-      const binD = 0.52;
-      const wallT = 0.028;
+      // Fig. 12.3 y Muestra 8: Contenedor BIN y CARRO plataforma 100% ESTACIONARIOS en el piso (sin desplazarse con la carga)
+      const binX = -0.14;
+      const binZ = 0.44;
+      const binW = 0.60;
+      const binD = 0.50;
+      const wallT = 0.026;
 
       const binSkid = new THREE.Mesh(new THREE.BoxGeometry(binW, 0.09, binD), darkMetalMat);
-      binSkid.position.set(0, 0.045, binZ);
+      binSkid.position.set(binX, 0.045, binZ);
       addPropMesh(binSkid);
 
-      // Pared frontal alejada del operador (+Z), pared posterior próxima (-Z, rebajada bajo antebrazos), pared izquierda (+X) y corte derecho (-X)
-      const binFrontWall = new THREE.Mesh(new THREE.BoxGeometry(binW, 0.58, wallT), binBlueMat);
-      binFrontWall.position.set(0, 0.09 + 0.29, binZ + binD * 0.5 - wallT * 0.5);
+      const binFrontWall = new THREE.Mesh(new THREE.BoxGeometry(binW, 0.56, wallT), binBlueMat);
+      binFrontWall.position.set(binX, 0.09 + 0.28, binZ + binD * 0.5 - wallT * 0.5);
       addPropMesh(binFrontWall);
 
-      const nearWallH = Math.max(0.28, Math.min(0.46, midY - 0.1));
+      const nearWallH = 0.36;
       const binNearWall = new THREE.Mesh(new THREE.BoxGeometry(binW, nearWallH, wallT), binBlueMat);
-      binNearWall.position.set(0, 0.09 + nearWallH * 0.5, binZ - binD * 0.5 + wallT * 0.5);
+      binNearWall.position.set(binX, 0.09 + nearWallH * 0.5, binZ - binD * 0.5 + wallT * 0.5);
       addPropMesh(binNearWall);
 
-      const binLeftWall = new THREE.Mesh(new THREE.BoxGeometry(wallT, 0.58, binD), binBlueMat);
-      binLeftWall.position.set(binW * 0.5 - wallT * 0.5, 0.09 + 0.29, binZ);
+      const binLeftWall = new THREE.Mesh(new THREE.BoxGeometry(wallT, 0.56, binD), binBlueMat);
+      binLeftWall.position.set(binX + binW * 0.5 - wallT * 0.5, 0.09 + 0.28, binZ);
       addPropMesh(binLeftWall);
 
       const binRightCutaway = new THREE.Mesh(new THREE.BoxGeometry(wallT, 0.2, binD), binBlueMat);
-      binRightCutaway.position.set(-binW * 0.5 + wallT * 0.5, 0.09 + 0.1, binZ);
+      binRightCutaway.position.set(binX - binW * 0.5 + wallT * 0.5, 0.09 + 0.1, binZ);
       addPropMesh(binRightCutaway);
 
-      // Bulto remanente en el fondo del bin para evidenciar extracción interna
-      const innerParcel = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.16, 0.2), loadMat);
-      innerParcel.position.set(0.1, 0.17, binZ + 0.1);
+      const innerParcel = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.15, 0.19), loadMat);
+      innerParcel.position.set(binX + 0.12, 0.165, binZ + 0.08);
       addPropMesh(innerParcel);
 
-      // 3. Carro plataforma receptor (cota de depósito V₂ ≈ 35 cm según apartado 12.4.2 / Fig. 12.4)
-      const cartX = 0.22;
-      const cartZ = binZ + 0.56;
-      const cartDeckY = 0.33;
+      // Carro plataforma receptor estacionario a un paso lateral-frontal del operador
+      const cartX = 0.36;
+      const cartZ = 0.52;
+      const cartDeckY = 0.35;
       const cartDeck = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.04, 0.44), structMat);
       cartDeck.position.set(cartX, cartDeckY, cartZ);
       addPropMesh(cartDeck);
@@ -1249,7 +1265,6 @@ function buildSceneProp(
         addPropMesh(fork);
       }
 
-      // Baranda/asa tubular del carro receptor + bulto ya depositado sobre el carro
       const handlePostH = 0.56;
       for (const hx of [-0.2, 0.2]) {
         const post = new THREE.Mesh(
@@ -1264,70 +1279,200 @@ function buildSceneProp(
       crossBar.position.set(cartX, cartDeckY + handlePostH, cartZ + 0.2);
       addPropMesh(crossBar);
 
-      const cartParcel = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.18, 0.22), loadMat);
-      cartParcel.position.set(cartX, cartDeckY + 0.11, cartZ - 0.04);
+      const cartParcel = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.16, 0.20), loadMat);
+      cartParcel.position.set(cartX, cartDeckY + 0.10, cartZ + 0.06);
       addPropMesh(cartParcel);
+
+      // Bulto activo de 10 kg (en el bin al inicio, entre las manos en traslado, o sobre el carro al depositar)
+      if (detachedPhase === 'origin_rest') {
+        const activeParcel = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.18, 0.22), loadMat);
+        activeParcel.position.set(binX - 0.02, 0.34, binZ - 0.02);
+        addPropMesh(activeParcel);
+      } else if (detachedPhase === 'dest_rest') {
+        const activeParcel = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.18, 0.22), loadMat);
+        activeParcel.position.set(cartX, cartDeckY + 0.11, cartZ - 0.11);
+        addPropMesh(activeParcel);
+      } else {
+        const { x, y, z, boxW } = computeBimanualBoxPlacement(palmR, palmL, 0.26, 0.30);
+        const activeParcel = new THREE.Mesh(new THREE.BoxGeometry(boxW, 0.18, 0.22), loadMat);
+        activeParcel.position.set(x, y, z);
+        activeParcel.rotation.y = (pose.rootYawDeg ?? 0) * DEG2RAD;
+        addPropMesh(activeParcel);
+      }
       break;
     }
     case 'floor_pouches': {
-      const pouch = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.12, 0.22), loadMat);
-      pouch.position.set(0, Math.max(0.06, handWorld.y - 0.04), handWorld.z + 0.06);
-      addPropMesh(pouch);
+      // Fig. 12.5: Clasificación de bolsines de correo apoyados directamente sobre el suelo (y = 0)
+      const baseZ = Math.max(0.32, (palmR.z + palmL.z) * 0.5 + 0.03);
+      const mainPouch = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.09, 0.20), loadMat);
+      mainPouch.position.set((palmR.x + palmL.x) * 0.5, 0.045, baseZ);
+      addPropMesh(mainPouch);
+
+      const sidePouchA = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.08, 0.19), binBlueMat);
+      sidePouchA.position.set(-0.22, 0.04, baseZ + 0.14);
+      sidePouchA.rotation.y = 0.18;
+      addPropMesh(sidePouchA);
+
+      const sidePouchB = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.08, 0.19), structMat);
+      sidePouchB.position.set(0.22, 0.04, baseZ + 0.12);
+      sidePouchB.rotation.y = -0.22;
+      addPropMesh(sidePouchB);
       break;
     }
     case 'electrical_panel':
     case 'cold_room_high_shelf': {
-      const cab = new THREE.Mesh(new THREE.BoxGeometry(0.55, 1.55, 0.18), structMat);
-      cab.position.set(0, 0.82, handWorld.z + 0.18);
+      const shelfZ = 0.48;
+      const cab = new THREE.Mesh(new THREE.BoxGeometry(0.62, 1.62, 0.22), structMat);
+      cab.position.set(0, 0.81, shelfZ);
       addPropMesh(cab);
       if (prop === 'cold_room_high_shelf') {
-        const crate = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.2, 0.24), loadMat);
-        crate.position.set(0, handWorld.y + 0.04, handWorld.z + 0.08);
+        const { x, y, z, boxW } = computeBimanualBoxPlacement(palmR, palmL, 0.28, 1.15);
+        const crate = new THREE.Mesh(new THREE.BoxGeometry(boxW, 0.20, 0.24), loadMat);
+        crate.position.set(x, y, z);
         addPropMesh(crate);
       }
       break;
     }
     case 'trench_shovel': {
-      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 1.15, 14), structMat);
-      shaft.position.set(-0.08, handWorld.y - 0.25, handWorld.z + 0.18);
-      shaft.rotation.x = 0.65;
-      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.26, 0.02), loadMat);
-      blade.position.set(-0.08, Math.max(0.08, handWorld.y - 0.68), handWorld.z + 0.52);
-      blade.rotation.x = 0.65;
+      // Fig. 11.2: Pala de zanjeo sujetada BIMANUALMENTE (mano derecha en empuñadura superior D, mano izquierda en cabo medio)
+      const gripTop = palmR.clone();
+      const gripMid = palmL.clone();
+      let dirDown = gripMid.clone().sub(gripTop);
+      if (dirDown.lengthSq() < 0.015) {
+        dirDown.set(0.06, -0.62, 0.52);
+      }
+      dirDown.normalize();
+      if (dirDown.y > -0.25) {
+        dirDown.y = -0.55;
+        dirDown.normalize();
+      }
+
+      const distToFloor = Math.max(0.55, Math.min(1.18, (gripTop.y - 0.06) / Math.max(0.28, -dirDown.y)));
+      const shaftLen = Math.max(0.78, distToFloor - 0.10);
+
+      const shaft = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.016, 0.017, shaftLen, 14),
+        loadMat,
+      );
+      shaft.position.copy(gripTop).addScaledVector(dirDown, shaftLen * 0.5);
+      shaft.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), dirDown);
       addPropMesh(shaft);
+
+      // Empuñadura superior transversal en "D" en mano derecha
+      const dHandle = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.013, 0.13, 12), darkMetalMat);
+      dHandle.rotation.z = Math.PI / 2;
+      dHandle.position.copy(gripTop);
+      addPropMesh(dHandle);
+
+      // Hoja metálica de pala apoyada en tierra (y ≈ 0.06) + montículo de tierra excavada
+      const bladeCenter = gripTop.clone().addScaledVector(dirDown, shaftLen + 0.09);
+      bladeCenter.y = Math.max(0.065, bladeCenter.y);
+      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.26, 0.018), darkMetalMat);
+      blade.position.copy(bladeCenter);
+      blade.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), dirDown);
       addPropMesh(blade);
+
+      const soilMound = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.26, 0.08, 16), loadMat);
+      soilMound.position.set(bladeCenter.x, 0.04, bladeCenter.z + 0.05);
+      addPropMesh(soilMound);
       break;
     }
     case 'iron_tamper_low':
     case 'iron_tamper_high': {
-      const barY = prop === 'iron_tamper_high' ? handWorld.y - 0.35 : handWorld.y - 0.42;
-      const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 1.05, 14), structMat);
-      bar.position.set(0, Math.max(0.52, barY), handWorld.z + 0.05);
+      const midX = (palmR.x + palmL.x) * 0.5;
+      const midY = (palmR.y + palmL.y) * 0.5;
+      const midZ = (palmR.z + palmL.z) * 0.5 + 0.035;
+      const barY = prop === 'iron_tamper_high' ? midY - 0.35 : midY - 0.42;
+      const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 1.05, 14), darkMetalMat);
+      bar.position.set(midX, Math.max(0.52, barY), midZ);
       const basePlate = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.05, 0.24), loadMat);
-      basePlate.position.set(0, Math.max(0.025, barY - 0.52), handWorld.z + 0.05);
+      basePlate.position.set(midX, Math.max(0.025, barY - 0.52), midZ);
       addPropMesh(bar);
       addPropMesh(basePlate);
       break;
     }
     case 'crane_levers': {
-      const consoleBox = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.55, 0.28), structMat);
-      consoleBox.position.set(0, 0.42, handWorld.z + 0.12);
-      const lever = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.28, 12), loadMat);
-      lever.position.set(-0.08, 0.78, handWorld.z + 0.06);
-      lever.rotation.x = -0.35;
+      // Fig. 11.4: Banco lateral de válvulas de hidrogrúa con 3 palancas operadas BIMANUALMENTE (mano der. e izq. activas)
+      const consoleZ = Math.max(0.36, (palmR.z + palmL.z) * 0.5 + 0.11);
+      const consoleBox = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.62, 0.26), structMat);
+      consoleBox.position.set(0, 0.38, consoleZ);
       addPropMesh(consoleBox);
-      addPropMesh(lever);
+
+      const valveBank = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.09, 0.18), darkMetalMat);
+      valveBank.position.set(0, 0.72, consoleZ - 0.02);
+      addPropMesh(valveBank);
+
+      const leverTargetsX = [
+        Math.min(-0.09, palmR.x),
+        0,
+        Math.max(0.09, palmL.x),
+      ];
+      leverTargetsX.forEach((lx, idx) => {
+        const targetGrip =
+          idx === 0
+            ? palmR
+            : idx === 2
+              ? palmL
+              : new THREE.Vector3(0, (palmR.y + palmL.y) * 0.5, (palmR.z + palmL.z) * 0.5);
+        const basePt = new THREE.Vector3(lx, 0.75, consoleZ - 0.03);
+        const span = targetGrip.clone().sub(basePt);
+        const len = Math.max(0.18, Math.min(0.32, span.length()));
+        const dir = span.lengthSq() > 0.001 ? span.normalize() : new THREE.Vector3(0, 0.85, -0.5).normalize();
+
+        const leverRod = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.01, len, 12), darkMetalMat);
+        leverRod.position.copy(basePt).addScaledVector(dir, len * 0.5);
+        leverRod.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+        addPropMesh(leverRod);
+
+        const knob = new THREE.Mesh(new THREE.SphereGeometry(0.021, 14, 14), elastomerMat);
+        knob.position.copy(basePt).addScaledVector(dir, len);
+        addPropMesh(knob);
+      });
       break;
     }
     case 'cart_push_dynamo':
     case 'cart_pull_dynamo': {
-      const cart = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.78, 0.68), structMat);
-      cart.position.set(0, 0.46, handWorld.z + 0.44);
-      const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.5, 14), loadMat);
-      handle.rotation.z = Math.PI / 2;
-      handle.position.set(0, handWorld.y, handWorld.z + 0.08);
-      addPropMesh(cart);
-      addPropMesh(handle);
+      // Carro industrial con 4 ruedas apoyadas en suelo (y = 0) y manillar bimanual acoplado al avance del operador
+      const handleY = Math.max(0.84, (palmR.y + palmL.y) * 0.5);
+      const handleZ = (palmR.z + palmL.z) * 0.5 + 0.04;
+      const cartCenterX = (palmR.x + palmL.x) * 0.5;
+      const cartZ = handleZ + 0.34;
+      const deckY = 0.20;
+
+      const deck = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.045, 0.68), structMat);
+      deck.position.set(cartCenterX, deckY, cartZ);
+      addPropMesh(deck);
+
+      const cargoBox = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.38, 0.48), loadMat);
+      cargoBox.position.set(cartCenterX, deckY + 0.21, cartZ + 0.04);
+      addPropMesh(cargoBox);
+
+      for (const [wx, wz] of [
+        [-0.21, -0.24],
+        [0.21, -0.24],
+        [-0.21, 0.24],
+        [0.21, 0.24],
+      ]) {
+        const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.065, 0.036, 16), elastomerMat);
+        wheel.rotation.z = Math.PI / 2;
+        wheel.position.set(cartCenterX + wx, 0.065, cartZ + wz);
+        const caster = new THREE.Mesh(new THREE.BoxGeometry(0.042, deckY - 0.11, 0.055), darkMetalMat);
+        caster.position.set(cartCenterX + wx, 0.12 + (deckY - 0.12) * 0.5, cartZ + wz);
+        addPropMesh(wheel);
+        addPropMesh(caster);
+      }
+
+      const postH = Math.max(0.45, handleY - deckY);
+      for (const hx of [-0.23, 0.23]) {
+        const upright = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, postH, 12), darkMetalMat);
+        upright.position.set(cartCenterX + hx, deckY + postH * 0.5, handleZ);
+        addPropMesh(upright);
+      }
+
+      const handleBar = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.50, 14), elastomerMat);
+      handleBar.rotation.z = Math.PI / 2;
+      handleBar.position.set(cartCenterX, handleY, handleZ);
+      addPropMesh(handleBar);
       break;
     }
     case 'loading_dock_van': {
@@ -1337,109 +1482,144 @@ function buildSceneProp(
       break;
     }
     case 'conveyor_veg_line': {
-      // Línea de cinta transportadora industrial (Caso Verduras / OCRA industria alimenticia)
-      const beltY = 0.86;
-      const beltZ = Math.max(0.36, Math.max(palmR.z, palmL.z) + 0.18);
-      const beltFrame = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.07, 0.48), structMat);
-      beltFrame.position.set(0, beltY, beltZ);
+      // Línea de cinta transportadora 100% FIJA en el estudio (nunca arrastrada por las manos)
+      const beltY = 0.84;
+      const beltZ = 0.48;
+      const beltFrame = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.07, 0.46), structMat);
+      beltFrame.position.set(-0.08, beltY, beltZ);
       addPropMesh(beltFrame);
 
-      const beltSurface = new THREE.Mesh(new THREE.BoxGeometry(1.12, 0.018, 0.4), elastomerMat);
-      beltSurface.position.set(0, beltY + 0.042, beltZ);
+      const beltSurface = new THREE.Mesh(new THREE.BoxGeometry(1.12, 0.018, 0.38), elastomerMat);
+      beltSurface.position.set(-0.08, beltY + 0.042, beltZ);
       addPropMesh(beltSurface);
 
-      for (const lx of [-0.48, 0.48]) {
-        for (const lz of [beltZ - 0.19, beltZ + 0.19]) {
+      for (const lx of [-0.56, 0.40]) {
+        for (const lz of [beltZ - 0.18, beltZ + 0.18]) {
           const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, beltY, 12), darkMetalMat);
           leg.position.set(lx, beltY * 0.5, lz);
           addPropMesh(leg);
         }
       }
 
-      // Cajas agrícolas sobre la línea + bandeja/caja en manipulación
-      const crateSide = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.14, 0.24), binBlueMat);
-      crateSide.position.set(0.34, beltY + 0.12, beltZ);
+      // Tarima lateral estacionaria de depósito para descenso de gavetas
+      const sidePallet = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.11, 0.44), darkMetalMat);
+      sidePallet.position.set(0.38, 0.055, 0.36);
+      addPropMesh(sidePallet);
+
+      const crateSide = new THREE.Mesh(new THREE.BoxGeometry(0.27, 0.14, 0.22), binBlueMat);
+      crateSide.position.set(-0.38, beltY + 0.12, beltZ);
       addPropMesh(crateSide);
 
-      const heldCrate = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.16, 0.24), loadMat);
-      heldCrate.position.set(
-        (palmR.x + palmL.x) * 0.5,
-        Math.max(0.14, (palmR.y + palmL.y) * 0.5),
-        Math.max(palmR.z, palmL.z) + 0.04,
-      );
-      addPropMesh(heldCrate);
+      if (detachedPhase === 'origin_rest') {
+        const heldCrate = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.16, 0.23), loadMat);
+        heldCrate.position.set(-0.04, beltY + 0.13, beltZ - 0.04);
+        addPropMesh(heldCrate);
+      } else if (detachedPhase === 'dest_rest') {
+        const heldCrate = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.16, 0.23), loadMat);
+        heldCrate.position.set(0.38, 0.19, 0.36);
+        addPropMesh(heldCrate);
+      } else {
+        const { x, y, z, boxW } = computeBimanualBoxPlacement(palmR, palmL, 0.28, 0.16);
+        const heldCrate = new THREE.Mesh(new THREE.BoxGeometry(boxW, 0.16, 0.23), loadMat);
+        heldCrate.position.set(x, y, z);
+        heldCrate.rotation.y = (pose.rootYawDeg ?? 0) * DEG2RAD;
+        addPropMesh(heldCrate);
+      }
       break;
     }
     case 'hopper_sack_pour': {
-      // Tolva de formulación industrial PFM (vaciado de sacos en boca de carga a ~98 cm)
-      const hopperZ = Math.max(0.42, Math.max(palmR.z, palmL.z) + 0.22);
+      // Tolva inoxidable y tarima de origen 100% ESTACIONARIAS en el suelo
+      const originPallet = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.11, 0.44), darkMetalMat);
+      originPallet.position.set(-0.26, 0.055, 0.36);
+      addPropMesh(originPallet);
+
+      const hopperX = 0.24;
+      const hopperZ = 0.52;
       const rimY = 0.98;
-      const funnel = new THREE.Mesh(new THREE.CylinderGeometry(0.31, 0.13, 0.42, 20), structMat);
-      funnel.position.set(0, rimY - 0.21, hopperZ);
+      const funnel = new THREE.Mesh(new THREE.CylinderGeometry(0.30, 0.13, 0.42, 20), structMat);
+      funnel.position.set(hopperX, rimY - 0.21, hopperZ);
       addPropMesh(funnel);
 
-      const hopperRim = new THREE.Mesh(new THREE.TorusGeometry(0.31, 0.018, 12, 28), darkMetalMat);
+      const hopperRim = new THREE.Mesh(new THREE.TorusGeometry(0.30, 0.018, 12, 28), darkMetalMat);
       hopperRim.rotation.x = Math.PI / 2;
-      hopperRim.position.set(0, rimY, hopperZ);
+      hopperRim.position.set(hopperX, rimY, hopperZ);
       addPropMesh(hopperRim);
 
       const lowerChute = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.56, 16), binBlueMat);
-      lowerChute.position.set(0, 0.28, hopperZ);
+      lowerChute.position.set(hopperX, 0.28, hopperZ);
       addPropMesh(lowerChute);
 
       for (const [lx, lz] of [
-        [-0.24, hopperZ - 0.22],
-        [0.24, hopperZ - 0.22],
-        [-0.24, hopperZ + 0.22],
-        [0.24, hopperZ + 0.22],
+        [hopperX - 0.23, hopperZ - 0.21],
+        [hopperX + 0.23, hopperZ - 0.21],
+        [hopperX - 0.23, hopperZ + 0.21],
+        [hopperX + 0.23, hopperZ + 0.21],
       ]) {
         const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, rimY - 0.04, 10), darkMetalMat);
         leg.position.set(lx, (rimY - 0.04) * 0.5, lz);
         addPropMesh(leg);
       }
 
-      // Saco de materia prima sostenido bimanualmente
-      const sack = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.19, 0.25), loadMat);
-      sack.position.set(
-        (palmR.x + palmL.x) * 0.5,
-        Math.max(0.12, (palmR.y + palmL.y) * 0.5),
-        Math.max(palmR.z, palmL.z) + 0.045,
-      );
-      sack.rotation.x = palmR.y > 0.85 ? 24 * DEG2RAD : 0;
-      addPropMesh(sack);
+      if (detachedPhase === 'origin_rest') {
+        const sack = new THREE.Mesh(new THREE.BoxGeometry(0.30, 0.18, 0.24), loadMat);
+        sack.position.set(-0.26, 0.20, 0.36);
+        addPropMesh(sack);
+      } else if (detachedPhase === 'dest_rest') {
+        const sack = new THREE.Mesh(new THREE.BoxGeometry(0.30, 0.18, 0.24), loadMat);
+        sack.position.set(hopperX, rimY + 0.06, hopperZ - 0.08);
+        sack.rotation.x = 28 * DEG2RAD;
+        addPropMesh(sack);
+      } else {
+        const { x, y, z, boxW } = computeBimanualBoxPlacement(palmR, palmL, 0.30, 0.18);
+        const sack = new THREE.Mesh(new THREE.BoxGeometry(boxW, 0.18, 0.24), loadMat);
+        sack.position.set(x, y, z);
+        sack.rotation.y = (pose.rootYawDeg ?? 0) * DEG2RAD;
+        sack.rotation.x = palmR.y > 0.88 ? 22 * DEG2RAD : 0;
+        addPropMesh(sack);
+      }
       break;
     }
     case 'pallet_jack_rack': {
-      // Tarima/pallet industrial en piso + estantería de almacén + caja bimanual (Casos MMC Almacén)
-      const rackZ = 0.56;
-      const pallet = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.12, 0.48), structMat);
-      pallet.position.set(0, 0.06, 0.34);
+      // Tarima de origen y estantería industrial 100% FIJAS en el piso del almacén
+      const palletX = -0.26;
+      const palletZ = 0.36;
+      const pallet = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.12, 0.46), structMat);
+      pallet.position.set(palletX, 0.06, palletZ);
       addPropMesh(pallet);
 
-      // Estantería frontal de estiba (niveles a 1.05 m y 1.52 m)
+      const rackX = 0.24;
+      const rackZ = 0.56;
       for (const [px, pz] of [
-        [-0.36, rackZ - 0.14],
-        [0.36, rackZ - 0.14],
-        [-0.36, rackZ + 0.16],
-        [0.36, rackZ + 0.16],
+        [rackX - 0.34, rackZ - 0.14],
+        [rackX + 0.34, rackZ - 0.14],
+        [rackX - 0.34, rackZ + 0.16],
+        [rackX + 0.34, rackZ + 0.16],
       ]) {
         const post = new THREE.Mesh(new THREE.BoxGeometry(0.032, 1.68, 0.032), darkMetalMat);
         post.position.set(px, 0.84, pz);
         addPropMesh(post);
       }
       for (const shelfY of [1.06, 1.54]) {
-        const shelf = new THREE.Mesh(new THREE.BoxGeometry(0.74, 0.03, 0.32), binBlueMat);
-        shelf.position.set(0, shelfY, rackZ + 0.01);
+        const shelf = new THREE.Mesh(new THREE.BoxGeometry(0.70, 0.03, 0.32), binBlueMat);
+        shelf.position.set(rackX, shelfY, rackZ + 0.01);
         addPropMesh(shelf);
       }
 
-      const heldBox = new THREE.Mesh(new THREE.BoxGeometry(0.31, 0.22, 0.26), loadMat);
-      heldBox.position.set(
-        (palmR.x + palmL.x) * 0.5,
-        Math.max(0.13, (palmR.y + palmL.y) * 0.5),
-        Math.max(palmR.z, palmL.z) + 0.045,
-      );
-      addPropMesh(heldBox);
+      if (detachedPhase === 'origin_rest') {
+        const heldBox = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.21, 0.25), loadMat);
+        heldBox.position.set(palletX, 0.225, palletZ);
+        addPropMesh(heldBox);
+      } else if (detachedPhase === 'dest_rest') {
+        const heldBox = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.21, 0.25), loadMat);
+        heldBox.position.set(rackX, 1.18, rackZ - 0.02);
+        addPropMesh(heldBox);
+      } else {
+        const { x, y, z, boxW } = computeBimanualBoxPlacement(palmR, palmL, 0.28, 0.16);
+        const heldBox = new THREE.Mesh(new THREE.BoxGeometry(boxW, 0.21, 0.25), loadMat);
+        heldBox.position.set(x, y, z);
+        heldBox.rotation.y = (pose.rootYawDeg ?? 0) * DEG2RAD;
+        addPropMesh(heldBox);
+      }
       break;
     }
   }
@@ -1502,6 +1682,7 @@ function makeCharEulerQuat(
 
 function resetAllBonesToRest(rig: GlbAvatarRig): void {
   rig.avatarContainer.position.set(0, 0, 0);
+  rig.avatarContainer.rotation.set(0, 0, 0);
   const visited = new Set<BoneRestState>();
   rig.bones.forEach((entry) => {
     if (visited.has(entry)) return;
@@ -1602,6 +1783,19 @@ function applyPoseToGlbBones(
       if (kneeLDeg - hipLDeg < 89) hipLDeg = kneeLDeg - 90;
       ankleLDeg = Math.min(ankleLDeg, -36);
     }
+  } else if (
+    isStanding &&
+    pose.stanceMode !== 'walking' &&
+    focusZone !== 'ankle_foot'
+  ) {
+    // Equilibrio plantígrado automático: evita que el avatar quede parado sobre sus talones o puntas
+    // cuando la relación cadera-rodilla cambia sin haberse calibrado manualmente la dorsiflexión del tobillo.
+    if (Math.abs(pose.ankleRDorsiflexionDeg) < 0.5) {
+      ankleRDeg = Math.max(-24, Math.min(34, kneeRDeg - hipRDeg));
+    }
+    if (Math.abs(pose.ankleLDorsiflexionDeg) < 0.5) {
+      ankleLDeg = Math.max(-24, Math.min(34, kneeLDeg - hipLDeg));
+    }
   }
 
   // 1. Ritmo Lumbo-Pélvico:
@@ -1700,25 +1894,38 @@ function applyPoseToGlbBones(
     pose.prop === 'pallet_cooler' ||
     pose.prop === 'conveyor_veg_line' ||
     pose.prop === 'hopper_sack_pour' ||
-    pose.prop === 'pallet_jack_rack';
+    pose.prop === 'pallet_jack_rack' ||
+    pose.prop === 'cold_room_high_shelf';
 
+  // En el sistema del avatar con brazos descendidos desde T-pose:
+  // +ry rota la palma hacia abajo (pronación), mientras que -ry (-18°) supina ligeramente
+  // orientando las palmas medialmente y hacia arriba para acunar lateralmente cajas sin torsiones imposibles.
   const effectivePronoRDeg = autoPalmDownWristView
     ? 88
     : isBimanualBoxLikeProp && Math.abs(pose.forearmRPronationDeg) < 1
-      ? 20
+      ? -18
       : pose.prop === 'bus_driver_seat' && Math.abs(pose.forearmRPronationDeg) < 1
-        ? 18
+        ? 34
         : pose.forearmRPronationDeg;
 
   const isSymmetricForearmProp =
     isBimanualBoxLikeProp ||
     pose.prop === 'bus_driver_seat' ||
+    pose.prop === 'crane_levers' ||
+    pose.prop === 'trench_shovel' ||
+    pose.prop === 'iron_tamper_low' ||
+    pose.prop === 'iron_tamper_high' ||
     pose.prop === 'cart_push_dynamo' ||
     pose.prop === 'cart_pull_dynamo' ||
     pose.prop === 'office_desk_lateral' ||
     pose.prop === 'work_desk_support';
 
-  const effectivePronoLDeg = isSymmetricForearmProp ? -effectivePronoRDeg : 0;
+  const effectivePronoLDeg =
+    pose.forearmLPronationDeg !== undefined
+      ? pose.forearmLPronationDeg
+      : isSymmetricForearmProp
+        ? -effectivePronoRDeg
+        : 0;
 
   setBoneCharRotation(
     rig,
@@ -1732,6 +1939,13 @@ function applyPoseToGlbBones(
   );
 
   // 5. Muñeca: Flexión/Extensión Palmar-Dorsal y Desviación Radial/Cubital (RightHand / LeftHand)
+  const effectiveWristLDevDeg =
+    pose.wristLDeviationDeg !== undefined
+      ? pose.wristLDeviationDeg
+      : isSymmetricForearmProp
+        ? -pose.wristRDeviationDeg
+        : 0;
+
   setBoneCharRotation(
     rig,
     'RightHand',
@@ -1745,13 +1959,22 @@ function applyPoseToGlbBones(
   setBoneCharRotation(
     rig,
     'LeftHand',
-    makeCharEulerQuat(0, 0, -(pose.wristLFlexionDeg ?? 0) * DEG2RAD, 'ZXY'),
+    makeCharEulerQuat(
+      effectiveWristLDevDeg * DEG2RAD,
+      0,
+      -(pose.wristLFlexionDeg ?? 0) * DEG2RAD,
+      'ZXY',
+    ),
   );
 
   // 6. Dedos de la Mano (Thumb + Index, Middle, Ring, Pinky)
   const gripMode =
     pose.handGripMode ||
-    (pose.prop && propUsesGrip(pose.prop) ? 'power_grip' : 'relaxed');
+    (isBimanualBoxLikeProp
+      ? 'box_cradle'
+      : pose.prop && propUsesGrip(pose.prop)
+        ? 'power_grip'
+        : 'relaxed');
 
   if (focusZone === 'wrist_hand' && !pose.handGripMode) {
     curlHandFingers(rig, 'Right', 0.08, 0.06, 0.10);
@@ -1759,9 +1982,13 @@ function applyPoseToGlbBones(
   } else if (gripMode === 'pinch') {
     curlHandFingers(rig, 'Right', 0.55, 0.65, 0.52);
     curlHandFingers(rig, 'Left', 0.18, 0.16, 0.18);
+  } else if (gripMode === 'box_cradle') {
+    // Acople palmar-lateral abierto anatómico sobre las caras exteriores de cajas/bultos (sin cerrar el puño dentro del volumen)
+    curlHandFingers(rig, 'Right', 0.24, 0.28, 0.26);
+    curlHandFingers(rig, 'Left', 0.24, 0.28, 0.26);
   } else if (gripMode === 'power_grip') {
-    curlHandFingers(rig, 'Right', 0.85, 0.95, 0.58);
-    curlHandFingers(rig, 'Left', 0.85, 0.95, 0.58);
+    curlHandFingers(rig, 'Right', 0.78, 0.88, 0.54);
+    curlHandFingers(rig, 'Left', 0.78, 0.88, 0.54);
   } else {
     curlHandFingers(rig, 'Right', 0.18, 0.16, 0.18);
     curlHandFingers(rig, 'Left', 0.18, 0.16, 0.18);
@@ -1796,8 +2023,11 @@ function applyPoseToGlbBones(
   setBoneCharRotation(rig, 'LeftLeg', makeCharEulerQuat(kneeLDeg * DEG2RAD, 0, 0, 'XYZ'));
   setBoneCharRotation(rig, 'LeftFoot', makeCharEulerQuat(-ankleLDeg * DEG2RAD, 0, 0, 'XYZ'));
 
-  // 8. Apoyo Podal / de Rodillas sobre el Suelo del Estudio (y = 0)
+  // 8. Desplazamiento/Giro Espacial en Estudio y Apoyo Podal / de Rodillas sobre el Suelo (y = 0)
+  rig.avatarContainer.rotation.set(0, (pose.rootYawDeg ?? 0) * DEG2RAD, 0);
+  rig.avatarContainer.position.set(pose.rootOffsetX ?? 0, 0, pose.rootOffsetZ ?? 0);
   rig.avatarContainer.updateMatrixWorld(true);
+
   const groundCandidates: THREE.Object3D[] = [
     rig.joints.ankleR,
     rig.joints.footR,
@@ -1854,7 +2084,7 @@ function applyPoseToGlbBones(
   rig.groundShadowMesh.visible =
     focusZone !== 'wrist_hand' && focusZone !== 'neck_cervical';
 
-  buildSceneProp(rig, pose.prop || 'none', isSoftwareRenderer);
+  buildSceneProp(rig, pose, isSoftwareRenderer);
   rig.propsRoot.updateMatrixWorld(true);
 }
 
@@ -2814,6 +3044,151 @@ export function renderInteractivePose3DToCanvas(
 }
 
 /**
+ * Renderiza el Avatar 3D para el Estudio de Movimiento Libre con el Ratón / Táctil,
+ * devolviendo las coordenadas 2D proyectadas de todas las articulaciones y dibujando
+ * nodos interactivos seleccionables directamente sobre el lienzo.
+ */
+export function renderInteractiveFreeAvatarToCanvas(
+  panel: Panel3DSpec,
+  canvas: HTMLCanvasElement,
+  widthPx = 640,
+  heightPx = 560,
+  orbitOverride: CameraOrbitOverride = DEFAULT_ORBIT_OVERRIDE,
+  dpiScale = 2,
+  gizmoOptions?: {
+    showGizmos?: boolean;
+    interactiveJoints?: JointKey[];
+    selectedJoint?: JointKey | null;
+    hoveredJoint?: JointKey | null;
+    transparentBg?: boolean;
+  },
+): Record<JointKey, { x: number; y: number }> | null {
+  const scale = Math.max(1, dpiScale);
+  canvas.width = Math.round(widthPx * scale);
+  canvas.height = Math.round(heightPx * scale);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  const useTransparentBg = Boolean(gizmoOptions?.transparentBg);
+
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  if (useTransparentBg) {
+    ctx.clearRect(0, 0, widthPx, heightPx);
+  } else {
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, widthPx, heightPx);
+  }
+
+  const engine = getSharedEngine();
+  if (!engine || !engine.rig.isReady) {
+    renderInteractivePose3DToCanvas(panel, canvas, widthPx, heightPx, orbitOverride, scale, 'anatomical_skin', useTransparentBg);
+    return null;
+  }
+
+  renderSingle3DPanelIntoRect(
+    ctx,
+    engine,
+    panel,
+    { x: 0, y: 0, w: widthPx, h: heightPx },
+    orbitOverride,
+    scale,
+    useTransparentBg,
+    true,
+  );
+
+  const viewX = 6;
+  const viewY = 6;
+  const viewW = Math.max(60, widthPx - 12);
+  const viewH = Math.max(80, heightPx - 12);
+  const { center, halfExtent } = computeVisibleFocusBounds(engine.rig, panel.focusZone);
+  const camera = configureCameraForPanel(
+    engine,
+    panel.cameraPreset,
+    center,
+    halfExtent,
+    viewW / viewH,
+    orbitOverride,
+  );
+  const pts = projectJoints2D(engine.rig, camera, viewX, viewY, viewW, viewH);
+
+  if (gizmoOptions?.showGizmos !== false) {
+    const list: JointKey[] = gizmoOptions?.interactiveJoints || [
+      'head',
+      'c7',
+      'l5s1',
+      'pelvis',
+      'shoulderR',
+      'elbowR',
+      'wristR',
+      'shoulderL',
+      'elbowL',
+      'wristL',
+      'hipR',
+      'kneeR',
+      'ankleR',
+      'hipL',
+      'kneeL',
+      'ankleL',
+    ];
+
+    // Líneas guía sutiles entre articulaciones controlables
+    const bonePairs: Array<[JointKey, JointKey]> = [
+      ['pelvis', 'l5s1'],
+      ['l5s1', 'c7'],
+      ['c7', 'head'],
+      ['shoulderR', 'elbowR'],
+      ['elbowR', 'wristR'],
+      ['shoulderL', 'elbowL'],
+      ['elbowL', 'wristL'],
+      ['hipR', 'kneeR'],
+      ['kneeR', 'ankleR'],
+      ['hipL', 'kneeL'],
+      ['kneeL', 'ankleL'],
+    ];
+    ctx.save();
+    ctx.strokeStyle = 'rgba(2, 132, 199, 0.32)';
+    ctx.lineWidth = 1.6;
+    for (const [a, b] of bonePairs) {
+      const pa = pts[a];
+      const pb = pts[b];
+      if (!pa || !pb) continue;
+      ctx.beginPath();
+      ctx.moveTo(pa.x, pa.y);
+      ctx.lineTo(pb.x, pb.y);
+      ctx.stroke();
+    }
+
+    for (const jk of list) {
+      const p = pts[jk];
+      if (!p) continue;
+      const isSelected = gizmoOptions?.selectedJoint === jk;
+      const isHovered = gizmoOptions?.hoveredJoint === jk;
+      const r = isSelected ? 8.5 : isHovered ? 7.5 : 5.6;
+
+      if (isSelected || isHovered) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r + 4.5, 0, Math.PI * 2);
+        ctx.fillStyle = isSelected ? 'rgba(234, 88, 12, 0.24)' : 'rgba(2, 132, 199, 0.22)';
+        ctx.fill();
+      }
+
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = isSelected ? '#ea580c' : isHovered ? '#0284c7' : 'rgba(255, 255, 255, 0.92)';
+      ctx.fill();
+      ctx.lineWidth = isSelected ? 2.4 : 1.8;
+      ctx.strokeStyle = isSelected ? '#ffffff' : '#0284c7';
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  return pts;
+}
+
+/**
  * Renders any BookFigureFileSpec onto the provided HTMLCanvasElement using the clean PBR `.glb` avatar.
  */
 export function renderBookFigureToCanvas(
@@ -2967,45 +3342,72 @@ export function renderBookFigureToCanvas(
       ctx.fillText('Aceleración WebGL no disponible en este entorno', widthPx / 2, bodyAreaY + bodyAreaH / 2 + 12);
       ctx.restore();
     } else if (panels.length >= 2) {
-      const halfW = Math.floor(widthPx / 2);
-      renderSingle3DPanelIntoRect(
-        ctx,
-        engine,
-        panels[0],
-        { x: 0, y: bodyAreaY, w: halfW - 1, h: bodyAreaH },
-        orbitOverride,
-        scale,
-        transparentBg,
-        transparentBg,
-      );
-      renderSingle3DPanelIntoRect(
-        ctx,
-        engine,
-        panels[1],
-        { x: halfW + 1, y: bodyAreaY, w: widthPx - halfW - 1, h: bodyAreaH },
-        orbitOverride,
-        scale,
-        transparentBg,
-        transparentBg,
-      );
+      const nCols = panels.length;
+      const colW = widthPx / nCols;
+      for (let i = 0; i < nCols; i++) {
+        const x0 = Math.round(i * colW);
+        const x1 = i === nCols - 1 ? widthPx : Math.round((i + 1) * colW);
+        const padLeft = i === 0 ? 0 : 1;
+        const padRight = i === nCols - 1 ? 0 : 1;
+        const pOrbit = panels[i].orbitOverride;
+        const effectiveOrbit: CameraOrbitOverride = {
+          azimuthDeg: (pOrbit?.azimuthDeg ?? 0) + orbitOverride.azimuthDeg,
+          elevationDeg: (pOrbit?.elevationDeg ?? 0) + orbitOverride.elevationDeg,
+          zoom: (pOrbit?.zoom ?? 1) * orbitOverride.zoom,
+        };
+        renderSingle3DPanelIntoRect(
+          ctx,
+          engine,
+          panels[i],
+          { x: x0 + padLeft, y: bodyAreaY, w: x1 - x0 - padLeft - padRight, h: bodyAreaH },
+          effectiveOrbit,
+          scale,
+          transparentBg,
+          transparentBg,
+        );
+      }
 
       if (!transparentBg) {
         ctx.save();
         ctx.strokeStyle = PALETTE.border;
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(halfW, topTitleBarH);
-        ctx.lineTo(halfW, heightPx);
+        for (let i = 1; i < nCols; i++) {
+          const xDiv = Math.round(i * colW);
+          ctx.moveTo(xDiv, topTitleBarH);
+          ctx.lineTo(xDiv, heightPx);
+        }
         ctx.stroke();
+
+        if (
+          typeof options?.activePanelHighlightIdx === 'number' &&
+          options.activePanelHighlightIdx >= 0 &&
+          options.activePanelHighlightIdx < nCols
+        ) {
+          const hi = options.activePanelHighlightIdx;
+          const hx0 = Math.round(hi * colW);
+          const hx1 = hi === nCols - 1 ? widthPx : Math.round((hi + 1) * colW);
+          ctx.fillStyle = '#2563eb';
+          ctx.fillRect(hx0 + 1, bodyAreaY, hx1 - hx0 - 2, 3);
+          ctx.strokeStyle = 'rgba(37, 99, 235, 0.45)';
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(hx0 + 1, bodyAreaY + 0.75, hx1 - hx0 - 2, bodyAreaH - 1.5);
+        }
         ctx.restore();
       }
     } else if (panels.length === 1) {
+      const pOrbit = panels[0].orbitOverride;
+      const effectiveOrbit: CameraOrbitOverride = {
+        azimuthDeg: (pOrbit?.azimuthDeg ?? 0) + orbitOverride.azimuthDeg,
+        elevationDeg: (pOrbit?.elevationDeg ?? 0) + orbitOverride.elevationDeg,
+        zoom: (pOrbit?.zoom ?? 1) * orbitOverride.zoom,
+      };
       renderSingle3DPanelIntoRect(
         ctx,
         engine,
         panels[0],
         { x: 0, y: bodyAreaY, w: widthPx, h: bodyAreaH },
-        orbitOverride,
+        effectiveOrbit,
         scale,
         transparentBg,
         transparentBg,
