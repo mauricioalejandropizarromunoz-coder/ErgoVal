@@ -1,27 +1,24 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import JSZip from 'jszip';
-import { trackVideoFrames } from '../utils/poseExtractor';
 import {
-  Archive,
   ArrowLeft,
   BookOpen,
   Box,
-  CheckCircle2,
-   ChevronLeft,
-  ChevronRight,
+  Check,
   Crosshair,
   Download,
-  Eye,
-  FileDown,
   FolderArchive,
-  Image as ImageIcon,
-  Link2,
+  ImagePlus,
+  Layers,
+  Move3d,
+  Plus,
+  RefreshCw,
   RotateCcw,
+  Save,
   Search,
   Sliders,
   Sparkles,
-  Table,
-  Upload,
+  Trash2,
   X,
 } from 'lucide-react';
 import {
@@ -31,1278 +28,552 @@ import {
   JointKey,
   Panel3DSpec,
   PosturePose3D,
+  ScenePropType,
 } from '../types/figurePlan';
 import {
   BOOK_FIGURE_CATALOG,
   clearCustomFigurePhotoOverride,
-  countAssignedFigurePhotos,
+  clearCustomFigurePoseOverride,
+  extractFigurePoseFromImage,
   getEffectiveFigurePhotoUrl,
   hasCustomFigurePhotoOverride,
+  hasCustomFigurePoseOverride,
   makeNeutralPose,
   parseBiomechanicalPromptToPanel,
   saveDefinitiveFigureImageToApp,
+  saveDefinitiveFigurePoseToCatalog,
   subscribeFigurePhotoOverrides,
+  subscribeFigurePoseOverrides,
 } from '../utils/figurePlanCatalog';
 import {
   CameraOrbitOverride,
   DEFAULT_ORBIT_OVERRIDE,
-  FigureRenderOptions,
+  ensureAvatarGlbLoaded,
   renderBookFigureToCanvas,
   renderBookFigureToPng,
+  renderInteractiveFreeAvatarToCanvas,
   subscribeAvatarGlbLoaded,
 } from '../utils/biomech3dRenderer';
-import {
-  exportCanvasToHighQualityPng,
-  exportCanvasToOptimizedPng,
-} from '../utils/pngOptimizer';
+import { exportCanvasToHighQualityPng } from '../utils/pngOptimizer';
 import { InteractivePhotoGoniometer } from './InteractivePhotoGoniometer';
 
-type CatalogViewSourceMode =
-  | 'synthetic_3d'
-  | 'compare_side'
-  | 'goniometer'
-  | 'assigned_photo';
-
-interface FigurePlanStudioProps {
+export interface FigurePlanStudioProps {
   onBackToEvaluator: () => void;
 }
 
-const BOOK_PDF_PATH =
-  '/assets/aistudio/Evaluaci_n_ergon_mica_de_puestos_de_trabajo_-_Mauricio_Alejandro_Pizarro_Mu_oz_c375123e.pdf';
+type StudioSubTab = 'catalogo_3d' | 'generador_prompt' | 'documentacion_pdf';
+type ViewportDisplayMode = 'lamina_completa' | 'avatar_libre_cuerpo' | 'goniometro_foto';
+type AngleCategory = 'tronco_cuello' | 'brazo_der' | 'brazo_izq' | 'piernas_pies' | 'espacio_objeto';
 
-const CHAPTER_FILTERS: { id: number | 'all' | 'photos'; label: string }[] = [
-  { id: 'all', label: 'Todas (84)' },
-  { id: 'photos', label: 'Con Fotografía (36)' },
-  { id: 1, label: 'Cap. 1' },
-  { id: 4, label: 'Cap. 4 · RULA/REBA/OWAS' },
-  { id: 5, label: 'Cap. 5 · Cargas/NIOSH' },
-  { id: 6, label: 'Cap. 6 · OCRA/JSI' },
-  { id: 7, label: 'Cap. 7 · Térmico' },
-  { id: 8, label: 'Cap. 8 · Vibraciones' },
-  { id: 9, label: 'Cap. 9–10 · Gestión' },
-  { id: 11, label: 'Cap. 11–13 · Casos' },
-];
+const BODY_LETTERS = ['A', 'B', 'C', 'D'] as const;
 
-const FOCUS_ZONE_LABELS: Record<FocusZone, string> = {
-  wrist_hand: 'Mano y Muñeca (Segmento Aislado)',
-  ankle_foot: 'Pie y Tobillo (Segmento Aislado)',
-  elbow_forearm: 'Codo y Antebrazo (Segmento Aislado)',
-  shoulder_arm: 'Hombro y Brazo (Segmento Aislado)',
-  neck_cervical: 'Cuello y Columna Cervical (Segmento Aislado)',
-  lumbar_l5s1: 'Segmento Lumbar L5/S1 (Aislado)',
-  trunk_pelvis: 'Tronco y Pelvis (Segmento Aislado)',
-  legs_knees: 'Piernas y Rodillas (Segmento Aislado)',
-  full_body: 'Cuerpo Humano Completo',
-};
-
-const CAMERA_PRESET_LABELS: Record<CameraPreset, string> = {
-  sagittal_right: 'Plano Sagital Derecho (Verdadera Magnitud)',
-  sagittal_left: 'Plano Sagital Izquierdo (Verdadera Magnitud)',
-  frontal: 'Plano Frontal / Coronal',
-  dorsal: 'Plano Dorsal / Posterior',
-  top: 'Plano Superior / Cenital',
-  isometric: 'Vista Isométrica Técnica 3D',
-  perspective_oblique: 'Perspectiva Oblicua (Deformación Óptica)',
-};
-
-const PROMPT_EXAMPLES = [
-  'Mano y muñeca en flexión palmar de 35° con desviación cubital y vector F = 40 N',
-  'Segmento lumbar L5/S1 con flexión de tronco a 50° y compresión discal F = 3.2 kN',
-  'Pie y tobillo en dorsiflexión de 18° con vector de reacción plantar F = 380 N',
-  'Articulación del codo en flexión de 95° sosteniendo herramienta con carga F = 45 N',
-  'Abducción de hombro y brazo a 70° en plano frontal con vector F = 30 N',
-];
-
-function triggerBlobDownload(blob: Blob, fileName: string) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = fileName;
-  a.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 2000);
+function clonePanelsDeepLocal(panels: Panel3DSpec[] | undefined): Panel3DSpec[] {
+  if (!panels || panels.length === 0) return [];
+  return JSON.parse(JSON.stringify(panels)) as Panel3DSpec[];
 }
 
-function getCanvasMaxWidthClass(widthPx: number): string {
-  if (widthPx <= 480) return 'w-full max-w-[480px]';
-  if (widthPx <= 640) return 'w-full max-w-[640px]';
-  return 'w-full max-w-[800px]';
+const SCENE_PROP_LABELS: Array<{ value: ScenePropType; label: string }> = [
+  { value: 'none', label: 'Sin objeto / mobiliario' },
+  { value: 'work_desk_support', label: 'Mesa / Objeto de apoyo bajo el codo (Fig. 4.6b)' },
+  { value: 'iron_tamper_low', label: 'Pisón de tierra bajo (Compactación manual)' },
+  { value: 'iron_tamper_high', label: 'Pisón de tierra elevado (Impacto vertical)' },
+  { value: 'trench_shovel', label: 'Pala de zanjeo con tierra' },
+  { value: 'chair', label: 'Silla de trabajo regulable' },
+  { value: 'box_load', label: 'Caja / carga bimanual' },
+  { value: 'bus_driver_seat', label: 'Puesto Chofer de Ómnibus / Colectivo' },
+  { value: 'crane_levers', label: 'Banco de palancas de hidrogrúa' },
+  { value: 'pallet_jack_rack', label: 'Tarima + Estantería industrial' },
+  { value: 'bin_to_cart', label: 'Contenedor Bin + Carro lateral' },
+  { value: 'floor_pouches', label: 'Bolsines sobre el suelo' },
+  { value: 'conveyor_veg_line', label: 'Cinta transportadora continua' },
+  { value: 'hopper_sack_pour', label: 'Tolva inoxidable + Saco' },
+  { value: 'cart_push_dynamo', label: 'Carro plataforma (Empuje)' },
+  { value: 'cart_pull_dynamo', label: 'Carro plataforma (Tracción)' },
+  { value: 'office_desk_lateral', label: 'Escritorio de oficina lateral con monitor' },
+  { value: 'office_desk_corner_monitor', label: 'Escritorio con monitor en esquina' },
+  { value: 'high_scanner_desk', label: 'Mostrador alto de escaneo (99 cm)' },
+  { value: 'electrical_panel', label: 'Tablero eléctrico industrial' },
+  { value: 'cold_room_high_shelf', label: 'Estante alto en cámara frigorífica' },
+  { value: 'pallet_cooler', label: 'Pallet con conservadora térmica' },
+];
+
+interface JointSliderField {
+  key: keyof PosturePose3D;
+  label: string;
+  min: number;
+  max: number;
+  step?: number;
+  unit: string;
+  category: Exclude<AngleCategory, 'espacio_objeto'>;
 }
+
+const JOINT_SLIDER_FIELDS: JointSliderField[] = [
+  // Tronco y Cuello
+  { key: 'trunkFlexionDeg', label: 'Tronco · Flexión (+) / Extensión (−)', min: -30, max: 110, unit: '°', category: 'tronco_cuello' },
+  { key: 'trunkLateralDeg', label: 'Tronco · Inclinación Lateral', min: -35, max: 35, unit: '°', category: 'tronco_cuello' },
+  { key: 'trunkTwistDeg', label: 'Tronco · Giro / Rotación Axial', min: -60, max: 60, unit: '°', category: 'tronco_cuello' },
+  { key: 'neckFlexionDeg', label: 'Cuello · Flexión (+) / Extensión (−)', min: -40, max: 55, unit: '°', category: 'tronco_cuello' },
+  { key: 'neckLateralDeg', label: 'Cuello · Inclinación Lateral', min: -30, max: 30, unit: '°', category: 'tronco_cuello' },
+  { key: 'neckTwistDeg', label: 'Cuello · Rotación Cervical', min: -60, max: 60, unit: '°', category: 'tronco_cuello' },
+
+  // Brazo Derecho
+  { key: 'shoulderRFlexionDeg', label: 'Hombro Der. · Flexión (+) / Extensión (−)', min: -49, max: 175, unit: '°', category: 'brazo_der' },
+  { key: 'shoulderRAbductionDeg', label: 'Hombro Der. · Abducción Lateral', min: 0, max: 135, unit: '°', category: 'brazo_der' },
+  { key: 'shoulderRRotationDeg', label: 'Hombro Der. · Rotación Humeral', min: -90, max: 90, unit: '°', category: 'brazo_der' },
+  { key: 'elbowRFlexionDeg', label: 'Codo Der. · Flexión (0° recto, 90° L)', min: 0, max: 155, unit: '°', category: 'brazo_der' },
+  { key: 'forearmRPronationDeg', label: 'Antebrazo Der. · Pronación / Supinación', min: -85, max: 85, unit: '°', category: 'brazo_der' },
+  { key: 'wristRFlexionDeg', label: 'Muñeca Der. · Flexión / Extensión', min: -60, max: 60, unit: '°', category: 'brazo_der' },
+  { key: 'wristRDeviationDeg', label: 'Muñeca Der. · Desviación Radial/Cubital', min: -30, max: 30, unit: '°', category: 'brazo_der' },
+
+  // Brazo Izquierdo
+  { key: 'shoulderLFlexionDeg', label: 'Hombro Izq. · Flexión (+) / Extensión (−)', min: -49, max: 175, unit: '°', category: 'brazo_izq' },
+  { key: 'shoulderLAbductionDeg', label: 'Hombro Izq. · Abducción Lateral', min: 0, max: 135, unit: '°', category: 'brazo_izq' },
+  { key: 'shoulderLRotationDeg', label: 'Hombro Izq. · Rotación Humeral', min: -90, max: 90, unit: '°', category: 'brazo_izq' },
+  { key: 'elbowLFlexionDeg', label: 'Codo Izq. · Flexión (0° recto, 90° L)', min: 0, max: 155, unit: '°', category: 'brazo_izq' },
+  { key: 'forearmLPronationDeg', label: 'Antebrazo Izq. · Pronación / Supinación', min: -85, max: 85, unit: '°', category: 'brazo_izq' },
+  { key: 'wristLFlexionDeg', label: 'Muñeca Izq. · Flexión / Extensión', min: -60, max: 60, unit: '°', category: 'brazo_izq' },
+  { key: 'wristLDeviationDeg', label: 'Muñeca Izq. · Desviación Radial/Cubital', min: -30, max: 30, unit: '°', category: 'brazo_izq' },
+
+  // Piernas y Pies
+  { key: 'hipRFlexionDeg', label: 'Cadera Der. · Flexión / Extensión', min: -30, max: 125, unit: '°', category: 'piernas_pies' },
+  { key: 'kneeRFlexionDeg', label: 'Rodilla Der. · Flexión', min: 0, max: 145, unit: '°', category: 'piernas_pies' },
+  { key: 'ankleRDorsiflexionDeg', label: 'Tobillo Der. · Dorsiflexión / Plantar', min: -45, max: 40, unit: '°', category: 'piernas_pies' },
+  { key: 'hipLFlexionDeg', label: 'Cadera Izq. · Flexión / Extensión', min: -30, max: 125, unit: '°', category: 'piernas_pies' },
+  { key: 'kneeLFlexionDeg', label: 'Rodilla Izq. · Flexión', min: 0, max: 145, unit: '°', category: 'piernas_pies' },
+  { key: 'ankleLDorsiflexionDeg', label: 'Tobillo Izq. · Dorsiflexión / Plantar', min: -45, max: 40, unit: '°', category: 'piernas_pies' },
+];
+
+const REFERENCE_PDF_DOCS = [
+  {
+    id: 'ergoniza_2026',
+    title: 'Ergoniza Intelligent — Bases de Funcionamiento (16 Segmentos / 14 Articulaciones)',
+    url: '/assets/aistudio/Ergoniza_Intelligent_-_Bases_de_funcionamiento_3957c1bb.pdf',
+  },
+];
 
 export const FigurePlanStudio: React.FC<FigurePlanStudioProps> = ({ onBackToEvaluator }) => {
-  const [studioTab, setStudioTab] = useState<'catalog' | 'table' | 'custom'>('catalog');
+  const [subTab, setSubTab] = useState<StudioSubTab>('catalogo_3d');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [chapterFilter, setChapterFilter] = useState<number | 'all'>('all');
 
-  // --- EXPORT QUALITY & NOMENCLATURE SETTINGS ---
-  const [exportQuality, setExportQuality] = useState<'hd_lossless' | 'compact_120kb'>('hd_lossless');
-  const [includeAll84Figures, setIncludeAll84Figures] = useState(true);
-  const [useImagesSubfolder, setUseImagesSubfolder] = useState(false);
-  const [readyZipLink, setReadyZipLink] = useState<{
-    url: string;
-    fileName: string;
-    count: number;
-    sizeMb: string;
+  // Figura seleccionada (por defecto abrimos en Cap. 4 o la primera 3D)
+  const [selectedFigId, setSelectedFigId] = useState<string>('fig-4-06b');
+  const [overrideTick, setOverrideTick] = useState<number>(0);
+  const [avatarReady, setAvatarReady] = useState<boolean>(false);
+
+  const selectedCatalogSpec = useMemo<BookFigureFileSpec>(() => {
+    void overrideTick;
+    return (
+      BOOK_FIGURE_CATALOG.find((f) => f.id === selectedFigId) ||
+      BOOK_FIGURE_CATALOG.find((f) => f.panels && f.panels.length > 0) ||
+      BOOK_FIGURE_CATALOG[0]
+    );
+  }, [selectedFigId, overrideTick]);
+
+  // Estado local editable de los paneles (Cuerpo A, Cuerpo B, Cuerpo C, Cuerpo D)
+  const [draftPanels, setDraftPanels] = useState<Panel3DSpec[]>(() =>
+    clonePanelsDeepLocal(selectedCatalogSpec.panels),
+  );
+  const [activeBodyIdx, setActiveBodyIdx] = useState<number>(0);
+  const [viewportMode, setViewportMode] = useState<ViewportDisplayMode>('avatar_libre_cuerpo');
+  const [preferSynthetic3D, setPreferSynthetic3D] = useState<boolean>(true);
+  const [showAssignedPhotoBelow, setShowAssignedPhotoBelow] = useState<boolean>(true);
+  const [angleCategory, setAngleCategory] = useState<AngleCategory>('brazo_der');
+  const [mirrorArmsLegs, setMirrorArmsLegs] = useState<boolean>(false);
+  const [show3DGizmos, setShow3DGizmos] = useState<boolean>(true);
+  const [show3DGoniometerOverlay, setShow3DGoniometerOverlay] = useState<boolean>(false);
+  const [selectedJoint3D, setSelectedJoint3D] = useState<JointKey | null>('elbowR');
+  const [hoveredJoint3D, setHoveredJoint3D] = useState<JointKey | null>(null);
+  const [transferTargetField, setTransferTargetField] = useState<keyof PosturePose3D>('elbowRFlexionDeg');
+  const [orbitOverride, setOrbitOverride] = useState<CameraOrbitOverride>(DEFAULT_ORBIT_OVERRIDE);
+
+  // Estado de operaciones asíncronas y notificaciones
+  const [isSavingPose, setIsSavingPose] = useState<boolean>(false);
+  const [isExtractingAiPose, setIsExtractingAiPose] = useState<boolean>(false);
+  const [isExportingZip, setIsExportingZip] = useState<boolean>(false);
+  const [zipProgressPct, setZipProgressPct] = useState<number>(0);
+  const [bannerMsg, setBannerMsg] = useState<{
+    tone: 'info' | 'success' | 'warning' | 'error';
+    text: string;
   } | null>(null);
 
-  // --- CATALOG MODE STATE ---
-  const [chapterFilter, setChapterFilter] = useState<number | 'all' | 'photos'>('all');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedId, setSelectedId] = useState<string>(BOOK_FIGURE_CATALOG[1]?.id || 'fig-4-01');
-  const [orbit, setOrbit] = useState<CameraOrbitOverride>(DEFAULT_ORBIT_OVERRIDE);
-  const [viewSourceMode, setViewSourceMode] = useState<CatalogViewSourceMode>('synthetic_3d');
-  const [includeHeaderOnPhoto, setIncludeHeaderOnPhoto] = useState<boolean>(true);
-  const [photoRenderTick, setPhotoRenderTick] = useState<number>(0);
-  const [panelTargetIdx, setPanelTargetIdx] = useState<number>(0);
-  const [editedPanels, setEditedPanels] = useState<Panel3DSpec[]>(() =>
-    clonePanelsDeepLocal(BOOK_FIGURE_CATALOG[1]?.panels || BOOK_FIGURE_CATALOG[0]?.panels),
+  // Generador libre por instrucción escrita
+  const [customPromptText, setCustomPromptText] = useState<string>(
+    'Operario de pie flexionando tronco 35° y codo derecho 85° con mesa de apoyo bajo el codo',
   );
-  const [isPoseDirty, setIsPoseDirty] = useState<boolean>(false);
-  const [angleCategory, setAngleCategory] = useState<StudioAngleCategory>('right_arm');
-  const [bilateralSymmetry, setBilateralSymmetry] = useState<boolean>(false);
-  const [activeJointField, setActiveJointField] = useState<keyof PosturePose3D>('shoulderRFlexionDeg');
-  const [compareImgFailed, setCompareImgFailed] = useState<boolean>(false);
+  const customPromptCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // --- CALIBRACIÓN INTERACTIVA / MODO CALCO ("PAPEL CEBOLLA") + IA ---
-  const [traceOverlayEnabled, setTraceOverlayEnabled] = useState<boolean>(true);
-  const [traceOpacity, setTraceOpacity] = useState<number>(0.42);
-  const [traceCropToBody, setTraceCropToBody] = useState<boolean>(true);
-  const [showTraceGizmos, setShowTraceGizmos] = useState<boolean>(true);
-  const [traceSelectedJoint, setTraceSelectedJoint] = useState<JointKey | null>(null);
-  const [traceHoveredJoint, setTraceHoveredJoint] = useState<JointKey | null>(null);
-  const [isExtractingPose, setIsExtractingPose] = useState<boolean>(false);
-  const [extractBodiesMode, setExtractBodiesMode] = useState<'auto' | 'current' | '1' | '2' | '3' | '4'>('auto');
-  const [extractOnlyActiveBody, setExtractOnlyActiveBody] = useState<boolean>(false);
-  const [isSavingCatalogPose, setIsSavingCatalogPose] = useState<boolean>(false);
+  const mainCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const projectedJointsRef = useRef<Record<JointKey, { x: number; y: number }> | null>(null);
+  const replaceImageInputRef = useRef<HTMLInputElement | null>(null);
+  const aiImagePoseInputRef = useRef<HTMLInputElement | null>(null);
 
-  const [pngStats, setPngStats] = useState<{ sizeBytes: number; width: number; height: number } | null>(null);
-  const [isExportingSingle, setIsExportingSingle] = useState(false);
-  const [isSavingDefinitive, setIsSavingDefinitive] = useState(false);
-  const [definitiveNotice, setDefinitiveNotice] = useState<string | null>(null);
-  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number; label: string } | null>(null);
-  const [isPdfViewerOpen, setIsPdfViewerOpen] = useState(false);
-
-  const previewCanvasRef = useRef<HTMLCanvasElement>(null);
-  const traceCanvasRef = useRef<HTMLCanvasElement>(null);
-  const customPhotoInputRef = useRef<HTMLInputElement>(null);
-  const extractPosePhotoInputRef = useRef<HTMLInputElement>(null);
-  const dragOrbitRef = useRef<{ startX: number; startY: number; az0: number; el0: number; targetPanelIdx?: number } | null>(null);
-  const traceDragRef = useRef<{
-    mode: 'joint' | 'orbit';
+  const dragStateRef = useRef<{
+    mode: 'orbit' | 'joint';
     joint?: JointKey;
     startX: number;
     startY: number;
+    startOrbit: CameraOrbitOverride;
     startPose: PosturePose3D;
-    az0: number;
-    el0: number;
   } | null>(null);
-  const traceProjectedJointsRef = useRef<Record<JointKey, { x: number; y: number }> | null>(null);
-  const activePointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
-  const pinchOrbitRef = useRef<{ startDist: number; startZoom: number; targetPanelIdx?: number } | null>(null);
-
-  // --- CUSTOM 3D ENGINE STATE ---
-  const [promptInput, setPromptInput] = useState(PROMPT_EXAMPLES[0]);
-  const [customFormat, setCustomFormat] = useState<'single_480x640' | 'dual_800x520' | 'scene_800x520'>('single_480x640');
-  const [customFileName, setCustomFileName] = useState('fig-aislada-3d.png');
-  const [customFocusZone, setCustomFocusZone] = useState<FocusZone>('wrist_hand');
-  const [customCamera, setCustomCamera] = useState<CameraPreset>('sagittal_right');
-  const [customPrimaryDeg, setCustomPrimaryDeg] = useState<number>(35);
-  const [customSecondaryDeg, setCustomSecondaryDeg] = useState<number>(15);
-  const [customCompareDeg, setCustomCompareDeg] = useState<number>(0);
-  const [customAlphaLabel, setCustomAlphaLabel] = useState<string>('α = 35°');
-  const [customForceLabel, setCustomForceLabel] = useState<string>('F = 40 N');
-  const [customForceDir, setCustomForceDir] = useState<'down' | 'up' | 'left' | 'right'>('down');
-  const [customTitle, setCustomTitle] = useState<string>('Flexión palmar y desviación de mano y muñeca');
-  const [customOrbit, setCustomOrbit] = useState<CameraOrbitOverride>(DEFAULT_ORBIT_OVERRIDE);
-  const [customPngStats, setCustomPngStats] = useState<{ sizeBytes: number; width: number; height: number } | null>(
-    null,
-  );
-  const customCanvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
-    ensureAvatarGlbLoaded();
-    const unsubPhoto = subscribeFigurePhotoOverrides(() => {
-      setPhotoRenderTick((t) => t + 1);
-    });
-    const unsubPose = subscribeFigurePoseOverrides(() => {
-      setPhotoRenderTick((t) => t + 1);
+    let mounted = true;
+    ensureAvatarGlbLoaded().then(() => {
+      if (mounted) setAvatarReady(true);
     });
     const unsubGlb = subscribeAvatarGlbLoaded(() => {
-      setPhotoRenderTick((t) => t + 1);
+      if (mounted) setAvatarReady(true);
+    });
+    const unsubPhoto = subscribeFigurePhotoOverrides(() => {
+      if (mounted) setOverrideTick((t) => t + 1);
+    });
+    const unsubPose = subscribeFigurePoseOverrides(() => {
+      if (mounted) setOverrideTick((t) => t + 1);
     });
     return () => {
+      mounted = false;
+      unsubGlb();
       unsubPhoto();
       unsubPose();
-      unsubGlb();
     };
   }, []);
 
-  // Clean up object URL on unmount
+  // Sincronizar paneles editables al cambiar de figura
   useEffect(() => {
-    return () => {
-      if (readyZipLink?.url) {
-        URL.revokeObjectURL(readyZipLink.url);
-      }
-    };
-  }, [readyZipLink]);
+    const cloned = clonePanelsDeepLocal(selectedCatalogSpec.panels);
+    setDraftPanels(cloned);
+    setActiveBodyIdx(0);
+    setOrbitOverride(DEFAULT_ORBIT_OVERRIDE);
+    if (!cloned || cloned.length === 0) {
+      setViewportMode('lamina_completa');
+    } else if (cloned.length >= 2) {
+      setViewportMode('lamina_completa');
+    } else {
+      setViewportMode('avatar_libre_cuerpo');
+    }
+  }, [selectedCatalogSpec.id]);
 
-  const filteredCatalog = useMemo(() => {
-    void photoRenderTick;
+  const chaptersList = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const f of BOOK_FIGURE_CATALOG) {
+      if (!map.has(f.chapter)) map.set(f.chapter, f.chapterTitle);
+    }
+    return Array.from(map.entries()).sort((a, b) => a[0] - b[0]);
+  }, []);
+
+  const filteredFigures = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    return BOOK_FIGURE_CATALOG.filter((item) => {
-      if (chapterFilter === 'photos') {
-        if (!getEffectiveFigurePhotoUrl(item)) return false;
-      } else if (chapterFilter !== 'all') {
-        if (chapterFilter === 9) {
-          if (item.chapter !== 9 && item.chapter !== 10) return false;
-        } else if (chapterFilter === 11) {
-          if (item.chapter < 11) return false;
-        } else if (item.chapter !== chapterFilter) {
-          return false;
-        }
-      }
+    return BOOK_FIGURE_CATALOG.filter((f) => {
+      if (chapterFilter !== 'all' && f.chapter !== chapterFilter) return false;
       if (!q) return true;
       return (
-        item.fileName.toLowerCase().includes(q) ||
-        item.figureNumber.toLowerCase().includes(q) ||
-        item.title.toLowerCase().includes(q) ||
-        item.bookDescription.toLowerCase().includes(q)
+        f.id.toLowerCase().includes(q) ||
+        f.figureNumber.toLowerCase().includes(q) ||
+        f.title.toLowerCase().includes(q) ||
+        f.bookDescription.toLowerCase().includes(q)
       );
     });
-  }, [chapterFilter, searchQuery, photoRenderTick]);
+  }, [searchQuery, chapterFilter, overrideTick]);
 
-  const selectedSpec: BookFigureFileSpec = useMemo(() => {
-    void photoRenderTick;
-    return (
-      BOOK_FIGURE_CATALOG.find((f) => f.id === selectedId) ||
-      filteredCatalog[0] ||
-      BOOK_FIGURE_CATALOG[0]
-    );
-  }, [selectedId, filteredCatalog, photoRenderTick]);
+  const safeBodyIdx = Math.max(0, Math.min(Math.max(0, draftPanels.length - 1), activeBodyIdx));
+  const activePanel: Panel3DSpec | undefined = draftPanels[safeBodyIdx];
+  const effectivePhotoUrl = useMemo(
+    () => getEffectiveFigurePhotoUrl(selectedCatalogSpec),
+    [selectedCatalogSpec, overrideTick],
+  );
+  const hasPhotoOverride = hasCustomFigurePhotoOverride(selectedCatalogSpec.id);
+  const hasPoseOverride = hasCustomFigurePoseOverride(selectedCatalogSpec.id);
 
-  const selectedIndexInFiltered = useMemo(
-    () => filteredCatalog.findIndex((f) => f.id === selectedSpec.id),
-    [filteredCatalog, selectedSpec.id],
+  // Actualizar un campo de postura en el Cuerpo activo (A, B, C o D)
+  const updateActiveBodyPose = useCallback(
+    (updater: (prev: PosturePose3D) => PosturePose3D) => {
+      setDraftPanels((prev) =>
+        prev.map((p, idx) => (idx === safeBodyIdx ? { ...p, pose: updater(p.pose) } : p)),
+      );
+    },
+    [safeBodyIdx],
   );
 
-  // Sincronizar paneles al cambiar de ítem seleccionado
+  const updateActiveBodyPanel = useCallback(
+    (updater: (prev: Panel3DSpec) => Panel3DSpec) => {
+      setDraftPanels((prev) => prev.map((p, idx) => (idx === safeBodyIdx ? updater(p) : p)));
+    },
+    [safeBodyIdx],
+  );
+
+  // Renderizado en tiempo real sobre el canvas principal (Lámina Multi-Cuerpo o Avatar 3D Libre con Nodos)
   useEffect(() => {
-    const freshPanels = clonePanelsDeepLocal(selectedSpec.panels);
-    setEditedPanels(freshPanels);
-    setIsPoseDirty(false);
-    setOrbit(DEFAULT_ORBIT_OVERRIDE);
-    setPanelTargetIdx(0);
-    setTraceSelectedJoint(null);
-    setTraceHoveredJoint(null);
-    setCompareImgFailed(false);
-    setDefinitiveNotice(null);
-    const z = freshPanels[0]?.focusZone;
-    if (z === 'neck_cervical' || z === 'lumbar_l5s1' || z === 'trunk_pelvis') {
-      setAngleCategory('spine_head');
-    } else if (z === 'legs_knees' || z === 'ankle_foot') {
-      setAngleCategory('legs_feet');
-    } else {
-      setAngleCategory('right_arm');
-    }
-    if (viewSourceMode === 'trace_mouse' && freshPanels.length === 0) {
-      setViewSourceMode('synthetic_3d');
-    }
-  }, [selectedSpec.id]);
+    const canvas = mainCanvasRef.current;
+    if (!canvas || viewportMode === 'goniometro_foto') return;
 
-  // Si se hidratan posturas desde servidor y el usuario no está editando con cambios sin guardar, refrescar paneles
-  useEffect(() => {
-    if (!isPoseDirty) {
-      setEditedPanels(clonePanelsDeepLocal(selectedSpec.panels));
-    }
-  }, [photoRenderTick, selectedSpec, isPoseDirty]);
-
-  const safePanelTargetIdx = Math.min(panelTargetIdx, Math.max(0, editedPanels.length - 1));
-
-  // Especificación efectiva multicuerpo (respeta Cuerpo A, B, C y D simultáneamente sin resetear ninguno)
-  const effectiveSelectedSpec: BookFigureFileSpec = useMemo(() => {
-    if (
-      selectedSpec.renderMode === 'diagram' ||
-      selectedSpec.renderMode === 'real_chart' ||
-      editedPanels.length === 0
-    ) {
-      return selectedSpec;
-    }
-    const isMulti = editedPanels.length >= 2;
-    return {
-      ...selectedSpec,
-      bodiesRule: isMulti ? '2' : '1',
-      renderMode: isMulti ? '3d_dual' : '3d_single',
-      widthPx: isMulti
-        ? Math.max(800, selectedSpec.widthPx)
-        : selectedSpec.renderMode === '3d_dual'
-          ? 480
-          : selectedSpec.widthPx,
-      heightPx: isMulti
-        ? 520
-        : selectedSpec.renderMode === '3d_dual'
-          ? 640
-          : selectedSpec.heightPx,
-      panels: editedPanels,
-    };
-  }, [selectedSpec, editedPanels]);
-
-  // Render Catalog Preview Canvas at crisp 2x Retina DPI (incluye Cuerpo A, B, C, D y resaltado del cuerpo activo)
-  useEffect(() => {
-    if (studioTab !== 'catalog' || viewSourceMode === 'goniometer' || viewSourceMode === 'trace_mouse') return;
-    const canvas = previewCanvasRef.current;
-    if (!canvas) return;
-
-    const photoUrl = getEffectiveFigurePhotoUrl(selectedSpec);
-    const hasPhoto = Boolean(photoUrl);
-    const renderSynthetic =
-      !hasPhoto ||
-      viewSourceMode === 'synthetic_3d' ||
-      viewSourceMode === 'compare_side';
-
-    const renderOpts: FigureRenderOptions = {
-      preferSynthetic3D: renderSynthetic,
-      includeHeaderOnPhoto,
-      visualStyle: 'anatomical_skin',
-      transparentBg: false,
-      activePanelHighlightIdx:
-        renderSynthetic && editedPanels.length >= 2 ? safePanelTargetIdx : undefined,
-      onAsyncPhotoLoaded: () => setPhotoRenderTick((t) => t + 1),
-    };
-
-    const raf = window.requestAnimationFrame(() => {
-      const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
-      renderBookFigureToCanvas(effectiveSelectedSpec, canvas, orbit, isMobile ? 1.35 : 2, renderOpts);
-    });
-
-    let cancelled = false;
-    const timer = window.setTimeout(() => {
-      const exportOpts: FigureRenderOptions = {
-        ...renderOpts,
-        activePanelHighlightIdx: undefined,
+    if (viewportMode === 'avatar_libre_cuerpo' && activePanel) {
+      const panelOrbit: CameraOrbitOverride = {
+        azimuthDeg: (activePanel.orbitOverride?.azimuthDeg ?? 0) + orbitOverride.azimuthDeg,
+        elevationDeg: (activePanel.orbitOverride?.elevationDeg ?? 0) + orbitOverride.elevationDeg,
+        zoom: (activePanel.orbitOverride?.zoom ?? 1) * orbitOverride.zoom,
       };
-      const exporter =
-        exportQuality === 'hd_lossless'
-          ? () => {
-              const cHd = document.createElement('canvas');
-              renderBookFigureToCanvas(effectiveSelectedSpec, cHd, orbit, 2, exportOpts);
-              return exportCanvasToHighQualityPng(cHd);
-            }
-          : () => {
-              const c1 = document.createElement('canvas');
-              renderBookFigureToCanvas(effectiveSelectedSpec, c1, orbit, 1, exportOpts);
-              return exportCanvasToOptimizedPng(c1);
-            };
-
-      exporter()
-        .then((res) => {
-          if (!cancelled) {
-            setPngStats({ sizeBytes: res.sizeBytes, width: res.width, height: res.height });
-          }
-        })
-        .catch(() => {});
-    }, 900);
-
-    return () => {
-      cancelled = true;
-      window.cancelAnimationFrame(raf);
-      window.clearTimeout(timer);
-    };
-  }, [
-    studioTab,
-    selectedSpec,
-    effectiveSelectedSpec,
-    editedPanels,
-    safePanelTargetIdx,
-    orbit,
-    exportQuality,
-    viewSourceMode,
-    includeHeaderOnPhoto,
-    photoRenderTick,
-  ]);
-
-  // Renderizador 60fps para el Modo Calco + Ratón ("Papel Cebolla") sobre el Cuerpo activo
-  useEffect(() => {
-    if (studioTab !== 'catalog' || viewSourceMode !== 'trace_mouse') return;
-    const canvas = traceCanvasRef.current;
-    const activePanel = editedPanels[safePanelTargetIdx];
-    if (!canvas || !activePanel) return;
-
-    const hasRefImg = Boolean(getEffectiveFigurePhotoUrl(selectedSpec)) && !compareImgFailed;
-    const useTransparent = traceOverlayEnabled && hasRefImg;
-    const bodyOrbit: CameraOrbitOverride = {
-      azimuthDeg: (activePanel.orbitOverride?.azimuthDeg ?? 0) + orbit.azimuthDeg,
-      elevationDeg: (activePanel.orbitOverride?.elevationDeg ?? 0) + orbit.elevationDeg,
-      zoom: (activePanel.orbitOverride?.zoom ?? 1) * orbit.zoom,
-    };
-
-    const raf = window.requestAnimationFrame(() => {
-      const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
-      const pts = renderInteractiveFreeAvatarToCanvas(
-        activePanel,
+      // En modo Avatar Libre forzamos cuerpo completo si el usuario quiere ver apoyos/piernas salvo primer plano explícito
+      const effectiveFreePanel: Panel3DSpec = {
+        ...activePanel,
+        focusZone: activePanel.focusZone,
+      };
+      projectedJointsRef.current = renderInteractiveFreeAvatarToCanvas(
+        effectiveFreePanel,
         canvas,
+        640,
         520,
-        520,
-        bodyOrbit,
-        isMobile ? 1.4 : 2,
+        panelOrbit,
+        2,
         {
-          showGizmos: showTraceGizmos,
-          interactiveJoints: TRACE_INTERACTIVE_JOINTS,
-          selectedJoint: traceSelectedJoint,
-          hoveredJoint: traceHoveredJoint,
-          transparentBg: useTransparent,
+          showGizmos: show3DGizmos,
+          selectedJoint: selectedJoint3D,
+          hoveredJoint: hoveredJoint3D,
         },
       );
-      traceProjectedJointsRef.current = pts;
-    });
-
-    return () => window.cancelAnimationFrame(raf);
-  }, [
-    studioTab,
-    viewSourceMode,
-    editedPanels,
-    safePanelTargetIdx,
-    orbit,
-    traceOverlayEnabled,
-    showTraceGizmos,
-    traceSelectedJoint,
-    traceHoveredJoint,
-    selectedSpec,
-    compareImgFailed,
-    photoRenderTick,
-  ]);
-
-  // Build Custom BookFigureFileSpec dynamically from isolated parametric controls
-  const customSpec: BookFigureFileSpec = useMemo(() => {
-    const buildPanelForAngle = (deg: number, secDeg: number, subLabel: string, badge: string): Panel3DSpec => {
-      const pose = makeNeutralPose();
-      let arcJoint: JointKey = 'wristR';
-      let arcTo: JointKey = 'handR';
-      let refType: 'vertical_down' | 'vertical_up' | 'horizontal' | 'trunk_axis' = 'horizontal';
-      let forceJoint: JointKey = 'handR';
-
-      switch (customFocusZone) {
-        case 'wrist_hand':
-          pose.elbowRFlexionDeg = 90;
-          pose.wristRFlexionDeg = deg;
-          pose.wristRDeviationDeg = secDeg;
-          arcJoint = 'wristR';
-          arcTo = 'handR';
-          refType = 'horizontal';
-          forceJoint = 'handR';
-          break;
-        case 'ankle_foot':
-          pose.ankleRDorsiflexionDeg = deg;
-          arcJoint = 'ankleR';
-          arcTo = 'footR';
-          refType = 'horizontal';
-          forceJoint = 'footR';
-          break;
-        case 'elbow_forearm':
-          pose.elbowRFlexionDeg = deg;
-          pose.forearmRPronationDeg = secDeg;
-          arcJoint = 'elbowR';
-          arcTo = 'wristR';
-          refType = 'vertical_down';
-          forceJoint = 'handR';
-          break;
-        case 'shoulder_arm':
-          if (customCamera === 'frontal' || customCamera === 'dorsal') {
-            pose.shoulderRAbductionDeg = Math.max(0, deg);
-          } else {
-            pose.shoulderRFlexionDeg = deg;
-          }
-          pose.elbowRFlexionDeg = Math.max(15, secDeg);
-          arcJoint = 'shoulderR';
-          arcTo = 'elbowR';
-          refType = 'trunk_axis';
-          forceJoint = 'elbowR';
-          break;
-        case 'neck_cervical':
-          pose.neckFlexionDeg = deg;
-          pose.neckLateralDeg = secDeg;
-          arcJoint = 'c7';
-          arcTo = 'head';
-          refType = 'vertical_up';
-          forceJoint = 'head';
-          break;
-        case 'lumbar_l5s1':
-        case 'trunk_pelvis':
-          pose.trunkFlexionDeg = deg;
-          pose.trunkLateralDeg = secDeg;
-          pose.shoulderRFlexionDeg = Math.max(15, deg * 0.85);
-          pose.highlightGroup = 'l5s1_disc';
-          arcJoint = 'l5s1';
-          arcTo = 'c7';
-          refType = 'vertical_up';
-          forceJoint = 'l5s1';
-          break;
-        case 'legs_knees':
-          pose.hipRFlexionDeg = deg * 0.65;
-          pose.kneeRFlexionDeg = Math.max(0, deg);
-          pose.hipLFlexionDeg = deg * 0.65;
-          pose.kneeLFlexionDeg = Math.max(0, deg);
-          arcJoint = 'kneeR';
-          arcTo = 'ankleR';
-          refType = 'vertical_down';
-          forceJoint = 'kneeR';
-          break;
-        case 'full_body':
-          pose.trunkFlexionDeg = deg;
-          pose.shoulderRFlexionDeg = Math.max(20, secDeg);
-          pose.kneeRFlexionDeg = 22;
-          arcJoint = 'l5s1';
-          arcTo = 'c7';
-          refType = 'vertical_up';
-          forceJoint = 'handR';
-          break;
-      }
-
-      const dirVec =
-        customForceDir === 'down'
-          ? { dx: 0, dy: 1 }
-          : customForceDir === 'up'
-            ? { dx: 0, dy: -1 }
-            : customForceDir === 'left'
-              ? { dx: -1, dy: 0 }
-              : { dx: 1, dy: 0 };
-
-      return {
-        subTitle: subLabel,
-        scoreBadge: badge,
-        focusZone: customFocusZone,
-        cameraPreset: customCamera,
-        pose,
-        angleArcs: [
-          {
-            joint: arcJoint,
-            toJoint: arcTo,
-            refType,
-            label: badge === 'Postura A (Referencia)' ? `α = ${deg}°` : customAlphaLabel || `α = ${deg}°`,
-          },
-        ],
-        forceVectors: customForceLabel.trim()
-          ? [
-              {
-                atJoint: forceJoint,
-                dx: dirVec.dx,
-                dy: dirVec.dy,
-                lengthPx: 50,
-                label: customForceLabel,
-              },
-            ]
-          : [],
-        noteBottom:
-          customFocusZone === 'full_body'
-            ? 'Evaluación postural · Iluminación de estudio'
-            : `Zona aislada: ${FOCUS_ZONE_LABELS[customFocusZone].replace(' (Segmento Aislado)', '')}`,
-      };
-    };
-
-    if (customFormat === 'dual_800x520') {
-      return {
-        id: 'custom-dual',
-        figureNumber: '3D',
-        fileName: customFileName || 'fig-comparativa-3d.png',
-        chapter: 0,
-        chapterTitle: 'Motor 3D Aislado',
-        title: customTitle,
-        bookDescription: promptInput,
-        bodiesRule: '2',
-        widthPx: 800,
-        heightPx: 520,
-        renderMode: '3d_dual',
-        panels: [
-          buildPanelForAngle(customCompareDeg, 0, 'Condición Base / Neutra', 'Postura A (Referencia)'),
-          buildPanelForAngle(customPrimaryDeg, customSecondaryDeg, 'Condición Evaluada', 'Postura B (Evaluada)'),
-        ],
-      };
-    }
-
-    const w = customFormat === 'scene_800x520' ? 800 : 480;
-    const h = customFormat === 'scene_800x520' ? 520 : 640;
-
-    return {
-      id: 'custom-single',
-      figureNumber: '3D',
-      fileName: customFileName || 'fig-aislada-3d.png',
-      chapter: 0,
-      chapterTitle: 'Motor 3D Aislado',
-      title: customTitle,
-      bookDescription: promptInput,
-      bodiesRule: '1',
-      widthPx: w,
-      heightPx: h,
-      renderMode: '3d_single',
-      panels: [
-        buildPanelForAngle(
-          customPrimaryDeg,
-          customSecondaryDeg,
-          FOCUS_ZONE_LABELS[customFocusZone],
-          'Aislamiento Anatómico',
-        ),
-      ],
-    };
-  }, [
-    customFormat,
-    customFileName,
-    customTitle,
-    promptInput,
-    customFocusZone,
-    customCamera,
-    customPrimaryDeg,
-    customSecondaryDeg,
-    customCompareDeg,
-    customAlphaLabel,
-    customForceLabel,
-    customForceDir,
-  ]);
-
-  useEffect(() => {
-    void photoRenderTick;
-    if (studioTab !== 'custom') return;
-    const canvas = customCanvasRef.current;
-    if (!canvas) return;
-    renderBookFigureToCanvas(customSpec, canvas, customOrbit, 2, {
-      preferSynthetic3D: true,
-      visualStyle: 'anatomical_skin',
-    });
-
-    let cancelled = false;
-    const timer = window.setTimeout(() => {
-      exportCanvasToHighQualityPng(canvas)
-        .then((res) => {
-          if (!cancelled) {
-            setCustomPngStats({ sizeBytes: res.sizeBytes, width: res.width, height: res.height });
-          }
-        })
-        .catch(() => {});
-    }, 80);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [studioTab, customSpec, customOrbit, photoRenderTick]);
-
-  const handleApplyPrompt = (textToParse = promptInput) => {
-    const parsed = parseBiomechanicalPromptToPanel(textToParse);
-    setCustomFocusZone(parsed.focusZone);
-    setCustomCamera(parsed.panel.cameraPreset);
-    setCustomTitle(parsed.panel.subTitle);
-
-    const degMatch = textToParse.match(/(-?\d+(?:[.,]\d+)?)\s*(?:°|º|grados)/i);
-    const deg = degMatch ? parseFloat(degMatch[1].replace(',', '.')) : 35;
-    setCustomPrimaryDeg(deg);
-    setCustomAlphaLabel(`α = ${Math.abs(deg)}°`);
-
-    const forceMatch = textToParse.match(/(\d+(?:[.,]\d+)?)\s*(n|kn|kgf|kg)\b/i);
-    setCustomForceLabel(forceMatch ? `F = ${forceMatch[1]} ${forceMatch[2].toUpperCase()}` : 'F');
-    setCustomOrbit(DEFAULT_ORBIT_OVERRIDE);
-  };
-
-  const handleDownloadSpecPng = async (
-    specToExport: BookFigureFileSpec,
-    orbitToUse = DEFAULT_ORBIT_OVERRIDE,
-    forceSynthetic3D?: boolean,
-  ) => {
-    try {
-      setIsExportingSingle(true);
-      const isExportingSelectedIn3D =
-        forceSynthetic3D ??
-        (specToExport.id === selectedSpec.id &&
-          (viewSourceMode === 'synthetic_3d' ||
-            viewSourceMode === 'trace_mouse' ||
-            viewSourceMode === 'compare_side' ||
-            isPoseDirty));
-
-      const res = await renderBookFigureToPng(specToExport, orbitToUse, exportQuality, {
-        preferSynthetic3D: isExportingSelectedIn3D,
-        includeHeaderOnPhoto,
-        visualStyle: 'anatomical_skin',
-      });
-      if (specToExport.id === selectedSpec.id) {
-        setPngStats({ sizeBytes: res.sizeBytes, width: res.width, height: res.height });
-      }
-      const cleanName = specToExport.fileName.endsWith('.png')
-        ? specToExport.fileName
-        : `${specToExport.fileName}.png`;
-      triggerBlobDownload(res.blob, cleanName);
-    } finally {
-      setIsExportingSingle(false);
-    }
-  };
-
-  const handleUploadCustomFigurePhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const targetFigId = selectedSpec.id;
-    const targetFileName = selectedSpec.fileName;
-    const reader = new FileReader();
-    reader.onload = async () => {
-      if (typeof reader.result === 'string') {
-        setIsSavingDefinitive(true);
-        setDefinitiveNotice(null);
-        const saved = await saveDefinitiveFigureImageToApp(targetFigId, reader.result);
-        setIsSavingDefinitive(false);
-        setCompareImgFailed(false);
-        setViewSourceMode('compare_side');
-        setDefinitiveNotice(
-          saved.ok && !saved.error
-            ? `Imagen definitiva subida para ${targetFileName}. Use "Copiar Postura de la Imagen" para que el avatar adopte su postura.`
-            : saved.error || `Imagen almacenada para ${targetFileName}.`,
-        );
-      }
-    };
-    reader.readAsDataURL(file);
-    e.target.value = '';
-  };
-
-  const handleSaveReferencePoseToCatalog = async () => {
-    if (isSavingCatalogPose || editedPanels.length === 0) return;
-    try {
-      setIsSavingCatalogPose(true);
-      setDefinitiveNotice(null);
-      const result = await saveDefinitiveFigurePoseToCatalog(selectedSpec.id, editedPanels, {
-        widthPx: effectiveSelectedSpec.widthPx,
-        heightPx: effectiveSelectedSpec.heightPx,
-      });
-      setIsPoseDirty(false);
-      const bodiesTxt =
-        editedPanels.length === 1
-          ? '1 cuerpo (Cuerpo A)'
-          : `${editedPanels.length} cuerpos (${editedPanels.map((_, i) => `Cuerpo ${BODY_LETTERS[i] || i + 1}`).join(', ')})`;
-      setDefinitiveNotice(
-        result.ok
-          ? result.catalogFileUpdated
-            ? `Postura de referencia guardada permanentemente en figurePlanCatalog.ts para ${selectedSpec.id} (${bodiesTxt}).`
-            : `Postura de referencia guardada en el servidor para ${selectedSpec.id} (${bodiesTxt}).`
-          : result.error || `No se pudo guardar la postura de referencia para ${selectedSpec.id}.`,
-      );
-    } finally {
-      setIsSavingCatalogPose(false);
-    }
-  };
-
-  const handleExtractPoseFromImageSource = async (overrideDataUrl?: string) => {
-    const imgSource = overrideDataUrl || getEffectiveFigurePhotoUrl(selectedSpec);
-    if (!imgSource || isExtractingPose) return;
-
-    try {
-      setIsExtractingPose(true);
-      setDefinitiveNotice('Analizando imagen de referencia para copiar ángulos articulares al avatar 3D…');
-
-      const forcedCount =
-        extractBodiesMode === 'auto'
-          ? 0
-          : extractBodiesMode === 'current'
-            ? Math.max(1, editedPanels.length)
-            : Number(extractBodiesMode);
-
-      const response = await extractFigurePoseFromImage({
-        imageDataUrl: imgSource,
-        figId: selectedSpec.id,
-        title: selectedSpec.title,
-        bookDescription: selectedSpec.bookDescription,
-        expectedBodiesCount: forcedCount > 0 ? forcedCount : undefined,
-      });
-
-      if (!response.ok || !response.panels || response.panels.length === 0) {
-        setDefinitiveNotice(response.error || 'No se pudo extraer la postura desde la imagen.');
-        return;
-      }
-
-      if (extractOnlyActiveBody && editedPanels.length > 0) {
-        const picked =
-          response.panels[Math.min(safePanelTargetIdx, response.panels.length - 1)] || response.panels[0];
-        setEditedPanels((prev) =>
-          prev.map((panel, idx) =>
-            idx === safePanelTargetIdx
-              ? {
-                  ...panel,
-                  cameraPreset: picked.cameraPreset,
-                  focusZone: picked.focusZone,
-                  pose: { ...makeNeutralPose(), ...picked.pose },
-                  orbitOverride: picked.orbitOverride,
-                }
-              : panel,
-          ),
-        );
-        setIsPoseDirty(true);
-        setOrbit(DEFAULT_ORBIT_OVERRIDE);
-        setViewSourceMode('trace_mouse');
-        setDefinitiveNotice(
-          `Postura copiada desde la imagen en Cuerpo ${BODY_LETTERS[safePanelTargetIdx]}. Ajuste con el ratón o controles y pulse "Guardar Postura de Referencia".`,
-        );
-      } else {
-        const mergedPanels = response.panels.map((extPanel, idx) => {
-          const prevPanel = editedPanels[idx];
-          return {
-            ...extPanel,
-            subTitle: prevPanel?.subTitle || extPanel.subTitle || `Cuerpo ${BODY_LETTERS[idx] || idx + 1}`,
-            scoreBadge: prevPanel?.scoreBadge || extPanel.scoreBadge,
-            angleArcs: prevPanel?.angleArcs || extPanel.angleArcs,
-            forceVectors: prevPanel?.forceVectors || extPanel.forceVectors,
-            pose: { ...makeNeutralPose(), ...extPanel.pose },
-          };
-        });
-        setEditedPanels(mergedPanels);
-        setPanelTargetIdx(0);
-        setIsPoseDirty(true);
-        setOrbit(DEFAULT_ORBIT_OVERRIDE);
-        setViewSourceMode(overrideDataUrl ? 'synthetic_3d' : 'trace_mouse');
-        setDefinitiveNotice(
-          `Se copiaron ${mergedPanels.length} cuerpo(s) desde la imagen (${mergedPanels
-            .map((_, i) => `Cuerpo ${BODY_LETTERS[i] || i + 1}`)
-            .join(', ')}). Calibre con ratón/deslizadores y pulse "Guardar Postura de Referencia".`,
-        );
-      }
-    } finally {
-      setIsExtractingPose(false);
-    }
-  };
-
-  const handleUploadImageOnlyForPoseExtract = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async () => {
-      if (typeof reader.result === 'string') {
-        await handleExtractPoseFromImageSource(reader.result);
-      }
-    };
-    reader.readAsDataURL(file);
-    e.target.value = '';
-  };
-
-  const handleLockCurrent3DRenderAsDefinitive = async () => {
-    if (isSavingDefinitive) return;
-    try {
-      setIsSavingDefinitive(true);
-      setDefinitiveNotice(null);
-      if (editedPanels.length > 0) {
-        await saveDefinitiveFigurePoseToCatalog(selectedSpec.id, editedPanels, {
-          widthPx: effectiveSelectedSpec.widthPx,
-          heightPx: effectiveSelectedSpec.heightPx,
-        });
-        setIsPoseDirty(false);
-      }
-      const rendered = await renderBookFigureToPng(effectiveSelectedSpec, orbit, 'hd_lossless', {
-        preferSynthetic3D: true,
-        includeHeaderOnPhoto: false,
-        visualStyle: 'anatomical_skin',
-      });
-      const reader = new FileReader();
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        reader.onload = () =>
-          typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('Error leyendo PNG'));
-        reader.onerror = () => reject(new Error('Error leyendo PNG'));
-        reader.readAsDataURL(rendered.blob);
-      });
-      const saved = await saveDefinitiveFigureImageToApp(selectedSpec.id, dataUrl);
-      setCompareImgFailed(false);
-      setViewSourceMode('assigned_photo');
-      setDefinitiveNotice(
-        saved.ok && !saved.error
-          ? `Postura guardada en figurePlanCatalog.ts y render 3D fijado como imagen definitiva (${selectedSpec.fileName}).`
-          : saved.error || `Render 3D guardado para ${selectedSpec.fileName}.`,
-      );
-    } finally {
-      setIsSavingDefinitive(false);
-    }
-  };
-
-  /**
-   * Builds a ZIP containing ONLY the exact PNG files with their origin nomenclature:
-   * fig-1-01.png, fig-4-01.png, ..., fig-13-04.png (no extra text or manifest files).
-   */
-  const handleGenerateAndDownloadZip = async (scope: 'all' | 'chapter') => {
-    if (batchProgress) return;
-    const list = BOOK_FIGURE_CATALOG.filter((item) => {
-      if (!includeAll84Figures && item.isExistingRealChart) return false;
-      if (scope === 'chapter') {
-        return item.chapter === selectedSpec.chapter;
-      }
-      return true;
-    });
-
-    if (list.length === 0) return;
-
-    try {
-      const zip = new JSZip();
-      const targetContainer = useImagesSubfolder ? zip.folder('images') || zip : zip;
-
-      for (let i = 0; i < list.length; i++) {
-        const spec = list[i];
-        setBatchProgress({
-          current: i + 1,
-          total: list.length,
-          label: spec.fileName,
-        });
-        await new Promise((r) => window.setTimeout(r, 6));
-        const rendered = await renderBookFigureToPng(spec, DEFAULT_ORBIT_OVERRIDE, exportQuality, {
-          preferSynthetic3D: false,
-          includeHeaderOnPhoto,
-        });
-        // Strictly ONLY the image file with its exact origin filename (e.g., fig-1-01.png, fig-4-01.png)
-        targetContainer.file(spec.fileName, rendered.blob);
-      }
-
-      const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
-      const zipName =
-        scope === 'chapter'
-          ? `figuras-capitulo-${selectedSpec.chapter}-${exportQuality === 'hd_lossless' ? 'alta-calidad' : 'compacto'}.zip`
-          : exportQuality === 'hd_lossless'
-            ? 'figuras-plan-completo-alta-calidad.zip'
-            : 'figuras-plan-completo-compacto.zip';
-
-      if (scope === 'all') {
-        if (readyZipLink?.url) {
-          URL.revokeObjectURL(readyZipLink.url);
-        }
-        const persistentUrl = URL.createObjectURL(zipBlob);
-        setReadyZipLink({
-          url: persistentUrl,
-          fileName: zipName,
-          count: list.length,
-          sizeMb: (zipBlob.size / (1024 * 1024)).toFixed(2),
-        });
-      }
-
-      triggerBlobDownload(zipBlob, zipName);
-    } finally {
-      setBatchProgress(null);
-    }
-  };
-
-  const selectedAssignedPhotoUrl = useMemo(() => {
-    void photoRenderTick;
-    return getEffectiveFigurePhotoUrl(selectedSpec);
-  }, [selectedSpec, photoRenderTick]);
-
-  const isShowingPureAssignedPhoto =
-    Boolean(selectedAssignedPhotoUrl) && viewSourceMode === 'assigned_photo';
-  const hasCustomOverrideForSelected = useMemo(() => {
-    void photoRenderTick;
-    return hasCustomFigurePhotoOverride(selectedSpec.id);
-  }, [selectedSpec.id, photoRenderTick]);
-
-  const hasCustomPoseOverrideForSelected = useMemo(() => {
-    void photoRenderTick;
-    return hasCustomFigurePoseOverride(selectedSpec.id);
-  }, [selectedSpec.id, photoRenderTick]);
-
-  const assignedPhotosTotal = useMemo(() => {
-    void photoRenderTick;
-    return countAssignedFigurePhotos();
-  }, [photoRenderTick]);
-
-  const activePanelSpec: Panel3DSpec | null = editedPanels[safePanelTargetIdx] || null;
-  const activeBodyOrbit: CameraOrbitOverride = activePanelSpec?.orbitOverride || DEFAULT_ORBIT_OVERRIDE;
-
-  const setBodyOrbitForIdx = (targetIdx: number, updater: (prev: CameraOrbitOverride) => CameraOrbitOverride) => {
-    setEditedPanels((prev) =>
-      prev.map((p, idx) => {
-        if (idx !== targetIdx) return p;
-        const cur = p.orbitOverride || DEFAULT_ORBIT_OVERRIDE;
-        return {
-          ...p,
-          orbitOverride: updater(cur),
-        };
-      }),
-    );
-    setIsPoseDirty(true);
-  };
-
-  const handleCanvasPointerDown = (
-    e: React.PointerEvent<HTMLCanvasElement>,
-    isCustom: boolean,
-  ) => {
-    if (!isCustom && isShowingPureAssignedPhoto) return;
-    const activeMode = isCustom ? customSpec.renderMode : effectiveSelectedSpec.renderMode;
-    if (activeMode === 'diagram' || activeMode === 'real_chart') return;
-
-    let clickedBodyIdx = safePanelTargetIdx;
-    if (!isCustom && editedPanels.length >= 2) {
-      const rect = e.currentTarget.getBoundingClientRect();
-      if (rect.width > 0) {
-        const relX = Math.max(0, Math.min(0.999, (e.clientX - rect.left) / rect.width));
-        clickedBodyIdx = Math.min(editedPanels.length - 1, Math.floor(relX * editedPanels.length));
-        if (clickedBodyIdx !== safePanelTargetIdx) {
-          setPanelTargetIdx(clickedBodyIdx);
-        }
-      }
-    }
-
-    const current = isCustom
-      ? customOrbit
-      : editedPanels[clickedBodyIdx]?.orbitOverride || DEFAULT_ORBIT_OVERRIDE;
-
-    e.currentTarget.setPointerCapture(e.pointerId);
-    activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-
-    if (activePointersRef.current.size === 2) {
-      const pts = Array.from(activePointersRef.current.values());
-      const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
-      pinchOrbitRef.current = {
-        startDist: Math.max(20, dist),
-        startZoom: current.zoom,
-        targetPanelIdx: clickedBodyIdx,
-      };
-      dragOrbitRef.current = null;
-    } else if (activePointersRef.current.size === 1) {
-      pinchOrbitRef.current = null;
-      dragOrbitRef.current = {
-        startX: e.clientX,
-        startY: e.clientY,
-        az0: current.azimuthDeg,
-        el0: current.elevationDeg,
-        targetPanelIdx: clickedBodyIdx,
-      };
-    }
-  };
-
-  const handleCanvasPointerMove = (
-    e: React.PointerEvent<HTMLCanvasElement>,
-    isCustom: boolean,
-  ) => {
-    if (activePointersRef.current.has(e.pointerId)) {
-      activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    }
-
-    if (activePointersRef.current.size === 2 && pinchOrbitRef.current) {
-      const pts = Array.from(activePointersRef.current.values());
-      const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
-      const ratio = dist / pinchOrbitRef.current.startDist;
-      const nextZoom = Math.max(
-        0.65,
-        Math.min(1.85, Math.round(pinchOrbitRef.current.startZoom * ratio * 100) / 100),
-      );
-      if (isCustom) {
-        setCustomOrbit((prev) => ({ ...prev, zoom: nextZoom }));
-      } else {
-        setBodyOrbitForIdx(pinchOrbitRef.current.targetPanelIdx ?? safePanelTargetIdx, (prev) => ({
-          ...prev,
-          zoom: nextZoom,
-        }));
-      }
       return;
     }
 
-    if (!dragOrbitRef.current) return;
-    const dx = e.clientX - dragOrbitRef.current.startX;
-    const dy = e.clientY - dragOrbitRef.current.startY;
-    const nextAz = Math.max(-180, Math.min(180, Math.round(dragOrbitRef.current.az0 - dx * 0.45)));
-    const nextEl = Math.max(-65, Math.min(65, Math.round(dragOrbitRef.current.el0 + dy * 0.35)));
-    if (isCustom) {
-      setCustomOrbit((prev) => ({ ...prev, azimuthDeg: nextAz, elevationDeg: nextEl }));
-    } else {
-      setBodyOrbitForIdx(dragOrbitRef.current.targetPanelIdx ?? safePanelTargetIdx, (prev) => ({
-        ...prev,
-        azimuthDeg: nextAz,
-        elevationDeg: nextEl,
-      }));
-    }
-  };
+    // Modo Lámina Completa (muestra Cuerpo A, Cuerpo B, Cuerpo C, Cuerpo D juntos o Diagrama)
+    projectedJointsRef.current = null;
+    const isMulti = draftPanels.length >= 2;
+    const previewSpec: BookFigureFileSpec = {
+      ...selectedCatalogSpec,
+      bodiesRule:
+        draftPanels.length === 0
+          ? selectedCatalogSpec.bodiesRule
+          : isMulti
+            ? '2'
+            : '1',
+      renderMode:
+        draftPanels.length === 0
+          ? selectedCatalogSpec.renderMode
+          : isMulti
+            ? '3d_dual'
+            : '3d_single',
+      widthPx: isMulti ? Math.max(800, draftPanels.length * 400) : selectedCatalogSpec.widthPx,
+      heightPx: selectedCatalogSpec.heightPx,
+      panels: draftPanels.length > 0 ? draftPanels : selectedCatalogSpec.panels,
+    };
 
-  const handleCanvasPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    activePointersRef.current.delete(e.pointerId);
-    if (activePointersRef.current.size < 2) {
-      pinchOrbitRef.current = null;
-    }
-    if (activePointersRef.current.size === 0) {
-      dragOrbitRef.current = null;
-    }
-    try {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    } catch {
-      // Ignore
-    }
-  };
+    renderBookFigureToCanvas(previewSpec, canvas, orbitOverride, 2, {
+      preferSynthetic3D: draftPanels.length > 0 ? true : preferSynthetic3D,
+      activePanelHighlightIdx: isMulti ? safeBodyIdx : undefined,
+      onAsyncPhotoLoaded: () => setOverrideTick((t) => t + 1),
+    });
+  }, [
+    selectedCatalogSpec,
+    draftPanels,
+    safeBodyIdx,
+    activePanel,
+    viewportMode,
+    preferSynthetic3D,
+    orbitOverride,
+    avatarReady,
+    show3DGizmos,
+    selectedJoint3D,
+    hoveredJoint3D,
+    overrideTick,
+  ]);
 
-  // --- INTERACCIÓN DIRECTA CON RATÓN / TÁCTIL SOBRE ARTICULACIONES (MODO CALCO) ---
-  const findNearestTraceJoint = (canvasEl: HTMLCanvasElement, clientX: number, clientY: number): JointKey | null => {
-    const pts = traceProjectedJointsRef.current;
-    if (!pts) return null;
-    const rect = canvasEl.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return null;
-    const x = ((clientX - rect.left) / rect.width) * 520;
-    const y = ((clientY - rect.top) / rect.height) * 520;
-    let best: JointKey | null = null;
-    let bestDist = 24;
-    for (const j of TRACE_INTERACTIVE_JOINTS) {
-      const pt = pts[j];
-      if (!pt) continue;
-      const d = Math.hypot(pt.x - x, pt.y - y);
-      if (d < bestDist) {
-        bestDist = d;
-        best = j;
+  // Renderizado del generador por instrucción escrita
+  useEffect(() => {
+    if (subTab !== 'generador_prompt' || !customPromptCanvasRef.current) return;
+    const parsed = parseBiomechanicalPromptToPanel(customPromptText);
+    renderInteractiveFreeAvatarToCanvas(
+      parsed.panel,
+      customPromptCanvasRef.current,
+      540,
+      480,
+      DEFAULT_ORBIT_OVERRIDE,
+      2,
+      { showGizmos: false },
+    );
+  }, [subTab, customPromptText, avatarReady]);
+
+  // Detección de clic / arrastre libre sobre nodos articulares 3D o selección de Cuerpo A..D en lámina
+  const findHitJointOnCanvas = useCallback(
+    (clientX: number, clientY: number): JointKey | null => {
+      const canvas = mainCanvasRef.current;
+      const pts = projectedJointsRef.current;
+      if (!canvas || !pts || viewportMode !== 'avatar_libre_cuerpo' || !show3DGizmos) {
+        return null;
+      }
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
+      const lx = ((clientX - rect.left) / rect.width) * 640;
+      const ly = ((clientY - rect.top) / rect.height) * 520;
+
+      const joints: JointKey[] = [
+        'head',
+        'c7',
+        'l5s1',
+        'pelvis',
+        'shoulderR',
+        'elbowR',
+        'wristR',
+        'shoulderL',
+        'elbowL',
+        'wristL',
+        'hipR',
+        'kneeR',
+        'ankleR',
+        'hipL',
+        'kneeL',
+        'ankleL',
+      ];
+      let best: JointKey | null = null;
+      let bestDist = 22;
+      for (const jk of joints) {
+        const pt = pts[jk];
+        if (!pt) continue;
+        const d = Math.hypot(lx - pt.x, ly - pt.y);
+        if (d < bestDist) {
+          bestDist = d;
+          best = jk;
+        }
+      }
+      return best;
+    },
+    [viewportMode, show3DGizmos],
+  );
+
+  const handleCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = mainCanvasRef.current;
+    if (!canvas) return;
+
+    // Si estamos en Lámina Completa con múltiples cuerpos, un clic sobre una columna selecciona ese Cuerpo (A, B, C o D)
+    if (viewportMode === 'lamina_completa' && draftPanels.length >= 2) {
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width > 0) {
+        const relX = (e.clientX - rect.left) / rect.width;
+        const colIdx = Math.min(
+          draftPanels.length - 1,
+          Math.max(0, Math.floor(relX * draftPanels.length)),
+        );
+        setActiveBodyIdx(colIdx);
       }
     }
-    return best;
-  };
 
-  const handleTraceCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!activePanelSpec) return;
+    const hitJoint = findHitJointOnCanvas(e.clientX, e.clientY);
     e.currentTarget.setPointerCapture(e.pointerId);
-    const hitJoint = findNearestTraceJoint(e.currentTarget, e.clientX, e.clientY);
-    const curOrb = activePanelSpec.orbitOverride || DEFAULT_ORBIT_OVERRIDE;
-    if (hitJoint) {
-      setTraceSelectedJoint(hitJoint);
-      traceDragRef.current = {
+
+    if (hitJoint && activePanel) {
+      setSelectedJoint3D(hitJoint);
+      dragStateRef.current = {
         mode: 'joint',
         joint: hitJoint,
         startX: e.clientX,
         startY: e.clientY,
-        startPose: { ...activePanelSpec.pose },
-        az0: curOrb.azimuthDeg,
-        el0: curOrb.elevationDeg,
+        startOrbit: { ...orbitOverride },
+        startPose: { ...activePanel.pose },
       };
-      if (hitJoint === 'head' || hitJoint === 'c7' || hitJoint === 't12' || hitJoint === 'l5s1') {
-        setAngleCategory('spine_head');
-      } else if (hitJoint.endsWith('R') && (hitJoint.startsWith('shoulder') || hitJoint.startsWith('elbow') || hitJoint.startsWith('wrist'))) {
-        setAngleCategory('right_arm');
-      } else if (hitJoint.endsWith('L') && (hitJoint.startsWith('shoulder') || hitJoint.startsWith('elbow') || hitJoint.startsWith('wrist'))) {
-        setAngleCategory('left_arm');
-      } else if (hitJoint.startsWith('hip') || hitJoint.startsWith('knee') || hitJoint.startsWith('ankle')) {
-        setAngleCategory('legs_feet');
-      }
-    } else {
-      traceDragRef.current = {
-        mode: 'orbit',
-        startX: e.clientX,
-        startY: e.clientY,
-        startPose: { ...activePanelSpec.pose },
-        az0: curOrb.azimuthDeg,
-        el0: curOrb.elevationDeg,
-      };
-    }
-  };
-
-  const handleTraceCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const drag = traceDragRef.current;
-    if (!drag) {
-      const hovered = findNearestTraceJoint(e.currentTarget, e.clientX, e.clientY);
-      if (hovered !== traceHoveredJoint) {
-        setTraceHoveredJoint(hovered);
-      }
       return;
     }
 
-    const dx = e.clientX - drag.startX;
-    const dy = e.clientY - drag.startY;
+    dragStateRef.current = {
+      mode: 'orbit',
+      startX: e.clientX,
+      startY: e.clientY,
+      startOrbit: { ...orbitOverride },
+      startPose: activePanel ? { ...activePanel.pose } : makeNeutralPose(),
+    };
+  };
 
-    if (drag.mode === 'orbit') {
-      const nextAz = Math.max(-180, Math.min(180, Math.round(drag.az0 - dx * 0.45)));
-      const nextEl = Math.max(-65, Math.min(65, Math.round(drag.el0 + dy * 0.35)));
-      setBodyOrbitForIdx(safePanelTargetIdx, (prev) => ({
-        ...prev,
-        azimuthDeg: nextAz,
-        elevationDeg: nextEl,
-      }));
+  const handleCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const st = dragStateRef.current;
+    if (!st) {
+      setHoveredJoint3D(findHitJointOnCanvas(e.clientX, e.clientY));
       return;
     }
 
-    const j = drag.joint;
-    if (!j) return;
-    const clampVal = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, Math.round(v)));
-    const sp = drag.startPose;
-    const patch: Partial<PosturePose3D> = {};
+    const dx = e.clientX - st.startX;
+    const dy = e.clientY - st.startY;
 
-    switch (j) {
-      case 'head':
-      case 'c7':
-        patch.neckFlexionDeg = clampVal((sp.neckFlexionDeg || 0) + dy * 0.35, -40, 55);
-        patch.neckTwistDeg = clampVal((sp.neckTwistDeg || 0) + dx * 0.4, -65, 65);
-        break;
-      case 't12':
-      case 'l5s1':
-        patch.trunkFlexionDeg = clampVal((sp.trunkFlexionDeg || 0) + dy * 0.42, -30, 100);
-        patch.trunkLateralDeg = clampVal((sp.trunkLateralDeg || 0) + dx * 0.28, -40, 40);
-        break;
-      case 'pelvis':
-        patch.rootYawDeg = clampVal((sp.rootYawDeg || 0) + dx * 0.6, -180, 180);
-        break;
-      case 'shoulderR':
-        patch.shoulderRFlexionDeg = clampVal((sp.shoulderRFlexionDeg || 0) - dy * 0.55, -45, 175);
-        patch.shoulderRAbductionDeg = clampVal((sp.shoulderRAbductionDeg || 0) + dx * 0.42, 0, 160);
-        if (bilateralSymmetry) {
-          patch.shoulderLFlexionDeg = patch.shoulderRFlexionDeg;
-          patch.shoulderLAbductionDeg = patch.shoulderRAbductionDeg;
-        }
-        break;
-      case 'shoulderL':
-        patch.shoulderLFlexionDeg = clampVal((sp.shoulderLFlexionDeg || 0) - dy * 0.55, -45, 175);
-        patch.shoulderLAbductionDeg = clampVal((sp.shoulderLAbductionDeg || 0) - dx * 0.42, 0, 160);
-        if (bilateralSymmetry) {
-          patch.shoulderRFlexionDeg = patch.shoulderLFlexionDeg;
-          patch.shoulderRAbductionDeg = patch.shoulderLAbductionDeg;
-        }
-        break;
-      case 'elbowR':
-        patch.elbowRFlexionDeg = clampVal((sp.elbowRFlexionDeg || 0) - dy * 0.55, 0, 150);
-        patch.forearmRPronationDeg = clampVal((sp.forearmRPronationDeg || 0) + dx * 0.5, -90, 90);
-        if (bilateralSymmetry) {
-          patch.elbowLFlexionDeg = patch.elbowRFlexionDeg;
-          patch.forearmLPronationDeg = patch.forearmRPronationDeg;
-        }
-        break;
-      case 'elbowL':
-        patch.elbowLFlexionDeg = clampVal((sp.elbowLFlexionDeg || 0) - dy * 0.55, 0, 150);
-        patch.forearmLPronationDeg = clampVal((sp.forearmLPronationDeg || 0) - dx * 0.5, -90, 90);
-        if (bilateralSymmetry) {
-          patch.elbowRFlexionDeg = patch.elbowLFlexionDeg;
-          patch.forearmRPronationDeg = patch.forearmLPronationDeg;
-        }
-        break;
-      case 'wristR':
-        patch.wristRFlexionDeg = clampVal((sp.wristRFlexionDeg || 0) + dy * 0.45, -65, 65);
-        patch.wristRDeviationDeg = clampVal((sp.wristRDeviationDeg || 0) + dx * 0.35, -35, 35);
-        if (bilateralSymmetry) {
-          patch.wristLFlexionDeg = patch.wristRFlexionDeg;
-          patch.wristLDeviationDeg = patch.wristRDeviationDeg;
-        }
-        break;
-      case 'wristL':
-        patch.wristLFlexionDeg = clampVal((sp.wristLFlexionDeg || 0) + dy * 0.45, -65, 65);
-        patch.wristLDeviationDeg = clampVal((sp.wristLDeviationDeg || 0) - dx * 0.35, -35, 35);
-        if (bilateralSymmetry) {
-          patch.wristRFlexionDeg = patch.wristLFlexionDeg;
-          patch.wristRDeviationDeg = patch.wristLDeviationDeg;
-        }
-        break;
-      case 'hipR':
-        patch.hipRFlexionDeg = clampVal((sp.hipRFlexionDeg || 0) - dy * 0.5, -25, 125);
-        if (bilateralSymmetry) patch.hipLFlexionDeg = patch.hipRFlexionDeg;
-        break;
-      case 'hipL':
-        patch.hipLFlexionDeg = clampVal((sp.hipLFlexionDeg || 0) - dy * 0.5, -25, 125);
-        if (bilateralSymmetry) patch.hipRFlexionDeg = patch.hipLFlexionDeg;
-        break;
-      case 'kneeR':
-        patch.kneeRFlexionDeg = clampVal((sp.kneeRFlexionDeg || 0) + dy * 0.55, 0, 140);
-        if (bilateralSymmetry) patch.kneeLFlexionDeg = patch.kneeRFlexionDeg;
-        break;
-      case 'kneeL':
-        patch.kneeLFlexionDeg = clampVal((sp.kneeLFlexionDeg || 0) + dy * 0.55, 0, 140);
-        if (bilateralSymmetry) patch.kneeRFlexionDeg = patch.kneeLFlexionDeg;
-        break;
-      case 'ankleR':
-        patch.ankleRDorsiflexionDeg = clampVal((sp.ankleRDorsiflexionDeg || 0) - dy * 0.4, -35, 35);
-        if (bilateralSymmetry) patch.ankleLDorsiflexionDeg = patch.ankleRDorsiflexionDeg;
-        break;
-      case 'ankleL':
-        patch.ankleLDorsiflexionDeg = clampVal((sp.ankleLDorsiflexionDeg || 0) - dy * 0.4, -35, 35);
-        if (bilateralSymmetry) patch.ankleRDorsiflexionDeg = patch.ankleLDorsiflexionDeg;
-        break;
-      default:
-        break;
+    if (st.mode === 'orbit') {
+      setOrbitOverride({
+        azimuthDeg: Math.max(-180, Math.min(180, Math.round(st.startOrbit.azimuthDeg + dx * 0.55))),
+        elevationDeg: Math.max(-55, Math.min(60, Math.round(st.startOrbit.elevationDeg - dy * 0.45))),
+        zoom: st.startOrbit.zoom,
+      });
+      return;
     }
 
-    setEditedPanels((prev) =>
-      prev.map((p, idx) => (idx === safePanelTargetIdx ? { ...p, pose: { ...p.pose, ...patch } } : p)),
-    );
-    setIsPoseDirty(true);
+    if (st.mode === 'joint' && st.joint) {
+      const clamp = (v: number, min: number, max: number) =>
+        Math.round(Math.max(min, Math.min(max, v)));
+
+      updateActiveBodyPose((prev) => {
+        const next = { ...prev };
+        switch (st.joint) {
+          case 'pelvis':
+            next.rootOffsetX = Math.round(Math.max(-1, Math.min(1, (st.startPose.rootOffsetX ?? 0) + dx * 0.003)) * 100) / 100;
+            next.rootOffsetZ = Math.round(Math.max(-1, Math.min(1, (st.startPose.rootOffsetZ ?? 0) + dy * 0.003)) * 100) / 100;
+            break;
+          case 'l5s1':
+            next.trunkFlexionDeg = clamp(st.startPose.trunkFlexionDeg + dy * 0.45, -30, 110);
+            next.trunkLateralDeg = clamp(st.startPose.trunkLateralDeg + dx * 0.3, -35, 35);
+            break;
+          case 'c7':
+          case 'head':
+            next.neckFlexionDeg = clamp(st.startPose.neckFlexionDeg + dy * 0.4, -40, 55);
+            next.neckTwistDeg = clamp(st.startPose.neckTwistDeg + dx * 0.4, -60, 60);
+            break;
+          case 'shoulderR':
+            next.shoulderRFlexionDeg = clamp(st.startPose.shoulderRFlexionDeg - dy * 0.55, -49, 175);
+            next.shoulderRAbductionDeg = clamp(st.startPose.shoulderRAbductionDeg + dx * 0.45, 0, 135);
+            if (mirrorArmsLegs) {
+              next.shoulderLFlexionDeg = next.shoulderRFlexionDeg;
+              next.shoulderLAbductionDeg = next.shoulderRAbductionDeg;
+            }
+            break;
+          case 'elbowR':
+            next.elbowRFlexionDeg = clamp(st.startPose.elbowRFlexionDeg - dy * 0.6, 0, 155);
+            if (mirrorArmsLegs) next.elbowLFlexionDeg = next.elbowRFlexionDeg;
+            break;
+          case 'wristR':
+            next.wristRFlexionDeg = clamp(st.startPose.wristRFlexionDeg + dy * 0.5, -60, 60);
+            next.forearmRPronationDeg = clamp(st.startPose.forearmRPronationDeg + dx * 0.5, -85, 85);
+            break;
+          case 'shoulderL':
+            next.shoulderLFlexionDeg = clamp(st.startPose.shoulderLFlexionDeg - dy * 0.55, -49, 175);
+            next.shoulderLAbductionDeg = clamp(st.startPose.shoulderLAbductionDeg - dx * 0.45, 0, 135);
+            break;
+          case 'elbowL':
+            next.elbowLFlexionDeg = clamp(st.startPose.elbowLFlexionDeg - dy * 0.6, 0, 155);
+            break;
+          case 'wristL':
+            next.wristLFlexionDeg = clamp((st.startPose.wristLFlexionDeg ?? 0) + dy * 0.5, -60, 60);
+            next.forearmLPronationDeg = clamp((st.startPose.forearmLPronationDeg ?? 0) + dx * 0.5, -85, 85);
+            break;
+          case 'hipR':
+            next.hipRFlexionDeg = clamp(st.startPose.hipRFlexionDeg + dy * 0.5, -30, 125);
+            if (mirrorArmsLegs) next.hipLFlexionDeg = next.hipRFlexionDeg;
+            break;
+          case 'kneeR':
+            next.kneeRFlexionDeg = clamp(st.startPose.kneeRFlexionDeg + dy * 0.55, 0, 145);
+            if (mirrorArmsLegs) next.kneeLFlexionDeg = next.kneeRFlexionDeg;
+            break;
+          case 'ankleR':
+            next.ankleRDorsiflexionDeg = clamp(st.startPose.ankleRDorsiflexionDeg - dy * 0.4, -45, 40);
+            break;
+          case 'hipL':
+            next.hipLFlexionDeg = clamp(st.startPose.hipLFlexionDeg + dy * 0.5, -30, 125);
+            break;
+          case 'kneeL':
+            next.kneeLFlexionDeg = clamp(st.startPose.kneeLFlexionDeg + dy * 0.55, 0, 145);
+            break;
+          case 'ankleL':
+            next.ankleLDorsiflexionDeg = clamp(st.startPose.ankleLDorsiflexionDeg - dy * 0.4, -45, 40);
+            break;
+        }
+        return next;
+      });
+    }
   };
 
-  const handleTraceCanvasPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    traceDragRef.current = null;
+  const handleCanvasPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    dragStateRef.current = null;
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {
@@ -1310,2000 +581,1172 @@ export const FigurePlanStudio: React.FC<FigurePlanStudioProps> = ({ onBackToEval
     }
   };
 
-  const is3DSelected =
-    effectiveSelectedSpec.renderMode === '3d_single' || effectiveSelectedSpec.renderMode === '3d_dual';
-  const activePanelPose: PosturePose3D | null = activePanelSpec?.pose || null;
-
-  const updateLiveJoint = (
-    key: keyof PosturePose3D,
-    val: number | boolean | string,
-    mirrorKey?: keyof PosturePose3D,
-  ) => {
-    setEditedPanels((prev) =>
-      prev.map((p, idx) => {
-        if (idx !== safePanelTargetIdx) return p;
-        const nextPose: PosturePose3D = {
-          ...p.pose,
-          [key]: val,
-          ...(bilateralSymmetry && mirrorKey ? { [mirrorKey]: val } : {}),
+  // Añadir / Quitar Cuerpos (Cuerpo B, Cuerpo C, Cuerpo D)
+  const handleAddAnotherBody = () => {
+    if (draftPanels.length >= 4) return;
+    const base = activePanel
+      ? (JSON.parse(JSON.stringify(activePanel)) as Panel3DSpec)
+      : {
+          subTitle: 'Cuerpo A',
+          focusZone: 'full_body' as FocusZone,
+          cameraPreset: 'sagittal_right' as CameraPreset,
+          pose: makeNeutralPose(),
         };
-        return { ...p, pose: nextPose };
-      }),
-    );
-    setIsPoseDirty(true);
+    const nextIdx = draftPanels.length;
+    base.subTitle = `Cuerpo ${BODY_LETTERS[nextIdx] || nextIdx + 1}`;
+    setDraftPanels((prev) => [...prev, base]);
+    setActiveBodyIdx(nextIdx);
+    setBannerMsg({
+      tone: 'info',
+      text: `Se agregó Cuerpo ${BODY_LETTERS[nextIdx]} a ${selectedCatalogSpec.id}. Puede editarlo libremente y guardarlo en el catálogo.`,
+    });
   };
 
-  const updateActivePanelMeta = (patch: Partial<Omit<Panel3DSpec, 'pose'>>) => {
-    setEditedPanels((prev) =>
-      prev.map((p, idx) => (idx === safePanelTargetIdx ? { ...p, ...patch } : p)),
-    );
-    setIsPoseDirty(true);
+  const handleRemoveActiveBody = () => {
+    if (draftPanels.length <= 1) return;
+    const next = draftPanels.filter((_, i) => i !== safeBodyIdx);
+    setDraftPanels(next);
+    setActiveBodyIdx(Math.max(0, safeBodyIdx - 1));
   };
 
-  const handleAddExtraBodyPanel = () => {
-    if (editedPanels.length >= 4) return;
-    const nextIdx = editedPanels.length;
-    const basePanel = editedPanels[safePanelTargetIdx] || editedPanels[0];
-    const clonedPose: PosturePose3D = basePanel
-      ? JSON.parse(JSON.stringify(basePanel.pose))
-      : makeNeutralPose();
-    const newPanel: Panel3DSpec = {
-      subTitle: `Cuerpo ${BODY_LETTERS[nextIdx] || nextIdx + 1}: Postura comparada`,
-      scoreBadge: basePanel?.scoreBadge ? `${basePanel.scoreBadge}` : undefined,
-      focusZone: basePanel?.focusZone || 'full_body',
-      cameraPreset: basePanel?.cameraPreset || 'sagittal_right',
-      pose: clonedPose,
-      orbitOverride: basePanel?.orbitOverride ? { ...basePanel.orbitOverride } : undefined,
-    };
-    setEditedPanels((prev) => [...prev, newPanel]);
-    setPanelTargetIdx(nextIdx);
-    setIsPoseDirty(true);
-    setDefinitiveNotice(
-      `Se añadió Cuerpo ${BODY_LETTERS[nextIdx]} a ${selectedSpec.fileName}. Ahora la figura renderiza ${nextIdx + 1} cuerpos independientes.`,
-    );
-  };
+  // Copiar postura exacta desde imagen de referencia con IA (multi-cuerpo A..D)
+  const runExtractPoseFromImageSource = async (imageSource: string) => {
+    setIsExtractingAiPose(true);
+    setBannerMsg({
+      tone: 'info',
+      text: 'Analizando la imagen de referencia para copiar la postura exacta de cada cuerpo (A..D)...',
+    });
+    try {
+      const res = await extractFigurePoseFromImage({
+        imageDataUrl: imageSource,
+        figId: selectedCatalogSpec.id,
+        title: selectedCatalogSpec.title,
+        bookDescription: selectedCatalogSpec.bookDescription,
+        expectedBodiesCount: draftPanels.length >= 2 ? draftPanels.length : undefined,
+      });
 
-  const handleRemoveActiveBodyPanel = () => {
-    if (editedPanels.length <= 1) return;
-    const nextList = editedPanels.filter((_, idx) => idx !== safePanelTargetIdx);
-    setEditedPanels(nextList);
-    setPanelTargetIdx(Math.max(0, safePanelTargetIdx - 1));
-    setIsPoseDirty(true);
-  };
-
-  const handleCopyBodyAToActive = () => {
-    if (safePanelTargetIdx === 0 || !editedPanels[0]) return;
-    const srcA = editedPanels[0];
-    setEditedPanels((prev) =>
-      prev.map((p, idx) =>
-        idx === safePanelTargetIdx
-          ? {
-              ...p,
-              cameraPreset: srcA.cameraPreset,
-              focusZone: srcA.focusZone,
-              pose: JSON.parse(JSON.stringify(srcA.pose)) as PosturePose3D,
-              orbitOverride: srcA.orbitOverride ? { ...srcA.orbitOverride } : undefined,
-            }
-          : p,
-      ),
-    );
-    setIsPoseDirty(true);
-  };
-
-  const totalInZip = includeAll84Figures
-    ? BOOK_FIGURE_CATALOG.length
-    : BOOK_FIGURE_CATALOG.filter((f) => !f.isExistingRealChart).length;
-
-  // Group catalog rows by Figure Number (e.g. 4.4 -> fig-4-04a.png, fig-4-04b.png) for exact Plan de Figuras table view
-  const groupedPlanRows = useMemo(() => {
-    void photoRenderTick;
-    const map = new Map<
-      string,
-      {
-        figureNumber: string;
-        chapter: number;
-        title: string;
-        bodiesLabel: string;
-        files: BookFigureFileSpec[];
+      if (!res.ok || !res.panels) {
+        setBannerMsg({
+          tone: 'error',
+          text: res.error || 'No se pudo extraer la postura desde la imagen.',
+        });
+        return;
       }
-    >();
 
-    for (const item of BOOK_FIGURE_CATALOG) {
-      const itemBodies =
-        item.bodiesRule === 'diagrama'
-          ? 'diagrama'
-          : String(item.panels?.length || (item.bodiesRule === '2' ? 2 : 1));
-      const existing = map.get(item.figureNumber);
-      if (existing) {
-        existing.files.push(item);
+      setDraftPanels(clonePanelsDeepLocal(res.panels));
+      setActiveBodyIdx(0);
+      setPreferSynthetic3D(true);
+      setViewportMode(res.panels.length >= 2 ? 'lamina_completa' : 'avatar_libre_cuerpo');
+      setBannerMsg({
+        tone: 'success',
+        text: `Postura copiada desde la imagen (${res.panels.length} cuerpo(s) detectados). Verifique con el ratón/goniómetro y pulse "Guardar como Referencia".`,
+      });
+    } finally {
+      setIsExtractingAiPose(false);
+    }
+  };
+
+  // Guardar como postura de referencia definitiva en figurePlanCatalog.ts + pose-overrides.json
+  const handleSaveReferencePose = async () => {
+    if (draftPanels.length === 0) return;
+    setIsSavingPose(true);
+    try {
+      const panelsWithOrbit = draftPanels.map((p, idx) => {
+        if (idx !== safeBodyIdx) return p;
+        const az = (p.orbitOverride?.azimuthDeg ?? 0) + orbitOverride.azimuthDeg;
+        const el = (p.orbitOverride?.elevationDeg ?? 0) + orbitOverride.elevationDeg;
+        const zm = (p.orbitOverride?.zoom ?? 1) * orbitOverride.zoom;
+        return {
+          ...p,
+          orbitOverride: { azimuthDeg: az, elevationDeg: el, zoom: Number(zm.toFixed(2)) },
+        };
+      });
+
+      const isMulti = panelsWithOrbit.length >= 2;
+      const result = await saveDefinitiveFigurePoseToCatalog(
+        selectedCatalogSpec.id,
+        panelsWithOrbit,
+        {
+          widthPx: isMulti ? Math.max(800, panelsWithOrbit.length * 400) : 480,
+          heightPx: isMulti ? 520 : 640,
+        },
+      );
+
+      setOrbitOverride(DEFAULT_ORBIT_OVERRIDE);
+      setDraftPanels(clonePanelsDeepLocal(panelsWithOrbit));
+
+      if (result.ok) {
+        setBannerMsg({
+          tone: 'success',
+          text: result.catalogFileUpdated
+            ? `Postura de referencia guardada definitivamente en figurePlanCatalog.ts (${panelsWithOrbit.length} cuerpo(s): ${panelsWithOrbit.map((_, i) => `Cuerpo ${BODY_LETTERS[i]}`).join(', ')}).`
+            : `Postura de referencia almacenada en sesión activa para ${selectedCatalogSpec.id}.`,
+        });
       } else {
-        map.set(item.figureNumber, {
-          figureNumber: item.figureNumber,
-          chapter: item.chapter,
-          title: item.title.replace(/\s*\(Parte\s+[a-d]\)$/i, ''),
-          bodiesLabel: itemBodies,
-          files: [item],
+        setBannerMsg({
+          tone: 'warning',
+          text: result.error || 'Guardado local aplicado.',
         });
       }
+    } finally {
+      setIsSavingPose(false);
     }
+  };
 
-    return Array.from(map.values()).map((row) => {
-      if (row.files.length > 1 && row.bodiesLabel !== 'diagrama') {
-        const totalBodies = row.files.reduce(
-          (acc, f) => acc + (f.panels?.length || (f.bodiesRule === '2' ? 2 : f.bodiesRule === '1' ? 1 : 0)),
-          0,
-        );
-        return { ...row, bodiesLabel: String(totalBodies) };
+  // Reemplazar imagen definitiva de la figura
+  const handleUploadDefinitivePhoto = async (file: File) => {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const dataUrl = String(reader.result || '');
+      if (!dataUrl) return;
+      const res = await saveDefinitiveFigureImageToApp(selectedCatalogSpec.id, dataUrl);
+      setPreferSynthetic3D(false);
+      setViewportMode('lamina_completa');
+      setBannerMsg({
+        tone: res.ok ? 'success' : 'warning',
+        text: res.ok
+          ? `Imagen definitiva almacenada y publicada para ${selectedCatalogSpec.fileName}.`
+          : res.error || 'Imagen guardada localmente.',
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Exportar PNG individual de la vista actual
+  const handleDownloadCurrentPng = async () => {
+    const canvas = mainCanvasRef.current;
+    if (!canvas) return;
+    const png = await exportCanvasToHighQualityPng(canvas);
+    const a = document.createElement('a');
+    a.href = png.dataUrl;
+    a.download = selectedCatalogSpec.fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
+  // Exportación masiva ZIP de todas las figuras
+  const handleDownloadAllZip = async () => {
+    setIsExportingZip(true);
+    setZipProgressPct(0);
+    try {
+      const zip = new JSZip();
+      for (let i = 0; i < BOOK_FIGURE_CATALOG.length; i++) {
+        const fig = BOOK_FIGURE_CATALOG[i];
+        const rendered = await renderBookFigureToPng(fig, DEFAULT_ORBIT_OVERRIDE, 'hd_lossless');
+        const b64 = rendered.dataUrl.split(',')[1] || '';
+        zip.file(fig.fileName, b64, { base64: true });
+        setZipProgressPct(Math.round(((i + 1) / BOOK_FIGURE_CATALOG.length) * 100));
       }
-      return row;
-    });
-  }, [photoRenderTick]);
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'catalogo_figuras_ergoeval_3d.zip';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setBannerMsg({
+        tone: 'success',
+        text: `Archivo ZIP generado con las ${BOOK_FIGURE_CATALOG.length} láminas del catálogo.`,
+      });
+    } finally {
+      setIsExportingZip(false);
+    }
+  };
+
+  const visibleSliders = useMemo(
+    () =>
+      angleCategory === 'espacio_objeto'
+        ? []
+        : JOINT_SLIDER_FIELDS.filter((f) => f.category === angleCategory),
+    [angleCategory],
+  );
 
   return (
-    <div className="space-y-5">
-      {/* CABECERA Y ENLACE DE DESCARGA DIRECTA DEL PAQUETE DE IMÁGENES EN ALTA CALIDAD */}
-      <section className="bg-white border border-slate-300 rounded-lg p-4 sm:p-5 shadow-2xs space-y-4">
-        <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4 border-b border-slate-200 pb-4">
-          <div className="space-y-1.5">
-            <div className="flex flex-wrap items-center gap-2 text-xs text-sky-800 font-semibold">
-              <span>Ilustración Anatómica Humana 3D</span>
-              <span className="text-slate-300">·</span>
-              <span className="tabular-nums">{assignedPhotosTotal} Fotografías Adjuntas Asignadas (Cap. 4)</span>
-              <span className="text-slate-300">·</span>
-              <span className="tabular-nums">Alta Nitidez 2× sin pérdida</span>
+    <div className="space-y-4">
+      {/* Cabecera Principal */}
+      <div className="bg-slate-900 text-white rounded-md border border-slate-800 px-4 py-3.5 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2 text-[11px] font-mono text-cyan-300 uppercase tracking-wider">
+            <Box className="w-3.5 h-3.5 shrink-0" />
+            <span>Estudio Motor 3D de Figuras · Avatar Libre, Multi-Cuerpo (A–D), Objetos Regulables y Multi-Goniómetro</span>
+          </div>
+          <h1 className="text-base sm:text-lg font-bold tracking-tight text-white">
+            Calibración de Posturas de Referencia (`figurePlanCatalog.ts`), Mobiliario 3D e Imágenes Definitivas
+          </h1>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex rounded border border-slate-700 bg-slate-800 p-0.5">
+            <button
+              type="button"
+              onClick={() => setSubTab('catalogo_3d')}
+              className={`px-3 py-1.5 rounded text-xs font-semibold cursor-pointer ${
+                subTab === 'catalogo_3d' ? 'bg-cyan-600 text-white' : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              Catálogo 3D ({BOOK_FIGURE_CATALOG.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setSubTab('generador_prompt')}
+              className={`px-3 py-1.5 rounded text-xs font-semibold cursor-pointer ${
+                subTab === 'generador_prompt' ? 'bg-cyan-600 text-white' : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              Generador por Texto
+            </button>
+            <button
+              type="button"
+              onClick={() => setSubTab('documentacion_pdf')}
+              className={`px-3 py-1.5 rounded text-xs font-semibold cursor-pointer ${
+                subTab === 'documentacion_pdf' ? 'bg-cyan-600 text-white' : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              Bases PDF
+            </button>
+          </div>
+
+          <button
+            type="button"
+            disabled={isExportingZip}
+            onClick={() => void handleDownloadAllZip()}
+            className="min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-slate-700 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-xs font-semibold text-slate-100 cursor-pointer tabular-nums"
+          >
+            <FolderArchive className="w-3.5 h-3.5 text-cyan-400" />
+            {isExportingZip ? `Exportando ZIP (${zipProgressPct}%)` : 'Descargar Todo (.ZIP)'}
+          </button>
+
+          <button
+            type="button"
+            onClick={onBackToEvaluator}
+            className="min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-slate-600 bg-white text-slate-900 hover:bg-slate-100 text-xs font-semibold cursor-pointer"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            Volver al Evaluador
+          </button>
+        </div>
+      </div>
+
+      {/* Notificación de estado */}
+      {bannerMsg && (
+        <div
+          className={`px-4 py-2.5 rounded-md border text-xs font-medium flex items-center justify-between gap-3 ${
+            bannerMsg.tone === 'error'
+              ? 'bg-rose-50 border-rose-300 text-rose-950'
+              : bannerMsg.tone === 'warning'
+                ? 'bg-amber-50 border-amber-300 text-amber-950'
+                : bannerMsg.tone === 'success'
+                  ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
+                  : 'bg-sky-50 border-sky-200 text-sky-950'
+          }`}
+        >
+          <span>{bannerMsg.text}</span>
+          <button
+            type="button"
+            onClick={() => setBannerMsg(null)}
+            className="p-1 opacity-75 hover:opacity-100 cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {subTab === 'documentacion_pdf' ? (
+        <div className="bg-white border border-slate-300 rounded-md p-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-bold text-slate-900">
+                Documentación Técnica de Modelización Biomecánica 3D
+              </h2>
+              <p className="text-xs text-slate-600">
+                Manual completo de 16 segmentos, 14 articulaciones, ángulos diedros, momentos estáticos y compresión L4/L5.
+              </p>
             </div>
-            <h1 className="text-lg sm:text-xl font-bold text-slate-900 tracking-tight">
-              Motor Biomecánico Anatómico PBR (.glb) y Archivo de Figuras (`fig-1-01.png` … `fig-13-04.png`)
-            </h1>
-            <p className="text-xs sm:text-sm text-slate-600 max-w-4xl leading-relaxed">
-              Modelo anatómico humano realista cargado mediante GLTFLoader con texturas PBR (camiseta blanca y shorts celestes),
-              iluminación de estudio con sombras suaves, mapeo directo de rotaciones articulares sobre huesos y exportación PNG
-              con la nomenclatura exacta del plan de figuras.
+            <a
+              href={REFERENCE_PDF_DOCS[0].url}
+              download="Ergoniza_Intelligent_Bases_de_funcionamiento.pdf"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-sky-700 hover:bg-sky-800 text-white text-xs font-semibold"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Descargar PDF
+            </a>
+          </div>
+          <iframe
+            src={REFERENCE_PDF_DOCS[0].url}
+            title={REFERENCE_PDF_DOCS[0].title}
+            className="w-full h-[74vh] rounded border border-slate-300 bg-slate-100"
+          />
+        </div>
+      ) : subTab === 'generador_prompt' ? (
+        <div className="bg-white border border-slate-300 rounded-md p-4 grid grid-cols-1 lg:grid-cols-12 gap-4">
+          <div className="lg:col-span-5 space-y-3">
+            <h2 className="text-sm font-bold text-slate-900">
+              Generador Rápido de Postura 3D por Descripción Técnica
+            </h2>
+            <textarea
+              value={customPromptText}
+              onChange={(e) => setCustomPromptText(e.target.value)}
+              rows={5}
+              className="w-full rounded border border-slate-300 p-3 text-xs text-slate-900"
+              placeholder="Ej: Flexión de tronco 40°, hombro derecho 55°, codo 85°, carga 15 kg..."
+            />
+            <p className="text-xs text-slate-600">
+              Escriba ángulos articulares en grados (°) y fuerzas/cargas en kg o N para previsualizar el avatar 3D al instante.
             </p>
           </div>
-
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => setIsPdfViewerOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-800 cursor-pointer"
-            >
-              <BookOpen className="w-3.5 h-3.5 text-sky-700" />
-              Consultar Libro PDF
-            </button>
-
-            <button
-              type="button"
-              onClick={onBackToEvaluator}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-slate-300 bg-slate-100 hover:bg-slate-200 text-xs font-medium text-slate-800 cursor-pointer"
-            >
-              <ArrowLeft className="w-3.5 h-3.5" />
-              Volver a ErgoEval
-            </button>
+          <div className="lg:col-span-7 flex items-center justify-center border border-slate-200 rounded bg-slate-50 p-3">
+            <canvas ref={customPromptCanvasRef} className="max-w-full h-auto rounded border border-slate-200 bg-white" />
           </div>
         </div>
-
-        {/* ZONA DESTACADA DE ARCHIVO Y ENLACE DE DESCARGA EN ALTA CALIDAD (SOLO IMÁGENES CON NOMENCLATURA EXACTA) */}
-        <div className="rounded-lg border border-sky-200 bg-sky-50/70 p-3.5 sm:p-4 flex flex-col xl:flex-row xl:items-center justify-between gap-4">
-          <div className="space-y-1">
-            <div className="text-xs sm:text-sm font-bold text-slate-900 flex items-center gap-2">
-              <FolderArchive className="w-4 h-4 text-sky-700 shrink-0" />
-              <span>
-                Archivo descargable de alta calidad (contiene únicamente las imágenes con su nombre exacto: `fig-1-01.png`, `fig-4-01.png`, …)
-              </span>
-            </div>
-            <div className="flex flex-wrap items-center gap-x-5 gap-y-2 pt-1 text-xs text-slate-700">
-              <label className="inline-flex items-center gap-1.5 cursor-pointer">
-                <span className="font-semibold text-slate-800">Calidad:</span>
-                <select
-                  value={exportQuality}
-                  onChange={(e) => setExportQuality(e.target.value as 'hd_lossless' | 'compact_120kb')}
-                  className="px-2 py-1 rounded border border-slate-300 bg-white text-slate-900 font-medium text-xs"
-                >
-                  <option value="hd_lossless">Alta Calidad HD (24-bit sin pérdida · Doble nitidez 2×)</option>
-                  <option value="compact_120kb">Editorial Compacto (&lt; 120 KB · Escala 1×)</option>
-                </select>
-              </label>
-
-              <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={includeAll84Figures}
-                  onChange={(e) => setIncludeAll84Figures(e.target.checked)}
-                  className="rounded border-slate-400 text-sky-700"
-                />
-                <span>Incluir las 84 figuras completas (incluye 7.2, 12.1, 13.3 y 13.4)</span>
-              </label>
-
-              <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={useImagesSubfolder}
-                  onChange={(e) => setUseImagesSubfolder(e.target.checked)}
-                  className="rounded border-slate-400 text-sky-700"
-                />
-                <span>Agrupar dentro de subcarpeta `images/`</span>
-              </label>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-            <button
-              type="button"
-              onClick={() => handleGenerateAndDownloadZip('all')}
-              disabled={Boolean(batchProgress)}
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-md bg-sky-700 hover:bg-sky-800 disabled:opacity-60 text-xs sm:text-sm font-semibold text-white cursor-pointer shadow-2xs"
-            >
-              <FileDown className="w-4 h-4" />
-              {batchProgress
-                ? `Generando ${batchProgress.current}/${batchProgress.total} (${batchProgress.label})...`
-                : `Generar y Descargar ZIP (${totalInZip} imágenes PNG)`}
-            </button>
-
-            {readyZipLink && !batchProgress && (
-              <a
-                href={readyZipLink.url}
-                download={readyZipLink.fileName}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white text-xs sm:text-sm font-semibold shadow-2xs"
-              >
-                <Link2 className="w-4 h-4" />
-                <span>
-                  Enlace directo: {readyZipLink.fileName} ({readyZipLink.sizeMb} MB)
-                </span>
-              </a>
-            )}
-          </div>
-        </div>
-
-        {/* Selector de vistas internas */}
-        <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-          <div className="inline-flex flex-wrap rounded-md border border-slate-300 bg-slate-100 p-0.5 gap-0.5">
-            <button
-              type="button"
-              onClick={() => setStudioTab('catalog')}
-              className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded text-xs font-semibold transition-colors cursor-pointer ${
-                studioTab === 'catalog'
-                  ? 'bg-slate-900 text-white shadow-2xs'
-                  : 'text-slate-700 hover:text-slate-900'
-              }`}
-            >
-              <Box className="w-3.5 h-3.5" />
-              Visor 3D del Plan de Figuras ({BOOK_FIGURE_CATALOG.length})
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setStudioTab('table')}
-              className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded text-xs font-semibold transition-colors cursor-pointer ${
-                studioTab === 'table'
-                  ? 'bg-slate-900 text-white shadow-2xs'
-                  : 'text-slate-700 hover:text-slate-900'
-              }`}
-            >
-              <Table className="w-3.5 h-3.5" />
-              Tabla Oficial y Enlaces Individuales (`Figura · Contenido · Cuerpos · Archivos`)
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setStudioTab('custom')}
-              className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded text-xs font-semibold transition-colors cursor-pointer ${
-                studioTab === 'custom'
-                  ? 'bg-sky-700 text-white shadow-2xs'
-                  : 'text-slate-700 hover:text-slate-900'
-              }`}
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              Generador 3D Aislado por Parámetros
-            </button>
-          </div>
-        </div>
-      </section>
-
-      {/* ===================================================================== */}
-      {/* MODO 1: CATÁLOGO INTERACTIVO Y PREVISUALIZACIÓN HD NITIDEZ 2X         */}
-      {/* ===================================================================== */}
-      {studioTab === 'catalog' && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-          {/* COLUMNA IZQUIERDA (EN MÓVIL DEBAJO DEL VISOR 3D): ÍNDICE FILTRABLE DE LAS 84 FIGURAS */}
-          <aside className="order-2 lg:order-1 lg:col-span-5 bg-white border border-slate-300 rounded-lg overflow-hidden shadow-2xs">
-            <div className="p-3.5 border-b border-slate-200 space-y-3 bg-slate-50">
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+          {/* COLUMNA 1 (3 cols): Buscador e Índice de Figuras del Libro */}
+          <aside className="lg:col-span-3 bg-white border border-slate-300 rounded-md p-3 flex flex-col max-h-[840px]">
+            <div className="space-y-2 pb-2.5 border-b border-slate-200">
               <div className="relative">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
                 <input
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Buscar ej. fig-4-01.png, muñeca, tobillo, lumbar..."
-                  className="w-full pl-9 pr-8 py-1.5 text-xs rounded-md border border-slate-300 bg-white text-slate-900 focus:outline-none focus:border-sky-600"
+                  placeholder="Buscar ej. 4.6b, 4.27b, 11.2..."
+                  className="w-full min-h-[36px] pl-8 pr-2.5 py-1.5 rounded border border-slate-300 text-xs text-slate-900"
                 />
-                {searchQuery && (
-                  <button
-                    type="button"
-                    onClick={() => setSearchQuery('')}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                )}
               </div>
 
-              <div className="flex flex-wrap gap-1">
-                {CHAPTER_FILTERS.map((cf) => {
-                  const active = chapterFilter === cf.id;
-                  return (
-                    <button
-                      key={String(cf.id)}
-                      type="button"
-                      onClick={() => setChapterFilter(cf.id)}
-                      className={`px-2 py-1 rounded text-[11px] font-medium cursor-pointer border transition-colors ${
-                        active
-                          ? 'bg-slate-900 text-white border-slate-900'
-                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
-                      }`}
-                    >
-                      {cf.label}
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="flex items-center justify-between text-[11px] text-slate-600 font-mono tabular-nums">
-                <span>Mostrando {filteredCatalog.length} de {BOOK_FIGURE_CATALOG.length} archivos</span>
-                <span>Nomenclatura exacta</span>
-              </div>
-            </div>
-
-            <div className="max-h-[640px] overflow-y-auto divide-y divide-slate-200">
-              {filteredCatalog.map((item) => {
-                const isSelected = item.id === selectedSpec.id;
-                const itemHasPhoto = Boolean(getEffectiveFigurePhotoUrl(item));
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => setSelectedId(item.id)}
-                    className={`w-full text-left px-3.5 py-2.5 transition-colors cursor-pointer block ${
-                      isSelected ? 'bg-sky-50/90' : 'hover:bg-slate-50'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span
-                        className={`font-mono text-xs font-bold ${
-                          isSelected ? 'text-sky-800' : 'text-slate-900'
-                        }`}
-                      >
-                        {item.fileName}
-                      </span>
-                      <span className="font-mono text-[11px] text-slate-500 tabular-nums">
-                        {itemHasPhoto ? (
-                          <span className="text-emerald-700 font-semibold">Foto asignada · </span>
-                        ) : null}
-                        {item.widthPx}×{item.heightPx} ·{' '}
-                        {item.bodiesRule === 'diagrama'
-                          ? 'diagrama'
-                          : item.bodiesRule === '2'
-                            ? '2 cuerpos'
-                            : '1 cuerpo'}
-                      </span>
-                    </div>
-                    <div className="text-xs font-medium text-slate-800 mt-0.5 line-clamp-1">
-                      Fig. {item.figureNumber}
-                      {item.subPart || ''} — {item.title}
-                    </div>
-                  </button>
-                );
-              })}
-
-              {filteredCatalog.length === 0 && (
-                <div className="p-8 text-center text-xs text-slate-500">
-                  No se encontraron figuras que coincidan con la búsqueda.
-                </div>
-              )}
-            </div>
-          </aside>
-
-          {/* COLUMNA DERECHA (EN CELULARES ARRIBA DEL TODO): VISOR TÉCNICO 3D Y DESCARGA EXACTA */}
-          <section className="order-1 lg:order-2 lg:col-span-7 bg-white border border-slate-300 rounded-lg p-4 sm:p-5 shadow-2xs space-y-4">
-            {/* Selector rápido móvil para cambiar de figura sin desplazarse al listado inferior */}
-            <div className="lg:hidden space-y-1 pb-2 border-b border-slate-200">
-              <label className="block text-xs font-semibold text-slate-800">
-                Selección Rápida de Figura (Vista Superior Móvil)
-              </label>
               <select
-                value={selectedSpec.id}
-                onChange={(e) => setSelectedId(e.target.value)}
-                className="w-full min-h-[42px] rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-900"
+                value={chapterFilter}
+                onChange={(e) =>
+                  setChapterFilter(e.target.value === 'all' ? 'all' : Number(e.target.value))
+                }
+                className="w-full min-h-[36px] rounded border border-slate-300 bg-slate-50 px-2 py-1 text-xs text-slate-900"
               >
-                {filteredCatalog.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.fileName} — Fig. {item.figureNumber}
-                    {item.subPart || ''}: {item.title}
+                <option value="all">Todos los capítulos ({BOOK_FIGURE_CATALOG.length})</option>
+                {chaptersList.map(([ch, title]) => (
+                  <option key={ch} value={ch}>
+                    {title}
                   </option>
                 ))}
               </select>
             </div>
 
-            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-3">
-              <div>
-                <div className="text-xs font-mono text-slate-600 tabular-nums">
-                  Archivo exacto: <strong className="text-slate-900">{selectedSpec.fileName}</strong>
-                  {' · '}
-                  <span>Formato base {selectedSpec.widthPx}×{selectedSpec.heightPx} px</span>
-                  {pngStats && (
-                    <>
-                      {' · '}
-                      <span className="text-emerald-700 font-semibold">
-                        Salida {pngStats.width}×{pngStats.height} px ({(pngStats.sizeBytes / 1024).toFixed(1)} KB)
+            <div className="flex-1 overflow-y-auto divide-y divide-slate-100 mt-2 pr-1">
+              {filteredFigures.map((fig) => {
+                const isSelected = fig.id === selectedCatalogSpec.id;
+                const bodiesLen = fig.panels?.length || 0;
+                const customPose = hasCustomFigurePoseOverride(fig.id);
+                const customImg = hasCustomFigurePhotoOverride(fig.id);
+                return (
+                  <button
+                    key={fig.id}
+                    type="button"
+                    onClick={() => setSelectedFigId(fig.id)}
+                    className={`w-full text-left px-2.5 py-2 rounded transition-colors cursor-pointer ${
+                      isSelected
+                        ? 'bg-sky-50 border border-sky-600'
+                        : 'border border-transparent hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="font-mono text-xs font-bold text-slate-900 tabular-nums">
+                        Fig. {fig.figureNumber}
+                        {fig.subPart || ''}
                       </span>
-                    </>
-                  )}
-                </div>
-                <h2 className="text-base font-bold text-slate-900 mt-0.5">
-                  Figura {selectedSpec.figureNumber}
-                  {selectedSpec.subPart || ''}: {selectedSpec.title}
-                </h2>
-                <p className="text-xs text-slate-600 mt-1">{selectedSpec.bookDescription}</p>
-              </div>
-
-              <div className="flex items-center gap-1.5 shrink-0">
-                <button
-                  type="button"
-                  disabled={selectedIndexInFiltered <= 0}
-                  onClick={() => {
-                    if (selectedIndexInFiltered > 0) {
-                      setSelectedId(filteredCatalog[selectedIndexInFiltered - 1].id);
-                    }
-                  }}
-                  className="p-1.5 rounded border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-35 text-slate-700 cursor-pointer"
-                  title="Figura anterior"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
-                <span className="text-xs font-mono text-slate-600 px-1.5 tabular-nums">
-                  {selectedIndexInFiltered + 1}/{filteredCatalog.length}
-                </span>
-                <button
-                  type="button"
-                  disabled={selectedIndexInFiltered < 0 || selectedIndexInFiltered >= filteredCatalog.length - 1}
-                  onClick={() => {
-                    if (selectedIndexInFiltered < filteredCatalog.length - 1) {
-                      setSelectedId(filteredCatalog[selectedIndexInFiltered + 1].id);
-                    }
-                  }}
-                  className="p-1.5 rounded border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-35 text-slate-700 cursor-pointer"
-                  title="Figura siguiente"
-                >
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
+                      <span className="font-mono text-[10px] text-slate-500 tabular-nums">
+                        {bodiesLen > 0 ? `${bodiesLen} cuerpo${bodiesLen > 1 ? 's' : ''}` : 'Diagrama'}
+                        {customPose ? ' · Pose✓' : ''}
+                        {customImg ? ' · Img✓' : ''}
+                      </span>
+                    </div>
+                    <p className="text-[11.5px] text-slate-700 line-clamp-2 mt-0.5">{fig.title}</p>
+                  </button>
+                );
+              })}
             </div>
+          </aside>
 
-            {/* Selector de fuente visual + Modo Calco con Ratón + Acciones de Referencia */}
-            <div className="flex flex-wrap items-center justify-between gap-2.5 bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-xs">
-              <div className="flex flex-wrap items-center gap-2">
-                {is3DSelected || selectedAssignedPhotoUrl ? (
-                  <div className="inline-flex flex-wrap rounded border border-slate-300 bg-white p-0.5 gap-0.5">
-                    {is3DSelected && (
-                      <button
-                        type="button"
-                        onClick={() => setViewSourceMode('synthetic_3d')}
-                        className={`inline-flex items-center gap-1.5 min-h-[34px] px-2.5 py-1 rounded-xs text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
-                          viewSourceMode === 'synthetic_3d'
-                            ? 'bg-slate-900 text-white'
-                            : 'text-slate-700 hover:text-slate-900'
-                        }`}
-                      >
-                        <Box className="w-3.5 h-3.5" />
-                        Vista 3D ({editedPanels.length} {editedPanels.length === 1 ? 'cuerpo' : 'cuerpos'})
-                      </button>
-                    )}
-                    {is3DSelected && (
-                      <button
-                        type="button"
-                        onClick={() => setViewSourceMode('trace_mouse')}
-                        className={`inline-flex items-center gap-1.5 min-h-[34px] px-2.5 py-1 rounded-xs text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
-                          viewSourceMode === 'trace_mouse'
-                            ? 'bg-sky-700 text-white'
-                            : 'text-slate-700 hover:text-slate-900'
-                        }`}
-                        title="Calibrar articulaciones con el ratón directamente sobre la imagen (Modo Papel Cebolla)"
-                      >
-                        <MousePointerClick className="w-3.5 h-3.5" />
-                        Calibrar + Calco Ratón
-                      </button>
-                    )}
-                    {is3DSelected && selectedAssignedPhotoUrl && (
-                      <button
-                        type="button"
-                        onClick={() => setViewSourceMode('compare_side')}
-                        className={`inline-flex items-center gap-1.5 min-h-[34px] px-2.5 py-1 rounded-xs text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
-                          viewSourceMode === 'compare_side'
-                            ? 'bg-sky-700 text-white'
-                            : 'text-slate-700 hover:text-slate-900'
-                        }`}
-                      >
-                        <Sparkles className="w-3.5 h-3.5" />
-                        Lado a Lado
-                      </button>
-                    )}
-                    {selectedAssignedPhotoUrl && (
-                      <button
-                        type="button"
-                        onClick={() => setViewSourceMode('goniometer')}
-                        className={`inline-flex items-center gap-1.5 min-h-[34px] px-2.5 py-1 rounded-xs text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
-                          viewSourceMode === 'goniometer'
-                            ? 'bg-sky-700 text-white'
-                            : 'text-slate-700 hover:text-slate-900'
-                        }`}
-                      >
-                        <Crosshair className="w-3.5 h-3.5" />
-                        Goniómetro
-                      </button>
-                    )}
-                    {selectedAssignedPhotoUrl && (
-                      <button
-                        type="button"
-                        onClick={() => setViewSourceMode('assigned_photo')}
-                        className={`inline-flex items-center gap-1.5 min-h-[34px] px-2.5 py-1 rounded-xs text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
-                          viewSourceMode === 'assigned_photo'
-                            ? 'bg-emerald-700 text-white'
-                            : 'text-slate-700 hover:text-slate-900'
-                        }`}
-                      >
-                        <ImageIcon className="w-3.5 h-3.5" />
-                        Solo Lámina
-                      </button>
-                    )}
-                  </div>
-                ) : (
-                  <span className="text-slate-600 font-medium">
-                    Esquema técnico vectorial renderizado en alta definición
+          {/* COLUMNA 2 (5 cols): Visor 3D Libre / Lámina Multi-Cuerpo / Multi-Goniómetro + Acciones de Catálogo */}
+          <section className="lg:col-span-5 bg-white border border-slate-300 rounded-md p-3.5 space-y-3 flex flex-col">
+            <div className="border-b border-slate-200 pb-2.5 space-y-2">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <span className="font-mono text-[11px] font-bold text-sky-800">
+                    {selectedCatalogSpec.id} · {selectedCatalogSpec.chapterTitle}
                   </span>
-                )}
-
-                {isShowingPureAssignedPhoto && (
-                  <label className="inline-flex items-center gap-1.5 text-slate-700 cursor-pointer select-none pl-1">
-                    <input
-                      type="checkbox"
-                      checked={includeHeaderOnPhoto}
-                      onChange={(e) => setIncludeHeaderOnPhoto(e.target.checked)}
-                      className="rounded border-slate-400 text-sky-700"
-                    />
-                    <span>Incluir encabezado FIG. {selectedSpec.figureNumber}{selectedSpec.subPart || ''}</span>
-                  </label>
-                )}
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2 shrink-0">
-                <input
-                  ref={customPhotoInputRef}
-                  type="file"
-                  accept="image/*"
-                  onChange={handleUploadCustomFigurePhoto}
-                  className="hidden"
-                />
-                <input
-                  ref={extractPosePhotoInputRef}
-                  type="file"
-                  accept="image/*"
-                  onChange={handleUploadImageOnlyForPoseExtract}
-                  className="hidden"
-                />
+                  <h2 className="text-sm font-bold text-slate-900">{selectedCatalogSpec.title}</h2>
+                </div>
                 <button
                   type="button"
-                  disabled={isSavingDefinitive}
-                  onClick={() => customPhotoInputRef.current?.click()}
-                  className="inline-flex items-center gap-1.5 min-h-[38px] px-3 py-1.5 rounded border border-slate-300 bg-white hover:bg-slate-100 disabled:opacity-60 text-slate-800 font-semibold whitespace-nowrap shrink-0 cursor-pointer"
-                  title="Subir una imagen desde su equipo y almacenarla como definitiva en la aplicación"
+                  onClick={() => void handleDownloadCurrentPng()}
+                  className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-300 bg-white hover:bg-slate-100 text-xs font-semibold text-slate-800 cursor-pointer shrink-0"
                 >
-                  <Upload className="w-3.5 h-3.5 text-sky-700" />
-                  {isSavingDefinitive ? 'Guardando…' : 'Reemplazar Imagen'}
+                  <Download className="w-3.5 h-3.5" />
+                  PNG
                 </button>
-                {is3DSelected && (
+              </div>
+
+              {/* Selector de modo de visualización: Avatar Libre (como Avatar Libre 3D), Lámina Completa (Cuerpos A..D) o Goniómetros sobre Imagen */}
+              <div className="flex flex-wrap items-center gap-1.5">
+                {draftPanels.length > 0 && (
                   <button
                     type="button"
-                    disabled={isSavingDefinitive}
-                    onClick={handleLockCurrent3DRenderAsDefinitive}
-                    className="inline-flex items-center gap-1.5 min-h-[38px] px-2.5 py-1.5 rounded border border-emerald-700 bg-emerald-50 hover:bg-emerald-100 disabled:opacity-60 text-emerald-900 font-semibold whitespace-nowrap shrink-0 cursor-pointer"
-                    title="Guardar la postura en figurePlanCatalog.ts y fijar este render 3D como imagen definitiva"
+                    onClick={() => {
+                      setViewportMode('avatar_libre_cuerpo');
+                      setPreferSynthetic3D(true);
+                    }}
+                    className={`min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1 rounded border text-xs font-semibold cursor-pointer ${
+                      viewportMode === 'avatar_libre_cuerpo'
+                        ? 'bg-violet-700 text-white border-violet-800'
+                        : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                    }`}
                   >
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
-                    Fijar 3D como Imagen
+                    <Move3d className="w-3.5 h-3.5" />
+                    Avatar Libre ({`Cuerpo ${BODY_LETTERS[safeBodyIdx] || 'A'}`})
                   </button>
                 )}
-                {hasCustomOverrideForSelected && (
+
+                <button
+                  type="button"
+                  onClick={() => setViewportMode('lamina_completa')}
+                  className={`min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1 rounded border text-xs font-semibold cursor-pointer ${
+                    viewportMode === 'lamina_completa'
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                  }`}
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  Lámina Completa ({draftPanels.length || 1})
+                </button>
+
+                {effectivePhotoUrl && (
                   <button
                     type="button"
-                    disabled={isSavingDefinitive}
-                    onClick={() => {
-                      clearCustomFigurePhotoOverride(selectedSpec.id);
-                      setDefinitiveNotice(`Imagen original restaurada para ${selectedSpec.fileName}.`);
-                    }}
-                    className="inline-flex items-center gap-1 min-h-[38px] px-2.5 py-1.5 rounded border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-medium whitespace-nowrap shrink-0 cursor-pointer"
+                    onClick={() => setViewportMode('goniometro_foto')}
+                    className={`min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1 rounded border text-xs font-semibold cursor-pointer ${
+                      viewportMode === 'goniometro_foto'
+                        ? 'bg-sky-700 text-white border-sky-800'
+                        : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                    }`}
                   >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    Restaurar imagen
+                    <Crosshair className="w-3.5 h-3.5" />
+                    Goniómetros en Foto
+                  </button>
+                )}
+
+                {viewportMode !== 'goniometro_foto' && (
+                  <button
+                    type="button"
+                    onClick={() => setShow3DGoniometerOverlay((v) => !v)}
+                    className={`min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1 rounded border text-xs font-semibold cursor-pointer ${
+                      show3DGoniometerOverlay
+                        ? 'bg-emerald-700 text-white border-emerald-800'
+                        : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                    }`}
+                    title="Superponer goniómetros libres/fijos sobre el Avatar 3D y agregar más goniómetros"
+                  >
+                    <Crosshair className="w-3.5 h-3.5" />
+                    Goniómetro 3D
                   </button>
                 )}
               </div>
-            </div>
 
-            {/* BARRA MULTICUERPO (Cuerpo A, B, C, D) + COPIAR POSTURA DE IMAGEN + GUARDAR EN CATÁLOGO */}
-            {is3DSelected && !isShowingPureAssignedPhoto && (
-              <div className="rounded-md border border-slate-300 bg-slate-50/90 p-3 space-y-2.5 text-xs">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="font-bold text-slate-900 mr-1">Cuerpos del Ítem:</span>
-                    {editedPanels.map((panel, idx) => {
-                      const letter = BODY_LETTERS[idx] || String(idx + 1);
-                      const isActive = idx === safePanelTargetIdx;
+              {/* Pestañas de Cuerpos A, B, C, D cuando la figura es 3D */}
+              {draftPanels.length > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-1.5 pt-1">
+                  <div className="flex flex-wrap items-center gap-1">
+                    {draftPanels.map((p, idx) => {
+                      const isAct = idx === safeBodyIdx;
                       return (
                         <button
-                          key={`${selectedSpec.id}-body-${idx}`}
+                          key={idx}
                           type="button"
-                          onClick={() => setPanelTargetIdx(idx)}
-                          className={`inline-flex items-center gap-1.5 min-h-[36px] px-3 py-1 rounded border font-semibold whitespace-nowrap cursor-pointer transition-colors ${
-                            isActive
-                              ? 'border-sky-700 bg-sky-700 text-white shadow-2xs'
-                              : 'border-slate-300 bg-white text-slate-800 hover:bg-slate-100'
+                          onClick={() => setActiveBodyIdx(idx)}
+                          className={`min-h-[32px] px-2.5 py-1 rounded border text-xs font-semibold cursor-pointer ${
+                            isAct
+                              ? 'bg-sky-700 text-white border-sky-800'
+                              : 'bg-slate-50 text-slate-700 border-slate-300 hover:bg-slate-100'
                           }`}
-                          title={panel.subTitle}
                         >
-                          <span>Cuerpo {letter}</span>
-                          {panel.scoreBadge && (
-                            <span className={`font-mono text-[10px] ${isActive ? 'text-sky-100' : 'text-slate-500'}`}>
-                              · {panel.scoreBadge}
-                            </span>
-                          )}
+                          Cuerpo {BODY_LETTERS[idx] || idx + 1}
                         </button>
                       );
                     })}
 
-                    {editedPanels.length < 4 && (
+                    {draftPanels.length < 4 && (
                       <button
                         type="button"
-                        onClick={handleAddExtraBodyPanel}
-                        className="inline-flex items-center gap-1 min-h-[36px] px-2.5 py-1 rounded border border-dashed border-sky-600 bg-white hover:bg-sky-50 text-sky-800 font-semibold whitespace-nowrap cursor-pointer"
-                        title="Añadir un nuevo cuerpo independiente (Cuerpo B / C / D) a esta figura"
+                        onClick={handleAddAnotherBody}
+                        className="min-h-[32px] inline-flex items-center gap-1 px-2 py-1 rounded border border-dashed border-sky-700 text-sky-800 bg-sky-50/70 hover:bg-sky-100 text-[11px] font-semibold cursor-pointer"
+                        title="Agregar Cuerpo B / C / D a esta figura"
                       >
-                        <Plus className="w-3.5 h-3.5" />
-                        Añadir Cuerpo {BODY_LETTERS[editedPanels.length]}
+                        <Plus className="w-3 h-3" />
+                        Cuerpo {BODY_LETTERS[draftPanels.length]}
                       </button>
                     )}
 
-                    {editedPanels.length > 1 && (
+                    {draftPanels.length > 1 && (
                       <button
                         type="button"
-                        onClick={handleRemoveActiveBodyPanel}
-                        className="inline-flex items-center gap-1 min-h-[36px] px-2 py-1 rounded border border-slate-300 bg-white hover:bg-rose-50 hover:border-rose-300 text-slate-600 hover:text-rose-700 font-medium whitespace-nowrap cursor-pointer"
-                        title={`Quitar Cuerpo ${BODY_LETTERS[safePanelTargetIdx]} de esta figura`}
+                        onClick={handleRemoveActiveBody}
+                        className="p-1.5 rounded border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 cursor-pointer"
+                        title="Quitar cuerpo seleccionado"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
-                        Quitar {BODY_LETTERS[safePanelTargetIdx]}
                       </button>
                     )}
                   </div>
 
-                  {/* Guardado permanente en figurePlanCatalog.ts */}
-                  <div className="flex flex-wrap items-center gap-1.5">
+                  {effectivePhotoUrl && (
                     <button
                       type="button"
-                      disabled={isSavingCatalogPose}
-                      onClick={handleSaveReferencePoseToCatalog}
-                      className="inline-flex items-center gap-1.5 min-h-[38px] px-3 py-1.5 rounded border border-slate-900 bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white font-semibold whitespace-nowrap cursor-pointer shadow-2xs"
-                      title="Guardar todos los cuerpos y ángulos actuales como postura de referencia permanente en figurePlanCatalog.ts"
+                      onClick={() => setShowAssignedPhotoBelow((v) => !v)}
+                      className="px-2 py-1 rounded border border-sky-300 bg-sky-50 hover:bg-sky-100 text-[11px] font-semibold text-sky-900 cursor-pointer"
                     >
-                      <Save className="w-3.5 h-3.5" />
-                      {isSavingCatalogPose
-                        ? 'Guardando en Catálogo…'
-                        : 'Guardar Postura de Referencia'}
+                      {showAssignedPhotoBelow ? 'Ocultar Foto Asignada Debajo' : 'Ver Foto Asignada Debajo'}
                     </button>
-
-                    {(hasCustomPoseOverrideForSelected || isPoseDirty) && (
-                      <button
-                        type="button"
-                        disabled={isSavingCatalogPose}
-                        onClick={async () => {
-                          if (hasCustomPoseOverrideForSelected) {
-                            await clearCustomFigurePoseOverride(selectedSpec.id);
-                          }
-                          const baseSpecs = clonePanelsDeepLocal(
-                            BOOK_FIGURE_CATALOG.find((f) => f.id === selectedSpec.id)?.panels,
-                          );
-                          setEditedPanels(baseSpecs);
-                          setPanelTargetIdx(0);
-                          setIsPoseDirty(false);
-                          setOrbit(DEFAULT_ORBIT_OVERRIDE);
-                          setDefinitiveNotice(`Postura base original restaurada para ${selectedSpec.id}.`);
-                        }}
-                        className="inline-flex items-center gap-1 min-h-[38px] px-2.5 py-1.5 rounded border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-medium whitespace-nowrap cursor-pointer"
-                        title="Restaurar la postura original de fábrica de este ítem"
-                      >
-                        <RotateCcw className="w-3.5 h-3.5" />
-                        Restaurar Postura Base
-                      </button>
-                    )}
-                  </div>
+                  )}
                 </div>
+              )}
+            </div>
 
-                {/* Fila de Extracción Automática desde Imagen hacia el Avatar 3D */}
-                <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200">
-                  <div className="flex flex-wrap items-center gap-2">
-                    {selectedAssignedPhotoUrl ? (
-                      <button
-                        type="button"
-                        disabled={isExtractingPose}
-                        onClick={() => handleExtractPoseFromImageSource()}
-                        className="inline-flex items-center gap-1.5 min-h-[36px] px-3 py-1.5 rounded border border-sky-700 bg-sky-700 hover:bg-sky-800 disabled:opacity-60 text-white font-semibold whitespace-nowrap cursor-pointer"
-                        title="Analizar la lámina/fotografía asignada y adoptar automáticamente su postura en el avatar 3D"
-                      >
-                        <Wand2 className="w-3.5 h-3.5" />
-                        {isExtractingPose ? 'Copiando postura…' : 'Copiar Postura de la Imagen'}
-                      </button>
-                    ) : null}
-
-                    <button
-                      type="button"
-                      disabled={isExtractingPose}
-                      onClick={() => extractPosePhotoInputRef.current?.click()}
-                      className="inline-flex items-center gap-1.5 min-h-[36px] px-2.5 py-1.5 rounded border border-sky-300 bg-white hover:bg-sky-50 disabled:opacity-60 text-sky-900 font-semibold whitespace-nowrap cursor-pointer"
-                      title="Seleccionar cualquier archivo de imagen para copiar su postura al avatar 3D"
-                    >
-                      <Upload className="w-3.5 h-3.5 text-sky-700" />
-                      {selectedAssignedPhotoUrl ? 'Copiar desde otro archivo…' : 'Subir Imagen para Copiar Postura'}
-                    </button>
-
-                    <select
-                      value={extractBodiesMode}
-                      onChange={(e) =>
-                        setExtractBodiesMode(e.target.value as typeof extractBodiesMode)
-                      }
-                      className="min-h-[36px] rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-800 font-medium"
-                      title="Cantidad de cuerpos a detectar de izquierda a derecha en la imagen"
-                    >
-                      <option value="auto">Auto-detectar cuerpos (A..D)</option>
-                      <option value="current">Mantener {editedPanels.length} cuerpo(s)</option>
-                      <option value="1">Forzar 1 cuerpo (A)</option>
-                      <option value="2">Forzar 2 cuerpos (A y B)</option>
-                      <option value="3">Forzar 3 cuerpos (A, B y C)</option>
-                      <option value="4">Forzar 4 cuerpos (A..D)</option>
-                    </select>
-
-                    {editedPanels.length >= 2 && (
-                      <label className="inline-flex items-center gap-1.5 text-slate-700 cursor-pointer select-none">
-                        <input
-                          type="checkbox"
-                          checked={extractOnlyActiveBody}
-                          onChange={(e) => setExtractOnlyActiveBody(e.target.checked)}
-                          className="rounded border-slate-400 text-sky-700"
-                        />
-                        <span>Solo aplicar a Cuerpo {BODY_LETTERS[safePanelTargetIdx]}</span>
-                      </label>
-                    )}
-                  </div>
-
-                  <span className="text-[11px] text-slate-600 font-mono tabular-nums">
-                    Activo: Cuerpo {BODY_LETTERS[safePanelTargetIdx]} ({safePanelTargetIdx + 1}/{editedPanels.length})
-                    {isPoseDirty ? ' · Sin guardar' : hasCustomPoseOverrideForSelected ? ' · Referencia guardada' : ''}
-                  </span>
-                </div>
-              </div>
-            )}
-
-            {(definitiveNotice || hasCustomOverrideForSelected || hasCustomPoseOverrideForSelected) && (
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-emerald-200 bg-emerald-50/80 px-3 py-2 text-xs text-emerald-900">
-                <div className="flex items-center gap-2 font-medium">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
-                  <span>
-                    {definitiveNotice ||
-                      (hasCustomPoseOverrideForSelected
-                        ? `Postura de referencia personalizada activa en figurePlanCatalog.ts para ${selectedSpec.id} (${editedPanels.length} cuerpo/s).`
-                        : `Esta figura (${selectedSpec.fileName}) utiliza una imagen definitiva personalizada almacenada en la aplicación.`)}
-                  </span>
-                </div>
-                <span className="font-mono text-[11px] text-emerald-800 whitespace-nowrap">
-                  Sincronizado con figurePlanCatalog.ts
-                </span>
-              </div>
-            )}
-
-            {/* LIENZO DE PREVISUALIZACIÓN Y CALIBRACIÓN SEGÚN EL MODO ACTIVO */}
-            {viewSourceMode === 'trace_mouse' && is3DSelected && activePanelSpec ? (
-              <div className="bg-slate-100 border border-slate-300 rounded-md p-3 space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-bold text-slate-900 flex items-center gap-1.5">
-                      <Layers className="w-3.5 h-3.5 text-sky-700" />
-                      Calibración Directa · Cuerpo {BODY_LETTERS[safePanelTargetIdx]}:
-                    </span>
-                    <span className="text-slate-600">
-                      Arrastre los puntos articulares con el ratón para calcar la postura o arrastre el fondo para girar la cámara.
-                    </span>
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-3">
-                    <label className="inline-flex items-center gap-1.5 text-slate-700 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={showTraceGizmos}
-                        onChange={(e) => setShowTraceGizmos(e.target.checked)}
-                        className="rounded border-slate-400 text-sky-700"
-                      />
-                      <span>Nodos articulares</span>
-                    </label>
-                    {selectedAssignedPhotoUrl && (
-                      <>
-                        <label className="inline-flex items-center gap-1.5 text-slate-700 cursor-pointer select-none">
-                          <input
-                            type="checkbox"
-                            checked={traceOverlayEnabled}
-                            onChange={(e) => setTraceOverlayEnabled(e.target.checked)}
-                            className="rounded border-slate-400 text-sky-700"
-                          />
-                          <span>Papel cebolla (imagen fondo)</span>
-                        </label>
-                        {traceOverlayEnabled && editedPanels.length >= 2 && (
-                          <label className="inline-flex items-center gap-1.5 text-slate-700 cursor-pointer select-none">
-                            <input
-                              type="checkbox"
-                              checked={traceCropToBody}
-                              onChange={(e) => setTraceCropToBody(e.target.checked)}
-                              className="rounded border-slate-400 text-sky-700"
-                            />
-                            <span>Encuadrar columna Cuerpo {BODY_LETTERS[safePanelTargetIdx]}</span>
-                          </label>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                {selectedAssignedPhotoUrl && traceOverlayEnabled && (
-                  <div className="flex items-center gap-3 bg-white border border-slate-200 rounded px-3 py-1.5 text-xs">
-                    <span className="font-medium text-slate-700 whitespace-nowrap">
-                      Opacidad imagen guía:
-                    </span>
-                    <input
-                      type="range"
-                      min={0.08}
-                      max={0.85}
-                      step={0.02}
-                      value={traceOpacity}
-                      onChange={(e) => setTraceOpacity(Number(e.target.value))}
-                      className="w-40 accent-sky-700"
-                    />
-                    <span className="font-mono tabular-nums text-slate-800 font-semibold">
-                      {Math.round(traceOpacity * 100)}%
-                    </span>
-                    {traceSelectedJoint && (
-                      <span className="ml-auto font-mono text-[11px] text-sky-800">
-                        Articulación activa: {TRACE_JOINT_NAMES[traceSelectedJoint]}
-                      </span>
-                    )}
-                  </div>
-                )}
-
-                <div className="flex flex-col items-center justify-center">
-                  <div className="relative w-full max-w-[520px] aspect-square bg-white rounded border border-slate-300 overflow-hidden shadow-xs select-none">
-                    {selectedAssignedPhotoUrl && traceOverlayEnabled && !compareImgFailed && (
-                      <div
-                        className="absolute inset-0 pointer-events-none overflow-hidden flex items-center justify-center"
-                        style={{ opacity: traceOpacity }}
-                      >
-                        {traceCropToBody && editedPanels.length >= 2 ? (
-                          <div
-                            className="h-full shrink-0 flex items-center"
-                            style={{
-                              width: `${editedPanels.length * 100}%`,
-                              transform: `translateX(${((editedPanels.length - 1) / 2 - safePanelTargetIdx) * (100 / editedPanels.length)}%)`,
-                            }}
-                          >
-                            <img
-                              src={selectedAssignedPhotoUrl}
-                              alt={selectedSpec.title}
-                              referrerPolicy="no-referrer"
-                              onError={() => setCompareImgFailed(true)}
-                              className="w-full h-full object-contain"
-                            />
-                          </div>
-                        ) : (
-                          <img
-                            src={selectedAssignedPhotoUrl}
-                            alt={selectedSpec.title}
-                            referrerPolicy="no-referrer"
-                            onError={() => setCompareImgFailed(true)}
-                            className="w-full h-full object-contain"
-                          />
-                        )}
-                      </div>
-                    )}
-
-                    <canvas
-                      ref={traceCanvasRef}
-                      onPointerDown={handleTraceCanvasPointerDown}
-                      onPointerMove={handleTraceCanvasPointerMove}
-                      onPointerUp={handleTraceCanvasPointerUp}
-                      onPointerCancel={handleTraceCanvasPointerUp}
-                      className={`relative z-10 w-full h-full touch-none ${
-                        traceHoveredJoint ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing'
-                      }`}
-                    />
-                  </div>
-                </div>
-              </div>
-            ) : selectedAssignedPhotoUrl && viewSourceMode === 'compare_side' && is3DSelected ? (
-              <div className="bg-slate-100 border border-slate-300 rounded-md p-3 space-y-2.5">
-                <div className="flex flex-wrap items-center justify-between text-[11px] text-slate-600 px-1">
-                  <span>
-                    Comparativa lado a lado: Lámina de Referencia vs Avatar 3D ({editedPanels.length} {editedPanels.length === 1 ? 'cuerpo' : 'cuerpos'} · clic en cada columna para seleccionar Cuerpo A/B)
-                  </span>
-                  <span className="font-mono font-semibold text-slate-700">{selectedSpec.fileName}</span>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div className="bg-white rounded border border-slate-300 p-2.5 flex flex-col justify-between">
-                    <div className="flex items-center justify-between text-[11px] text-slate-600 pb-1.5">
-                      <span className="font-semibold text-emerald-800">Lámina de Referencia</span>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setViewSourceMode('trace_mouse')}
-                          className="inline-flex items-center gap-1 text-sky-700 hover:text-sky-900 font-semibold cursor-pointer"
-                        >
-                          <MousePointerClick className="w-3 h-3" />
-                          Modo Calco
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setViewSourceMode('goniometer')}
-                          className="inline-flex items-center gap-1 text-sky-700 hover:text-sky-900 font-semibold cursor-pointer"
-                        >
-                          <Crosshair className="w-3 h-3" />
-                          Goniómetro
-                        </button>
-                      </div>
-                    </div>
-                    <div className="flex-1 flex items-center justify-center min-h-[260px]">
-                      {!compareImgFailed ? (
-                        <img
-                          src={selectedAssignedPhotoUrl}
-                          alt={selectedSpec.title}
-                          referrerPolicy="no-referrer"
-                          onError={() => setCompareImgFailed(true)}
-                          className="max-h-[340px] w-full object-contain"
-                        />
-                      ) : (
-                        <span className="text-xs text-slate-500">Imagen no disponible</span>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="bg-white rounded border border-slate-300 p-2.5 flex flex-col justify-between">
-                    <div className="flex items-center justify-between text-[11px] text-slate-600 pb-1.5">
-                      <span className="font-semibold text-slate-900">
-                        Avatar 3D · Editando Cuerpo {BODY_LETTERS[safePanelTargetIdx]}
-                      </span>
-                      <span className="font-mono tabular-nums">
-                        Az {activeBodyOrbit.azimuthDeg}° · El {activeBodyOrbit.elevationDeg}°
-                      </span>
-                    </div>
-                    <div className="flex-1 flex items-center justify-center">
-                      <canvas
-                        ref={previewCanvasRef}
-                        onPointerDown={(e) => handleCanvasPointerDown(e, false)}
-                        onPointerMove={(e) => handleCanvasPointerMove(e, false)}
-                        onPointerUp={handleCanvasPointerUp}
-                        onPointerCancel={handleCanvasPointerUp}
-                        className="w-full h-auto bg-white rounded-xs border border-slate-200 cursor-grab active:cursor-grabbing touch-none select-none"
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ) : selectedAssignedPhotoUrl && viewSourceMode === 'goniometer' ? (
+            {/* ARRIBA: Avatar 3D (Todas las posturas A..D en Lámina Completa o Cuerpo Libre) | DEBAJO: Foto Asignada */}
+            {viewportMode === 'goniometro_foto' && effectivePhotoUrl ? (
               <InteractivePhotoGoniometer
-                imageUrl={selectedAssignedPhotoUrl}
-                figureCode={`Fig. ${selectedSpec.figureNumber}${selectedSpec.subPart || ''}`}
-                figureLabel={selectedSpec.title}
-                onApplyAngle={
-                  is3DSelected
-                    ? (deg) => {
-                        updateLiveJoint(activeJointField, deg);
-                        setViewSourceMode('compare_side');
-                      }
-                    : undefined
-                }
-                applyButtonLabel={`Transferir ángulo a Cuerpo ${BODY_LETTERS[safePanelTargetIdx]} (${String(activeJointField)})`}
+                imageUrl={effectivePhotoUrl}
+                figureCode={`Fig. ${selectedCatalogSpec.figureNumber}${selectedCatalogSpec.subPart || ''}`}
+                figureLabel={selectedCatalogSpec.title}
+                applyButtonLabel={`Aplicar ángulo a Cuerpo ${BODY_LETTERS[safeBodyIdx]}`}
+                onApplyAngle={(deg) => {
+                  updateActiveBodyPose((prev) => ({
+                    ...prev,
+                    [transferTargetField]: deg,
+                  }));
+                  setBannerMsg({
+                    tone: 'success',
+                    text: `Ángulo ${deg}° transferido a "${String(transferTargetField)}" en Cuerpo ${BODY_LETTERS[safeBodyIdx]}.`,
+                  });
+                }}
               />
             ) : (
-              <div className="bg-slate-100 border border-slate-300 rounded-md p-3 sm:p-4 flex flex-col items-center justify-center space-y-2.5">
-                <div className="w-full flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600 px-1">
-                  <span>
-                    {isShowingPureAssignedPhoto
-                      ? 'Fotografía oficial adjunta asignada a esta figura en alta resolución'
-                      : is3DSelected
-                        ? editedPanels.length >= 2
-                          ? `Vista multicuerpo (${editedPanels.length} cuerpos) · Haga clic sobre Cuerpo A, B${editedPanels.length >= 3 ? ', C' : ''}${editedPanels.length >= 4 ? ', D' : ''} para seleccionarlo y arrastre para rotar su cámara`
-                          : 'Avatar anatómico PBR (.glb) · Arrastre para rotar cámara'
-                        : 'Esquema técnico renderizado en alta definición'}
-                  </span>
-                  <span className="font-mono tabular-nums font-semibold text-slate-700">
-                    {selectedSpec.fileName} ({effectiveSelectedSpec.widthPx}×{effectiveSelectedSpec.heightPx})
-                  </span>
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[11px] text-slate-600 px-0.5">
+                    <span className="font-semibold text-slate-900">
+                      ARRIBA · Avatar Motor 3D ({draftPanels.length > 0 ? `${draftPanels.length} postura(s)` : 'Diagrama'})
+                    </span>
+                    <span className="font-mono text-slate-500">
+                      {viewportMode === 'lamina_completa'
+                        ? `Mostrando Cuerpos ${draftPanels.map((_, i) => BODY_LETTERS[i]).join(', ')}`
+                        : `Editando Cuerpo ${BODY_LETTERS[safeBodyIdx] || 'A'}`}
+                    </span>
+                  </div>
+                  <div className="relative min-h-[340px] rounded border border-slate-300 bg-slate-50 overflow-hidden flex items-center justify-center">
+                    <canvas
+                      ref={mainCanvasRef}
+                      onPointerDown={handleCanvasPointerDown}
+                      onPointerMove={handleCanvasPointerMove}
+                      onPointerUp={handleCanvasPointerUp}
+                      onPointerCancel={handleCanvasPointerUp}
+                      className="max-w-full max-h-[430px] w-auto h-auto object-contain touch-none cursor-grab active:cursor-grabbing"
+                    />
+
+                    {show3DGoniometerOverlay && (
+                      <InteractivePhotoGoniometer
+                        transparentOverlay
+                        onApplyAngle={(deg, gLabel) => {
+                          updateActiveBodyPose((prev) => ({
+                            ...prev,
+                            [transferTargetField]: deg,
+                          }));
+                          setBannerMsg({
+                            tone: 'success',
+                            text: `${gLabel || 'Goniómetro'} (${deg}°) aplicado a "${String(transferTargetField)}" en Cuerpo ${BODY_LETTERS[safeBodyIdx]}.`,
+                          });
+                        }}
+                      />
+                    )}
+                  </div>
                 </div>
 
-                <canvas
-                  ref={previewCanvasRef}
-                  onPointerDown={(e) => handleCanvasPointerDown(e, false)}
-                  onPointerMove={(e) => handleCanvasPointerMove(e, false)}
-                  onPointerUp={handleCanvasPointerUp}
-                  onPointerCancel={handleCanvasPointerUp}
-                  className={`${getCanvasMaxWidthClass(effectiveSelectedSpec.widthPx)} h-auto bg-white shadow-xs rounded-xs border border-slate-300 ${
-                    is3DSelected && !isShowingPureAssignedPhoto
-                      ? 'cursor-grab active:cursor-grabbing touch-none select-none'
-                      : ''
-                  }`}
-                />
+                {showAssignedPhotoBelow && effectivePhotoUrl && (
+                  <div className="rounded border border-slate-300 bg-white p-2.5 space-y-1.5">
+                    <div className="flex items-center justify-between gap-2 text-[11px]">
+                      <span className="font-semibold text-slate-900">
+                        DEBAJO · Foto Asignada de Referencia (Todas las posturas de Fig. {selectedCatalogSpec.figureNumber}
+                        {selectedCatalogSpec.subPart || ''})
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setViewportMode('goniometro_foto')}
+                        className="inline-flex items-center gap-1 text-sky-700 hover:text-sky-900 font-semibold cursor-pointer"
+                      >
+                        <Crosshair className="w-3 h-3" />
+                        Medir con goniómetro en foto
+                      </button>
+                    </div>
+                    <div className="rounded border border-slate-200 bg-slate-50/50 p-2 flex items-center justify-center">
+                      <img
+                        src={effectivePhotoUrl}
+                        alt={`Foto asignada ${selectedCatalogSpec.id}`}
+                        referrerPolicy="no-referrer"
+                        className="max-h-[260px] w-auto object-contain"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
-            {/* PANEL COMPLETO DE CÁMARA + LOS 27 PARÁMETROS ANATÓMICOS POR CUERPO (SLIDER + TEXTO NUMÉRICO) */}
-            {is3DSelected && !isShowingPureAssignedPhoto && viewSourceMode !== 'goniometer' && activePanelSpec && activePanelPose && (
-              <div className="grid grid-cols-1 xl:grid-cols-12 gap-3">
-                {/* Columna 1: Cámara independiente y encuadre del Cuerpo activo */}
-                <div className="xl:col-span-5 bg-slate-50 border border-slate-200 rounded-md p-3 space-y-2.5 text-xs">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="font-bold text-slate-900 flex items-center gap-1.5">
-                      <Sliders className="w-3.5 h-3.5 text-sky-700" />
-                      Cámara y Encuadre · Cuerpo {BODY_LETTERS[safePanelTargetIdx]}
+            {/* Barra de Acciones: Copiar Postura IA, Guardar Postura de Referencia y Reemplazar Imagen Definitiva */}
+            <div className="border-t border-slate-200 pt-3 space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {draftPanels.length > 0 && (
+                  <button
+                    type="button"
+                    disabled={isSavingPose}
+                    onClick={() => void handleSaveReferencePose()}
+                    className="min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    {isSavingPose ? 'Guardando...' : 'Guardar Postura de Referencia'}
+                  </button>
+                )}
+
+                {effectivePhotoUrl && draftPanels.length > 0 && (
+                  <button
+                    type="button"
+                    disabled={isExtractingAiPose}
+                    onClick={() => void runExtractPoseFromImageSource(effectivePhotoUrl)}
+                    className="min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-indigo-700 hover:bg-indigo-800 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer"
+                  >
+                    {isExtractingAiPose ? (
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Sparkles className="w-3.5 h-3.5" />
+                    )}
+                    Copiar Postura de su Imagen
+                  </button>
+                )}
+
+                <input
+                  ref={aiImagePoseInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) {
+                      const reader = new FileReader();
+                      reader.onload = () => {
+                        if (reader.result) void runExtractPoseFromImageSource(String(reader.result));
+                      };
+                      reader.readAsDataURL(f);
+                    }
+                    e.currentTarget.value = '';
+                  }}
+                />
+                {draftPanels.length > 0 && (
+                  <button
+                    type="button"
+                    disabled={isExtractingAiPose}
+                    onClick={() => aiImagePoseInputRef.current?.click()}
+                    className="min-h-[38px] inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border border-indigo-300 bg-indigo-50 hover:bg-indigo-100 text-indigo-950 text-xs font-semibold cursor-pointer"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    Copiar desde otra foto...
+                  </button>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  ref={replaceImageInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) void handleUploadDefinitivePhoto(f);
+                    e.currentTarget.value = '';
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => replaceImageInputRef.current?.click()}
+                  className="min-h-[36px] inline-flex items-center gap-1.5 px-2.5 py-1 rounded border border-slate-300 bg-white hover:bg-slate-100 text-xs font-semibold text-slate-800 cursor-pointer"
+                >
+                  <ImagePlus className="w-3.5 h-3.5 text-sky-700" />
+                  Reemplazar Imagen Definitiva
+                </button>
+
+                {hasPhotoOverride && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      clearCustomFigurePhotoOverride(selectedCatalogSpec.id);
+                      setBannerMsg({
+                        tone: 'info',
+                        text: 'Se restauró la imagen original de la figura.',
+                      });
+                    }}
+                    className="min-h-[36px] px-2.5 py-1 rounded border border-rose-200 bg-rose-50 hover:bg-rose-100 text-xs font-semibold text-rose-800 cursor-pointer"
+                  >
+                    Restaurar Imagen Original
+                  </button>
+                )}
+
+                {hasPoseOverride && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await clearCustomFigurePoseOverride(selectedCatalogSpec.id);
+                      const fresh = BOOK_FIGURE_CATALOG.find((f) => f.id === selectedCatalogSpec.id);
+                      if (fresh) setDraftPanels(clonePanelsDeepLocal(fresh.panels));
+                      setBannerMsg({
+                        tone: 'info',
+                        text: 'Postura original del catálogo restaurada.',
+                      });
+                    }}
+                    className="min-h-[36px] px-2.5 py-1 rounded border border-amber-300 bg-amber-50 hover:bg-amber-100 text-xs font-semibold text-amber-950 cursor-pointer"
+                  >
+                    Restaurar Postura Fábrica
+                  </button>
+                )}
+              </div>
+            </div>
+          </section>
+
+          {/* COLUMNA 3 (4 cols): Control Libre de Ángulos, Objetos/Mobiliario Regulable (Mesa, Pisón, etc.) y Destino de Goniómetro */}
+          <section className="lg:col-span-4 bg-white border border-slate-300 rounded-md p-3.5 space-y-3 flex flex-col max-h-[840px] overflow-y-auto">
+            {activePanel ? (
+              <>
+                <div className="flex items-center justify-between gap-2 border-b border-slate-200 pb-2">
+                  <div>
+                    <span className="font-mono text-[11px] font-bold uppercase text-violet-800">
+                      Controles Libres · Cuerpo {BODY_LETTERS[safeBodyIdx] || 'A'}
                     </span>
+                    <h3 className="text-xs font-bold text-slate-900">
+                      Ángulos Exactos, Cámara y Regulación de Objetos 3D
+                    </h3>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
                     <button
                       type="button"
-                      onClick={() =>
-                        setBodyOrbitForIdx(safePanelTargetIdx, () => ({ ...DEFAULT_ORBIT_OVERRIDE }))
-                      }
-                      className="inline-flex items-center gap-1 text-xs font-medium text-sky-700 hover:text-sky-900 cursor-pointer"
+                      onClick={() => setShow3DGizmos((g) => !g)}
+                      className={`px-2 py-1 rounded border text-[11px] font-semibold cursor-pointer ${
+                        show3DGizmos
+                          ? 'bg-violet-100 border-violet-400 text-violet-950'
+                          : 'bg-slate-50 border-slate-300 text-slate-700'
+                      }`}
+                    >
+                      {show3DGizmos ? 'Nodos ON' : 'Nodos OFF'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOrbitOverride(DEFAULT_ORBIT_OVERRIDE);
+                        updateActiveBodyPanel((p) => ({ ...p, orbitOverride: undefined }));
+                      }}
+                      className="p-1.5 rounded border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 cursor-pointer"
+                      title="Reiniciar cámara de este cuerpo"
                     >
                       <RotateCcw className="w-3.5 h-3.5" />
-                      Plano 0°
                     </button>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <label className="block space-y-0.5">
-                      <span className="text-[11px] font-medium text-slate-700">Plano de Cámara</span>
-                      <select
-                        value={activePanelSpec.cameraPreset}
-                        onChange={(e) =>
-                          updateActivePanelMeta({ cameraPreset: e.target.value as CameraPreset })
-                        }
-                        className="w-full min-h-[34px] rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900"
-                      >
-                        {(Object.keys(CAMERA_PRESET_LABELS) as CameraPreset[]).map((preset) => (
-                          <option key={preset} value={preset}>
-                            {CAMERA_PRESET_LABELS[preset]}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-
-                    <label className="block space-y-0.5">
-                      <span className="text-[11px] font-medium text-slate-700">Zona Anatómica</span>
-                      <select
-                        value={activePanelSpec.focusZone}
-                        onChange={(e) =>
-                          updateActivePanelMeta({ focusZone: e.target.value as FocusZone })
-                        }
-                        className="w-full min-h-[34px] rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900"
-                      >
-                        {(Object.keys(FOCUS_ZONE_LABELS) as FocusZone[]).map((fz) => (
-                          <option key={fz} value={fz}>
-                            {FOCUS_ZONE_LABELS[fz]}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
-
-                  <div className="space-y-2 pt-1">
-                    <div className="space-y-0.5">
-                      <div className="flex items-center justify-between text-slate-700">
-                        <span>Giro Horizontal (Azimut)</span>
-                        <div className="flex items-center gap-1">
-                          <input
-                            type="number"
-                            min={-180}
-                            max={180}
-                            value={activeBodyOrbit.azimuthDeg}
-                            onChange={(e) =>
-                              setBodyOrbitForIdx(safePanelTargetIdx, (p) => ({
-                                ...p,
-                                azimuthDeg: Math.max(-180, Math.min(180, Number(e.target.value) || 0)),
-                              }))
-                            }
-                            className="w-16 rounded border border-slate-300 bg-white px-1.5 py-0.5 text-right font-mono tabular-nums text-xs"
-                          />
-                          <span className="font-mono">°</span>
-                        </div>
-                      </div>
-                      <input
-                        type="range"
-                        min={-180}
-                        max={180}
-                        value={activeBodyOrbit.azimuthDeg}
-                        onChange={(e) =>
-                          setBodyOrbitForIdx(safePanelTargetIdx, (p) => ({
-                            ...p,
-                            azimuthDeg: Number(e.target.value),
-                          }))
-                        }
-                        className="w-full accent-sky-700"
-                      />
-                    </div>
-
-                    <div className="space-y-0.5">
-                      <div className="flex items-center justify-between text-slate-700">
-                        <span>Inclinación Vertical</span>
-                        <div className="flex items-center gap-1">
-                          <input
-                            type="number"
-                            min={-65}
-                            max={65}
-                            value={activeBodyOrbit.elevationDeg}
-                            onChange={(e) =>
-                              setBodyOrbitForIdx(safePanelTargetIdx, (p) => ({
-                                ...p,
-                                elevationDeg: Math.max(-65, Math.min(65, Number(e.target.value) || 0)),
-                              }))
-                            }
-                            className="w-16 rounded border border-slate-300 bg-white px-1.5 py-0.5 text-right font-mono tabular-nums text-xs"
-                          />
-                          <span className="font-mono">°</span>
-                        </div>
-                      </div>
-                      <input
-                        type="range"
-                        min={-65}
-                        max={65}
-                        value={activeBodyOrbit.elevationDeg}
-                        onChange={(e) =>
-                          setBodyOrbitForIdx(safePanelTargetIdx, (p) => ({
-                            ...p,
-                            elevationDeg: Number(e.target.value),
-                          }))
-                        }
-                        className="w-full accent-sky-700"
-                      />
-                    </div>
-
-                    <div className="space-y-0.5">
-                      <div className="flex items-center justify-between text-slate-700">
-                        <span>Zoom Óptico</span>
-                        <span className="font-mono tabular-nums font-semibold">
-                          {activeBodyOrbit.zoom.toFixed(2)}×
-                        </span>
-                      </div>
-                      <input
-                        type="range"
-                        min={0.65}
-                        max={1.85}
-                        step={0.05}
-                        value={activeBodyOrbit.zoom}
-                        onChange={(e) =>
-                          setBodyOrbitForIdx(safePanelTargetIdx, (p) => ({
-                            ...p,
-                            zoom: Number(e.target.value),
-                          }))
-                        }
-                        className="w-full accent-sky-700"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Subtítulo y etiqueta de puntuación del Cuerpo activo */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 border-t border-slate-200">
-                    <label className="sm:col-span-2 block space-y-0.5">
-                      <span className="text-[11px] font-medium text-slate-700">
-                        Subtítulo Cuerpo {BODY_LETTERS[safePanelTargetIdx]}
-                      </span>
-                      <input
-                        type="text"
-                        value={activePanelSpec.subTitle}
-                        onChange={(e) => updateActivePanelMeta({ subTitle: e.target.value })}
-                        className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900"
-                      />
-                    </label>
-                    <label className="block space-y-0.5">
-                      <span className="text-[11px] font-medium text-slate-700">Puntuación / Cód.</span>
-                      <input
-                        type="text"
-                        value={activePanelSpec.scoreBadge || ''}
-                        placeholder="Ej. +2 ptos"
-                        onChange={(e) =>
-                          updateActivePanelMeta({ scoreBadge: e.target.value || undefined })
-                        }
-                        className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs font-mono text-slate-900"
-                      />
-                    </label>
                   </div>
                 </div>
 
-                {/* Columna 2: Control Cinemático Completo por Categorías (Texto + Deslizador) */}
-                <div className="xl:col-span-7 bg-slate-50 border border-slate-200 rounded-md p-3 space-y-2.5 text-xs">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="font-bold text-slate-900">
-                      Ángulos Anatómicos · Cuerpo {BODY_LETTERS[safePanelTargetIdx]}
-                    </span>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <label className="inline-flex items-center gap-1.5 text-slate-700 cursor-pointer select-none">
-                        <input
-                          type="checkbox"
-                          checked={bilateralSymmetry}
-                          onChange={(e) => setBilateralSymmetry(e.target.checked)}
-                          className="rounded border-slate-400 text-sky-700"
-                        />
-                        <span>Simetría Der ↔ Izq</span>
-                      </label>
+                {/* Cámara, Zona de Encuadre, Apoyo y Destino del Goniómetro */}
+                <div className="grid grid-cols-2 gap-2 text-xs bg-slate-50 border border-slate-200 rounded p-2.5">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-700 mb-0.5">
+                      Plano de Cámara
+                    </label>
+                    <select
+                      value={activePanel.cameraPreset}
+                      onChange={(e) =>
+                        updateActiveBodyPanel((p) => ({
+                          ...p,
+                          cameraPreset: e.target.value as CameraPreset,
+                        }))
+                      }
+                      className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900"
+                    >
+                      <option value="sagittal_right">Perfil Derecho (Sagital)</option>
+                      <option value="sagittal_left">Perfil Izquierdo</option>
+                      <option value="frontal">Frontal</option>
+                      <option value="dorsal">Posterior (Dorsal)</option>
+                      <option value="isometric">Isométrica 3/4</option>
+                      <option value="perspective_oblique">Oblicua</option>
+                      <option value="top">Superior (Cenital)</option>
+                    </select>
+                  </div>
 
-                      {safePanelTargetIdx > 0 && (
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-700 mb-0.5">
+                      Encuadre Anatómico
+                    </label>
+                    <select
+                      value={activePanel.focusZone}
+                      onChange={(e) =>
+                        updateActiveBodyPanel((p) => ({
+                          ...p,
+                          focusZone: e.target.value as FocusZone,
+                        }))
+                      }
+                      className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900"
+                    >
+                      <option value="full_body">Cuerpo Completo (Libre)</option>
+                      <option value="shoulder_arm">Hombro y Brazo</option>
+                      <option value="elbow_forearm">Codo y Antebrazo</option>
+                      <option value="wrist_hand">Muñeca y Mano</option>
+                      <option value="neck_cervical">Cabeza y Cuello</option>
+                      <option value="trunk_pelvis">Tronco y Pelvis</option>
+                      <option value="legs_knees">Piernas y Rodillas</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-700 mb-0.5">
+                      Modo de Apoyo Podal
+                    </label>
+                    <select
+                      value={activePanel.pose.stanceMode || 'standing'}
+                      onChange={(e) =>
+                        updateActiveBodyPose((prev) => ({
+                          ...prev,
+                          stanceMode: e.target.value as PosturePose3D['stanceMode'],
+                        }))
+                      }
+                      className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900"
+                    >
+                      <option value="standing">Bipedestación (De pie)</option>
+                      <option value="seated">Sedestación (Sentado)</option>
+                      <option value="squatting">Cuclillas</option>
+                      <option value="kneeling">Arrodillado</option>
+                      <option value="one_leg">Monopedestación (1 pierna)</option>
+                      <option value="walking">Caminando</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-700 mb-0.5">
+                      Destino del Goniómetro
+                    </label>
+                    <select
+                      value={transferTargetField}
+                      onChange={(e) =>
+                        setTransferTargetField(e.target.value as keyof PosturePose3D)
+                      }
+                      className="w-full rounded border border-sky-300 bg-white px-2 py-1 text-xs text-slate-900"
+                    >
+                      {JOINT_SLIDER_FIELDS.map((f) => (
+                        <option key={f.key} value={f.key}>
+                          {f.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Pestañas de Categorías Articulares + Pestaña Especial de Objeto / Mesa / Pisón Regulable */}
+                <div className="grid grid-cols-3 sm:grid-cols-5 gap-1">
+                  {(
+                    [
+                      { id: 'tronco_cuello', label: 'Tronco' },
+                      { id: 'brazo_der', label: 'Brazo Der.' },
+                      { id: 'brazo_izq', label: 'Brazo Izq.' },
+                      { id: 'piernas_pies', label: 'Piernas' },
+                      { id: 'espacio_objeto', label: 'Objetos 3D' },
+                    ] as Array<{ id: AngleCategory; label: string }>
+                  ).map((cat) => (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => setAngleCategory(cat.id)}
+                      className={`py-1.5 px-1.5 rounded border text-[11px] font-semibold cursor-pointer text-center ${
+                        angleCategory === cat.id
+                          ? 'bg-slate-900 text-white border-slate-900'
+                          : 'bg-slate-50 text-slate-700 border-slate-300 hover:bg-slate-100'
+                      }`}
+                    >
+                      {cat.label}
+                    </button>
+                  ))}
+                </div>
+
+                {angleCategory === 'espacio_objeto' ? (
+                  <div className="space-y-3 border border-sky-200 bg-sky-50/40 rounded p-3 text-xs">
+                    <div>
+                      <label className="block font-bold text-slate-900 mb-1">
+                        Objeto / Mesa / Herramienta en Escena (`prop`)
+                      </label>
+                      <select
+                        value={activePanel.pose.prop || 'none'}
+                        onChange={(e) =>
+                          updateActiveBodyPose((prev) => ({
+                            ...prev,
+                            prop: e.target.value as ScenePropType,
+                          }))
+                        }
+                        className="w-full min-h-[36px] rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900"
+                      >
+                        {SCENE_PROP_LABELS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Regulación fina X / Y / Z / Giro / Escala del Objeto (Mesa, Pisón de Tierra, Pala, etc.) */}
+                    <div className="space-y-2.5 pt-1 border-t border-sky-200">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-sky-950">
+                          Regulación Libre del Objeto (Mesa, Pisón, Silla...)
+                        </span>
                         <button
                           type="button"
-                          onClick={handleCopyBodyAToActive}
-                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-medium cursor-pointer"
-                          title="Copiar la postura de Cuerpo A en este cuerpo como base"
+                          onClick={() =>
+                            updateActiveBodyPose((prev) => ({
+                              ...prev,
+                              propOffsetX: 0,
+                              propOffsetY: 0,
+                              propOffsetZ: 0,
+                              propRotYDeg: 0,
+                              propScale: 1,
+                            }))
+                          }
+                          className="text-[11px] text-sky-800 underline font-semibold cursor-pointer"
                         >
-                          <Copy className="w-3 h-3" />
-                          Copiar de A
+                          Centrar Objeto
                         </button>
-                      )}
+                      </div>
 
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditedPanels((prev) =>
-                            prev.map((p, idx) =>
-                              idx === safePanelTargetIdx ? { ...p, pose: makeNeutralPose() } : p,
-                            ),
-                          );
-                          setIsPoseDirty(true);
-                        }}
-                        className="inline-flex items-center gap-1 text-sky-700 hover:text-sky-900 font-medium cursor-pointer"
-                        title="Poner este cuerpo en postura neutra anatómica 0°"
-                      >
-                        <RotateCcw className="w-3 h-3" />
-                        Neutra 0°
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Pestañas de grupos anatómicos */}
-                  <div className="flex flex-wrap gap-1 border-b border-slate-200 pb-2">
-                    {(
-                      [
-                        { id: 'spine_head', label: 'Tronco y Cuello' },
-                        { id: 'right_arm', label: 'Brazo Der.' },
-                        { id: 'left_arm', label: 'Brazo Izq.' },
-                        { id: 'legs_feet', label: 'Piernas y Pies' },
-                        { id: 'scene_meta', label: 'Base y Mobiliario' },
-                      ] as { id: StudioAngleCategory; label: string }[]
-                    ).map((cat) => (
-                      <button
-                        key={cat.id}
-                        type="button"
-                        onClick={() => setAngleCategory(cat.id)}
-                        className={`px-2.5 py-1 rounded text-[11px] font-semibold whitespace-nowrap cursor-pointer transition-colors ${
-                          angleCategory === cat.id
-                            ? 'bg-slate-900 text-white'
-                            : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'
-                        }`}
-                      >
-                        {cat.label}
-                      </button>
-                    ))}
-                  </div>
-
-                  {angleCategory !== 'scene_meta' ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 max-h-[270px] overflow-y-auto pr-1">
-                      {STUDIO_ANGLE_FIELDS.filter((f) => f.category === angleCategory).map((field) => {
-                        const rawVal = activePanelPose[field.key];
-                        const numVal = typeof rawVal === 'number' && Number.isFinite(rawVal) ? Math.round(rawVal) : 0;
+                      {(
+                        [
+                          {
+                            key: 'propOffsetX' as const,
+                            label: 'Posición Lateral Objeto X (m)',
+                            min: -1.0,
+                            max: 1.0,
+                            step: 0.02,
+                            fallback: 0,
+                          },
+                          {
+                            key: 'propOffsetY' as const,
+                            label: 'Altura Vertical Objeto Y (m) — Subir/Bajar apoyo',
+                            min: -0.7,
+                            max: 0.7,
+                            step: 0.02,
+                            fallback: 0,
+                          },
+                          {
+                            key: 'propOffsetZ' as const,
+                            label: 'Profundidad Frontal Objeto Z (m) — Acercar al codo/cuerpo',
+                            min: -1.0,
+                            max: 1.0,
+                            step: 0.02,
+                            fallback: 0,
+                          },
+                          {
+                            key: 'propRotYDeg' as const,
+                            label: 'Giro Horizontal Objeto (°)',
+                            min: -180,
+                            max: 180,
+                            step: 1,
+                            fallback: 0,
+                          },
+                          {
+                            key: 'propScale' as const,
+                            label: 'Escala de Tamaño del Objeto',
+                            min: 0.5,
+                            max: 1.8,
+                            step: 0.05,
+                            fallback: 1,
+                          },
+                        ] as const
+                      ).map((ctrl) => {
+                        const val = Number(activePanel.pose[ctrl.key] ?? ctrl.fallback);
                         return (
-                          <div
-                            key={String(field.key)}
-                            onClick={() => setActiveJointField(field.key)}
-                            className={`rounded border p-2 space-y-1 transition-colors ${
-                              activeJointField === field.key
-                                ? 'border-sky-400 bg-white'
-                                : 'border-slate-200 bg-white/70'
-                            }`}
-                          >
-                            <div className="flex items-center justify-between gap-1">
-                              <span className="font-medium text-slate-800 truncate" title={field.label}>
-                                {field.label}
+                          <div key={ctrl.key} className="space-y-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[11.5px] font-medium text-slate-800">
+                                {ctrl.label}
                               </span>
-                              <div className="flex items-center gap-0.5 shrink-0">
-                                <input
-                                  type="number"
-                                  min={field.min}
-                                  max={field.max}
-                                  step={field.step || 1}
-                                  value={numVal}
-                                  onChange={(e) => {
-                                    const parsed = Number(e.target.value);
-                                    if (!Number.isNaN(parsed)) {
-                                      const clamped = Math.max(field.min, Math.min(field.max, parsed));
-                                      updateLiveJoint(field.key, clamped, field.mirrorKey);
-                                    }
-                                  }}
-                                  className="w-14 rounded border border-slate-300 bg-white px-1 py-0.5 text-right font-mono font-semibold text-sky-900 tabular-nums text-xs"
-                                />
-                                <span className="font-mono text-slate-500">°</span>
-                              </div>
+                              <input
+                                type="number"
+                                step={ctrl.step}
+                                min={ctrl.min}
+                                max={ctrl.max}
+                                value={val}
+                                onChange={(e) => {
+                                  const num = Number(e.target.value);
+                                  updateActiveBodyPose((prev) => ({
+                                    ...prev,
+                                    [ctrl.key]: Number.isFinite(num) ? num : ctrl.fallback,
+                                  }));
+                                }}
+                                className="w-18 rounded border border-slate-300 bg-white px-1.5 py-0.5 text-right font-mono text-xs tabular-nums"
+                              />
                             </div>
                             <input
                               type="range"
-                              min={field.min}
-                              max={field.max}
-                              step={field.step || 1}
-                              value={numVal}
+                              min={ctrl.min}
+                              max={ctrl.max}
+                              step={ctrl.step}
+                              value={val}
                               onChange={(e) =>
-                                updateLiveJoint(field.key, Number(e.target.value), field.mirrorKey)
+                                updateActiveBodyPose((prev) => ({
+                                  ...prev,
+                                  [ctrl.key]: Number(e.target.value),
+                                }))
                               }
-                              className="w-full accent-sky-700"
+                              className="w-full accent-sky-700 cursor-pointer"
                             />
                           </div>
                         );
                       })}
-
-                      {angleCategory === 'right_arm' && (
-                        <div className="sm:col-span-2 flex flex-wrap items-center gap-4 pt-1 px-1">
-                          <label className="inline-flex items-center gap-1.5 text-slate-700 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={Boolean(activePanelPose.shoulderRElevated)}
-                              onChange={(e) => updateLiveJoint('shoulderRElevated', e.target.checked)}
-                              className="rounded border-slate-400 text-sky-700"
-                            />
-                            <span>Hombro elevado (+1 RULA/REBA)</span>
-                          </label>
-                          <label className="inline-flex items-center gap-1.5 text-slate-700 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={Boolean(activePanelPose.forearmRCrossMidline)}
-                              onChange={(e) => updateLiveJoint('forearmRCrossMidline', e.target.checked)}
-                              className="rounded border-slate-400 text-sky-700"
-                            />
-                            <span>Antebrazo cruza línea media (+1)</span>
-                          </label>
-                        </div>
-                      )}
                     </div>
-                  ) : (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                      <label className="block space-y-1">
-                        <span className="font-medium text-slate-700">Modo de Sustentación (Piernas)</span>
-                        <select
-                          value={activePanelPose.stanceMode || 'standing'}
-                          onChange={(e) =>
-                            updateLiveJoint(
-                              'stanceMode',
-                              e.target.value as NonNullable<PosturePose3D['stanceMode']>,
-                            )
-                          }
-                          className="w-full min-h-[36px] rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900"
-                        >
-                          <option value="standing">Bipedestación (De pie)</option>
-                          <option value="seated">Sedestación (Sentado)</option>
-                          <option value="squatting">Cuclillas / Semiflexión</option>
-                          <option value="kneeling">Arrodillado</option>
-                          <option value="one_leg">Apoyo unipodal (1 pierna)</option>
-                          <option value="walking">Caminando / Paso dinámico</option>
-                        </select>
-                      </label>
 
-                      <label className="block space-y-1">
-                        <span className="font-medium text-slate-700">Tipo de Agarre Manual</span>
-                        <select
-                          value={activePanelPose.handGripMode || 'relaxed'}
-                          onChange={(e) =>
-                            updateLiveJoint(
-                              'handGripMode',
-                              e.target.value as NonNullable<PosturePose3D['handGripMode']>,
-                            )
-                          }
-                          className="w-full min-h-[36px] rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900"
-                        >
-                          <option value="relaxed">Manos relajadas / neutras</option>
-                          <option value="power_grip">Agarre cilíndrico de fuerza</option>
-                          <option value="box_cradle">Sujeción bimanual de caja</option>
-                          <option value="pinch">Pinza fina digital</option>
-                        </select>
-                      </label>
-
-                      <label className="sm:col-span-2 block space-y-1">
-                        <span className="font-medium text-slate-700">Mobiliario / Carga en Escena</span>
-                        <select
-                          value={activePanelPose.prop || 'none'}
-                          onChange={(e) => updateLiveJoint('prop', e.target.value as ScenePropType)}
-                          className="w-full min-h-[36px] rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900"
-                        >
-                          {STUDIO_PROP_OPTIONS.map((opt) => (
-                            <option key={opt.value} value={opt.value}>
-                              {opt.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-
-                      <div className="sm:col-span-2 space-y-1">
-                        <div className="flex items-center justify-between text-slate-700">
-                          <span>Orientación Global del Cuerpo (Yaw)</span>
-                          <span className="font-mono tabular-nums font-semibold">
-                            {Math.round(activePanelPose.rootYawDeg || 0)}°
-                          </span>
-                        </div>
-                        <input
-                          type="range"
-                          min={-180}
-                          max={180}
-                          value={Math.round(activePanelPose.rootYawDeg || 0)}
-                          onChange={(e) => updateLiveJoint('rootYawDeg', Number(e.target.value))}
-                          className="w-full accent-sky-700"
-                        />
-                      </div>
+                    {/* Posición espacial libre del Avatar en el piso */}
+                    <div className="space-y-2 pt-2 border-t border-sky-200">
+                      <span className="font-bold text-slate-900 block">
+                        Desplazamiento Libre del Avatar en Planta
+                      </span>
+                      {(
+                        [
+                          { key: 'rootOffsetX' as const, label: 'Avatar Lateral X (m)', min: -0.9, max: 0.9, step: 0.02 },
+                          { key: 'rootOffsetZ' as const, label: 'Avatar Avance Z (m)', min: -0.9, max: 0.9, step: 0.02 },
+                          { key: 'rootYawDeg' as const, label: 'Giro Corporal Global (°)', min: -180, max: 180, step: 1 },
+                        ] as const
+                      ).map((rc) => {
+                        const val = Number(activePanel.pose[rc.key] ?? 0);
+                        return (
+                          <div key={rc.key} className="space-y-0.5">
+                            <div className="flex justify-between text-[11px]">
+                              <span>{rc.label}</span>
+                              <span className="font-mono font-bold tabular-nums">{val}</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={rc.min}
+                              max={rc.max}
+                              step={rc.step}
+                              value={val}
+                              onChange={(e) =>
+                                updateActiveBodyPose((prev) => ({
+                                  ...prev,
+                                  [rc.key]: Number(e.target.value),
+                                }))
+                              }
+                              className="w-full accent-violet-700 cursor-pointer"
+                            />
+                          </div>
+                        );
+                      })}
                     </div>
-                  )}
-                </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    <label className="inline-flex items-center gap-2 text-[11.5px] font-medium text-slate-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={mirrorArmsLegs}
+                        onChange={(e) => setMirrorArmsLegs(e.target.checked)}
+                        className="rounded border-slate-300"
+                      />
+                      Simetría bilateral Derecho ↔ Izquierdo al mover controles
+                    </label>
+
+                    {visibleSliders.map((field) => {
+                      const rawVal = Number(activePanel.pose[field.key] ?? 0);
+                      return (
+                        <div
+                          key={field.key}
+                          className="border border-slate-200 rounded p-2 bg-slate-50/70 space-y-1"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[11.5px] font-medium text-slate-800">
+                              {field.label}
+                            </span>
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                min={field.min}
+                                max={field.max}
+                                step={field.step || 1}
+                                value={rawVal}
+                                onChange={(e) => {
+                                  const num = Math.max(
+                                    field.min,
+                                    Math.min(field.max, Number(e.target.value) || 0),
+                                  );
+                                  updateActiveBodyPose((prev) => ({
+                                    ...prev,
+                                    [field.key]: num,
+                                  }));
+                                }}
+                                className="w-16 rounded border border-slate-300 bg-white px-1.5 py-0.5 text-right font-mono text-xs font-semibold tabular-nums text-slate-900"
+                              />
+                              <span className="text-[11px] font-mono text-slate-500">{field.unit}</span>
+                            </div>
+                          </div>
+
+                          <input
+                            type="range"
+                            min={field.min}
+                            max={field.max}
+                            step={field.step || 1}
+                            value={rawVal}
+                            onChange={(e) => {
+                              const num = Number(e.target.value);
+                              updateActiveBodyPose((prev) => {
+                                const next = { ...prev, [field.key]: num };
+                                if (mirrorArmsLegs) {
+                                  if (field.key === 'shoulderRFlexionDeg') next.shoulderLFlexionDeg = num;
+                                  if (field.key === 'shoulderRAbductionDeg') next.shoulderLAbductionDeg = num;
+                                  if (field.key === 'elbowRFlexionDeg') next.elbowLFlexionDeg = num;
+                                  if (field.key === 'hipRFlexionDeg') next.hipLFlexionDeg = num;
+                                  if (field.key === 'kneeRFlexionDeg') next.kneeLFlexionDeg = num;
+                                }
+                                return next;
+                              });
+                            }}
+                            className="w-full accent-sky-700 cursor-pointer"
+                          />
+                        </div>
+                      );
+                    })}
+
+                    {/* Atajo rápido para ir a regular el objeto si la figura tiene mesa o pisón */}
+                    {activePanel.pose.prop && activePanel.pose.prop !== 'none' && (
+                      <button
+                        type="button"
+                        onClick={() => setAngleCategory('espacio_objeto')}
+                        className="w-full min-h-[36px] inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded border border-sky-300 bg-sky-50 hover:bg-sky-100 text-xs font-semibold text-sky-900 cursor-pointer"
+                      >
+                        <Sliders className="w-3.5 h-3.5" />
+                        Regular Posición / Altura del Objeto ({activePanel.pose.prop})
+                      </button>
+                    )}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="p-4 text-xs text-slate-600 space-y-2">
+                <p className="font-semibold text-slate-900">
+                  Esta lámina corresponde a un diagrama metodológico 2D (`{selectedCatalogSpec.renderMode}`).
+                </p>
+                <p>
+                  Puede reemplazar su imagen por una versión definitiva o seleccionar cualquier figura postural 3D en el listado izquierdo para editar sus avatares y objetos.
+                </p>
               </div>
             )}
-
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-              <div className="text-xs text-slate-600 flex items-center gap-1.5">
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                <span>
-                  Nomenclatura exacta <code className="font-mono font-semibold">{selectedSpec.fileName}</code> sincronizada con lámina y motor 3D.
-                </span>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleGenerateAndDownloadZip('chapter')}
-                  disabled={Boolean(batchProgress)}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-800 cursor-pointer"
-                >
-                  <Archive className="w-3.5 h-3.5 text-slate-600" />
-                  ZIP Cap. {selectedSpec.chapter}
-                </button>
-
-                {selectedAssignedPhotoUrl && is3DSelected && (
-                  <button
-                    type="button"
-                    onClick={() => handleDownloadSpecPng(effectiveSelectedSpec, orbit, true)}
-                    disabled={isExportingSingle}
-                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-sky-300 bg-sky-50 hover:bg-sky-100 text-xs font-semibold text-sky-900 cursor-pointer"
-                  >
-                    <Box className="w-3.5 h-3.5" />
-                    Exportar Versión 3D
-                  </button>
-                )}
-
-                <button
-                  type="button"
-                  onClick={() => handleDownloadSpecPng(effectiveSelectedSpec, orbit)}
-                  disabled={isExportingSingle}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md bg-slate-900 hover:bg-slate-800 text-xs font-semibold text-white cursor-pointer"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  {isExportingSingle ? 'Preparando...' : `Descargar ${selectedSpec.fileName}`}
-                </button>
-              </div>
-            </div>
           </section>
-        </div>
-      )}
-
-      {/* ===================================================================== */}
-      {/* MODO 2: TABLA OFICIAL CON NOMENCLATURA EXACTA Y DESCARGA DIRECTA      */}
-      {/* ===================================================================== */}
-      {studioTab === 'table' && (
-        <section className="bg-white border border-slate-300 rounded-lg overflow-hidden shadow-2xs">
-          <div className="px-4 py-3.5 border-b border-slate-200 bg-slate-50 flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-bold text-slate-900">
-                Índice Completo del Plan de Figuras (`Figura · Contenido · Cuerpos · Archivos`)
-              </h2>
-              <p className="text-xs text-slate-600">
-                Haga clic en cualquier nombre de archivo (`fig-1-01.png`, `fig-4-01.png`, etc.) para descargar la imagen en alta calidad con su nombre exacto de origen.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => handleGenerateAndDownloadZip('all')}
-              disabled={Boolean(batchProgress)}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-sky-700 hover:bg-sky-800 disabled:opacity-60 text-xs font-semibold text-white cursor-pointer"
-            >
-              <FolderArchive className="w-3.5 h-3.5" />
-              Descargar Todas en un ZIP ({totalInZip} archivos)
-            </button>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-xs">
-              <thead>
-                <tr className="bg-slate-100 border-b border-slate-300 text-slate-800 font-bold">
-                  <th className="py-2.5 px-4 w-24">Figura</th>
-                  <th className="py-2.5 px-4">Contenido</th>
-                  <th className="py-2.5 px-4 w-28 text-center">Cuerpos</th>
-                  <th className="py-2.5 px-4 w-72">Archivos (Descarga Directa)</th>
-                  <th className="py-2.5 px-4 w-28 text-right">Vista</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200">
-                {groupedPlanRows.map((row) => (
-                  <tr key={row.figureNumber} className="hover:bg-slate-50/80">
-                    <td className="py-2.5 px-4 font-mono font-bold text-slate-900 tabular-nums">
-                      {row.figureNumber}
-                    </td>
-                    <td className="py-2.5 px-4 text-slate-800">{row.title}</td>
-                    <td className="py-2.5 px-4 text-center font-mono text-slate-600 tabular-nums">
-                      {row.bodiesLabel}
-                    </td>
-                    <td className="py-2.5 px-4">
-                      <div className="flex flex-wrap gap-1.5">
-                        {row.files.map((f) => (
-                          <button
-                            key={f.id}
-                            type="button"
-                            onClick={() => handleDownloadSpecPng(f)}
-                            className="inline-flex items-center gap-1 px-2 py-1 rounded border border-sky-200 bg-sky-50 hover:bg-sky-100 text-sky-900 font-mono text-[11px] font-semibold cursor-pointer"
-                            title={`Descargar ${f.fileName} en alta calidad`}
-                          >
-                            <Download className="w-3 h-3 text-sky-700" />
-                            {f.fileName}
-                          </button>
-                        ))}
-                      </div>
-                    </td>
-                    <td className="py-2.5 px-4 text-right">
-                      <div className="inline-flex flex-wrap justify-end gap-1.5">
-                        {row.files.map((f) => (
-                          <button
-                            key={`open-${f.id}`}
-                            type="button"
-                            onClick={() => {
-                              setSelectedId(f.id);
-                              setStudioTab('catalog');
-                            }}
-                            className="px-2 py-1 rounded border border-slate-300 bg-white hover:bg-sky-50 hover:border-sky-300 text-sky-700 hover:text-sky-900 font-semibold whitespace-nowrap cursor-pointer"
-                            title={`Abrir ${f.fileName} en el calibrador 3D`}
-                          >
-                            {row.files.length > 1
-                              ? `Abrir ${f.figureNumber}${f.subPart || ''}`
-                              : 'Abrir en 3D'}
-                          </button>
-                        ))}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
-
-      {/* ===================================================================== */}
-      {/* MODO 3: GENERADOR 3D AISLADO POR DESCRIPCIÓN / PARÁMETROS ANATÓMICOS  */}
-      {/* ===================================================================== */}
-      {studioTab === 'custom' && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-          <section className="lg:col-span-5 bg-white border border-slate-300 rounded-lg p-4 sm:p-5 shadow-2xs space-y-4">
-            <div className="space-y-1.5">
-              <label className="block text-xs font-bold text-slate-900">
-                1. Descripción Técnica de la Zona Anatómica y Postura
-              </label>
-              <textarea
-                rows={3}
-                value={promptInput}
-                onChange={(e) => setPromptInput(e.target.value)}
-                placeholder="Ej.: Mano y muñeca en flexión palmar de 35° con vector F = 40 N..."
-                className="w-full p-2.5 text-xs rounded-md border border-slate-300 bg-white text-slate-900 focus:outline-none focus:border-sky-600"
-              />
-              <div className="flex flex-wrap gap-1.5 pt-1">
-                {PROMPT_EXAMPLES.map((ex, i) => (
-                  <button
-                    key={i}
-                    type="button"
-                    onClick={() => {
-                      setPromptInput(ex);
-                      handleApplyPrompt(ex);
-                    }}
-                    className="text-[11px] px-2 py-1 rounded border border-slate-200 bg-slate-50 hover:bg-sky-50 hover:border-sky-300 text-slate-700 cursor-pointer text-left"
-                  >
-                    Ejemplo {i + 1}: {ex.slice(0, 38)}…
-                  </button>
-                ))}
-              </div>
-              <button
-                type="button"
-                onClick={() => handleApplyPrompt(promptInput)}
-                className="w-full mt-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-md bg-sky-700 hover:bg-sky-800 text-white text-xs font-semibold cursor-pointer"
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                Aislar Articulación y Configurar Escena 3D
-              </button>
-            </div>
-
-            <hr className="border-slate-200" />
-
-            <div className="space-y-3 text-xs">
-              <div className="font-bold text-slate-900">2. Ajuste Anatómico y Encabezado</div>
-
-              <label className="block space-y-1">
-                <span className="font-medium text-slate-700">Título de la Ilustración</span>
-                <input
-                  type="text"
-                  value={customTitle}
-                  onChange={(e) => setCustomTitle(e.target.value)}
-                  className="w-full px-2.5 py-1.5 rounded-md border border-slate-300 bg-white text-slate-900"
-                />
-              </label>
-
-              <label className="block space-y-1">
-                <span className="font-medium text-slate-700">Zona de Enfoque (Aislamiento Anatómico)</span>
-                <select
-                  value={customFocusZone}
-                  onChange={(e) => setCustomFocusZone(e.target.value as FocusZone)}
-                  className="w-full px-2.5 py-1.5 rounded-md border border-slate-300 bg-white text-slate-900"
-                >
-                  {(Object.keys(FOCUS_ZONE_LABELS) as FocusZone[]).map((z) => (
-                    <option key={z} value={z}>
-                      {FOCUS_ZONE_LABELS[z]}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <label className="block space-y-1">
-                  <span className="font-medium text-slate-700">Formato Plan de Figuras</span>
-                  <select
-                    value={customFormat}
-                    onChange={(e) =>
-                      setCustomFormat(e.target.value as 'single_480x640' | 'dual_800x520' | 'scene_800x520')
-                    }
-                    className="w-full px-2.5 py-1.5 rounded-md border border-slate-300 bg-white text-slate-900"
-                  >
-                    <option value="single_480x640">1 Cuerpo / Segmento (480×640)</option>
-                    <option value="dual_800x520">2 Cuerpos Comparativos (800×520)</option>
-                    <option value="scene_800x520">Escena Apaisada (800×520)</option>
-                  </select>
-                </label>
-
-                <label className="block space-y-1">
-                  <span className="font-medium text-slate-700">Plano Óptico de Cámara</span>
-                  <select
-                    value={customCamera}
-                    onChange={(e) => setCustomCamera(e.target.value as CameraPreset)}
-                    className="w-full px-2.5 py-1.5 rounded-md border border-slate-300 bg-white text-slate-900"
-                  >
-                    {(Object.keys(CAMERA_PRESET_LABELS) as CameraPreset[]).map((c) => (
-                      <option key={c} value={c}>
-                        {CAMERA_PRESET_LABELS[c]}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-
-              <label className="block space-y-1">
-                <div className="flex justify-between text-slate-700">
-                  <span className="font-medium">Ángulo Principal del Segmento (α)</span>
-                  <span className="font-mono font-bold text-orange-600 tabular-nums">{customPrimaryDeg}°</span>
-                </div>
-                <input
-                  type="range"
-                  min={-45}
-                  max={135}
-                  value={customPrimaryDeg}
-                  onChange={(e) => {
-                    const v = Number(e.target.value);
-                    setCustomPrimaryDeg(v);
-                    setCustomAlphaLabel(`α = ${v}°`);
-                  }}
-                  className="w-full accent-orange-600"
-                />
-              </label>
-
-              <label className="block space-y-1">
-                <div className="flex justify-between text-slate-700">
-                  <span className="font-medium">Ángulo Secundario (Desviación / Prono / Lateral)</span>
-                  <span className="font-mono tabular-nums">{customSecondaryDeg}°</span>
-                </div>
-                <input
-                  type="range"
-                  min={-60}
-                  max={90}
-                  value={customSecondaryDeg}
-                  onChange={(e) => setCustomSecondaryDeg(Number(e.target.value))}
-                  className="w-full accent-sky-700"
-                />
-              </label>
-
-              {customFormat === 'dual_800x520' && (
-                <label className="block space-y-1">
-                  <div className="flex justify-between text-slate-700">
-                    <span className="font-medium">Ángulo Panel Izquierdo (Referencia Postura A)</span>
-                    <span className="font-mono tabular-nums">{customCompareDeg}°</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={-30}
-                    max={90}
-                    value={customCompareDeg}
-                    onChange={(e) => setCustomCompareDeg(Number(e.target.value))}
-                    className="w-full accent-slate-700"
-                  />
-                </label>
-              )}
-
-              <div className="grid grid-cols-2 gap-3">
-                <label className="block space-y-1">
-                  <span className="font-medium text-slate-700">Etiqueta Arco Naranja (α)</span>
-                  <input
-                    type="text"
-                    value={customAlphaLabel}
-                    onChange={(e) => setCustomAlphaLabel(e.target.value)}
-                    className="w-full px-2.5 py-1.5 rounded-md border border-slate-300 bg-white font-mono text-xs"
-                  />
-                </label>
-
-                <label className="block space-y-1">
-                  <span className="font-medium text-slate-700">Vector Fuerza Azul (F)</span>
-                  <input
-                    type="text"
-                    value={customForceLabel}
-                    onChange={(e) => setCustomForceLabel(e.target.value)}
-                    placeholder="F = 45 N"
-                    className="w-full px-2.5 py-1.5 rounded-md border border-slate-300 bg-white font-mono text-xs"
-                  />
-                </label>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <label className="block space-y-1">
-                  <span className="font-medium text-slate-700">Sentido del Vector F</span>
-                  <select
-                    value={customForceDir}
-                    onChange={(e) => setCustomForceDir(e.target.value as 'down' | 'up' | 'left' | 'right')}
-                    className="w-full px-2.5 py-1.5 rounded-md border border-slate-300 bg-white"
-                  >
-                    <option value="down">Vertical Descendente (Carga)</option>
-                    <option value="up">Vertical Ascendente (Reacción)</option>
-                    <option value="right">Horizontal Derecha (Empuje)</option>
-                    <option value="left">Horizontal Izquierda (Arrastre)</option>
-                  </select>
-                </label>
-
-                <label className="block space-y-1">
-                  <span className="font-medium text-slate-700">Archivo PNG de Salida</span>
-                  <input
-                    type="text"
-                    value={customFileName}
-                    onChange={(e) => setCustomFileName(e.target.value)}
-                    className="w-full px-2.5 py-1.5 rounded-md border border-slate-300 bg-white font-mono text-xs"
-                  />
-                </label>
-              </div>
-            </div>
-          </section>
-
-          <section className="order-1 lg:order-2 lg:col-span-7 bg-white border border-slate-300 rounded-lg p-4 sm:p-5 shadow-2xs space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
-              <div>
-                <div className="text-xs font-mono text-slate-600 tabular-nums">
-                  Archivo: <strong className="text-slate-900">{customSpec.fileName}</strong>
-                  {customPngStats && (
-                    <>
-                      {' · '}
-                      <span className="text-emerald-700 font-semibold">
-                        {customPngStats.width}×{customPngStats.height} px ({(customPngStats.sizeBytes / 1024).toFixed(1)} KB)
-                      </span>
-                    </>
-                  )}
-                </div>
-                <h2 className="text-base font-bold text-slate-900 mt-0.5">
-                  {FOCUS_ZONE_LABELS[customFocusZone]}
-                </h2>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setCustomOrbit(DEFAULT_ORBIT_OVERRIDE)}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border border-slate-300 bg-white hover:bg-slate-50 text-xs font-medium text-slate-700 cursor-pointer"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  Centrar Plano
-                </button>
-              </div>
-            </div>
-
-            <div className="bg-slate-100 border border-slate-300 rounded-md p-3 sm:p-4 flex flex-col items-center">
-              <canvas
-                ref={customCanvasRef}
-                onPointerDown={(e) => handleCanvasPointerDown(e, true)}
-                onPointerMove={(e) => handleCanvasPointerMove(e, true)}
-                onPointerUp={handleCanvasPointerUp}
-                onPointerCancel={handleCanvasPointerUp}
-                className={`${getCanvasMaxWidthClass(customSpec.widthPx)} h-auto bg-white shadow-xs rounded-xs border border-slate-300 cursor-grab active:cursor-grabbing touch-none select-none`}
-              />
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <span className="text-xs text-slate-600">
-                Arrastre con el puntero sobre el lienzo para rotar el segmento humano en 3D.
-              </span>
-              <button
-                type="button"
-                onClick={() => handleDownloadSpecPng(customSpec, customOrbit, true)}
-                disabled={isExportingSingle}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold cursor-pointer"
-              >
-                <Download className="w-3.5 h-3.5" />
-                Descargar {customSpec.fileName} (Alta Calidad)
-                            {/* COMPONENTE CONECTOR MOCAP DE IA REAL - INYECCIÓN ERGOVAL */}
-            <div className="mt-4 p-3 bg-sky-50 border border-sky-200 rounded-md flex flex-col sm:flex-row items-center justify-between gap-3">
-              <div className="flex flex-col">
-                <span className="text-xs font-bold text-sky-900 flex items-center gap-1">
-                  ✨ Captura de Movimiento Biomecánica Real Activa
-                </span>
-                <span className="text-[11px] text-sky-700">
-                  Procesa el video MP4 frame por frame en tu tarjeta gráfica local mediante visión artificial.
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={async () => {
-                  // Localiza el elemento de video renderizado en tu interfaz web
-                  const videoDom = document.querySelector('video');
-                  if (!videoDom) {
-                    alert('Por favor, asegúrate de que el video MP4 esté cargado y visible en pantalla antes de iniciar.');
-                    return;
-                  }
-                  
-                  try {
-                    // Invoca al extractor matemático que guardamos en utils/poseExtractor.ts
-                    const resultadoMoCap = await trackVideoFrames(videoDom);
-                    
-                    if (resultadoMoCap && resultadoMoCap.peorPoseREBA) {
-                      alert('¡Análisis cinemático exitoso! Las articulaciones han sido mapeadas de forma matemática.');
-                      
-                      // Forzamos la actualización de tu especificación del visor 3D para romper el Fallback fijo
-                      // Esto inyectará los ángulos reales directamente sobre los huesos de Mixamo
-                      if (typeof (window as any).setCustomSpecPose === 'function') {
-                        (window as any).setCustomSpecPose(resultadoMoCap.peorPoseREBA);
-                      }
-                    }
-                  } catch (err) {
-                    console.error('Error al ejecutar MediaPipe en el cliente:', err);
-                  }
-                }}
-                className="px-3.5 py-1.5 rounded bg-sky-700 hover:bg-sky-600 text-white text-xs font-bold cursor-pointer transition-colors shadow-xs"
-              >
-                          {/* COMPONENTE CONECTOR MOCAP DE IA REAL CON SINCRONIZACIÓN DE POSTURAS — ERGOVAL */}
-            <div className="mt-4 p-3 bg-sky-50 border border-sky-200 rounded-md flex flex-col sm:flex-row items-center justify-between gap-3">
-              <div className="flex flex-col">
-                <span className="text-xs font-bold text-sky-900 flex items-center gap-1">
-                  ✨ Captura de Movimiento Biomecánica Real Activa
-                </span>
-                <span className="text-[11px] text-sky-700">
-                  Busca automáticamente los momentos exactos de flexión y reincorporación del operario.
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={async () => {
-                  const videoDom = document.querySelector('video');
-                  if (!videoDom) {
-                    alert('Por favor, asegúrate de que el video MP4 esté cargado y visible en pantalla antes de iniciar.');
-                    return;
-                  }
-                  
-                  try {
-                    // 1. Extraer todos los fotogramas calculados con MediaPipe
-                    const resultadoMoCap = await trackVideoFrames(videoDom);
-                    
-                    if (resultadoMoCap && resultadoMoCap.posesPorFrame && resultadoMoCap.posesPorFrame.length > 0) {
-                      const framesPose = resultadoMoCap.posesPorFrame;
-                      
-                      // 2. BUSCAR EL MOMENTO DE MÁXIMA FLEXIÓN (ORIGEN — OPERARIO AGACHADO)
-                      let indiceOrigen = 0;
-                      let maximaFlexion = 0;
-                      for (let idx = 0; idx < framesPose.length; idx++) {
-                        const flex = Math.abs(framesPose[idx]?.trunkFlexionDeg || 0);
-                        if (flex > maximaFlexion) {
-                          maximaFlexion = flex;
-                          indiceOrigen = idx;
-                        }
-                      }
-
-                      // 3. BUSCAR EL MOMENTO DE REINCORPORACIÓN (DESTINO — OPERARIO PARADO)
-                      let indiceDestino = framesPose.length - 1;
-                      let minimaFlexion = Infinity;
-                      for (let idx = indiceOrigen; idx < framesPose.length; idx++) {
-                        const flex = Math.abs(framesPose[idx]?.trunkFlexionDeg || 0);
-                        if (flex < minimaFlexion) {
-                          minimaFlexion = flex;
-                          indiceDestino = idx;
-                        }
-                      }
-
-                      alert('¡Sincronización cinemática exitosa! Posturas de origen y destino alineadas de forma perfecta.');
-                      
-                      // 4. Forzar la inyección de las poses reales calculadas en el visor 3D derecho
-                      // Esto sobreescribe los valores fijos y empareja el avatar con la foto real de forma exacta
-                      if (typeof (window as any).setCustomSpecPose === 'function') {
-                        // Enviamos la pose real agachada al panel de Origen y la erguida al panel de Destino
-                        (window as any).setCustomSpecPose(framesPose[indiceOrigen], 'origen');
-                        (window as any).setCustomSpecPose(framesPose[indiceDestino], 'destino');
-                      }
-                    }
-                  } catch (err) {
-                    console.error('Error al ejecutar la sincronización en el cliente:', err);
-                  }
-                }}
-                className="px-3.5 py-1.5 rounded bg-sky-700 hover:bg-sky-600 text-white text-xs font-bold cursor-pointer transition-colors shadow-xs"
-              >
-                Sincronizar Avatar con Video Real
-              </button>
-            </div>
-
-              </button>
-            </div>
-
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
-
-      {/* MODAL EMBEBIDO PARA CONSULTAR EL PDF DEL LIBRO ADJUNTO */}
-      {isPdfViewerOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-900/70 flex items-center justify-center p-3 sm:p-6">
-          <div className="bg-white rounded-lg border border-slate-300 w-full max-w-6xl h-[88vh] flex flex-col overflow-hidden shadow-xl">
-            <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3 bg-slate-50">
-              <div className="flex items-center gap-2 min-w-0">
-                <Eye className="w-4 h-4 text-sky-700 shrink-0" />
-                <span className="text-xs sm:text-sm font-bold text-slate-900 truncate">
-                  Evaluación ergonómica de puestos de trabajo — Mauricio Alejandro Pizarro Muñoz
-                </span>
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <a
-                  href={BOOK_PDF_PATH}
-                  download="Evaluacion_ergonomica_de_puestos_de_trabajo_Mauricio_Pizarro.pdf"
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-300 bg-white hover:bg-slate-100 text-xs font-medium text-slate-800"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  Descargar PDF
-                </a>
-                <button
-                  type="button"
-                  onClick={() => setIsPdfViewerOpen(false)}
-                  className="p-1.5 rounded hover:bg-slate-200 text-slate-700 cursor-pointer"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-            <iframe
-              src={BOOK_PDF_PATH}
-              title="Libro Evaluación Ergonómica de Puestos de Trabajo"
-              className="flex-1 w-full bg-slate-100"
-            />
-          </div>
         </div>
       )}
     </div>

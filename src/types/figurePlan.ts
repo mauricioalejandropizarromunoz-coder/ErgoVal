@@ -75,9 +75,11 @@ export interface PosturePose3D {
   neckTwistDeg: number;
   shoulderRFlexionDeg: number; // + forward flexion, - extension
   shoulderRAbductionDeg: number; // + lateral abduction
+  shoulderRRotationDeg?: number; // Rotación humeral diedra (-90° interna .. +90° externa)
   shoulderRElevated?: boolean;
   shoulderLFlexionDeg: number;
   shoulderLAbductionDeg: number;
+  shoulderLRotationDeg?: number; // Rotación humeral izquierda (-90° .. +90°)
   elbowRFlexionDeg: number; // 0 = straight arm, 90 = right angle
   elbowLFlexionDeg: number;
   forearmRPronationDeg: number; // 0 = neutral, +80 pronation, -80 supination
@@ -102,6 +104,12 @@ export interface PosturePose3D {
   rootOffsetX?: number;
   rootOffsetZ?: number;
   rootYawDeg?: number;
+  /** Regulación libre en 3D de objetos / mobiliario de escena (mesa de apoyo, pisón de tierra, pala, cajas, silla, etc.) */
+  propOffsetX?: number;
+  propOffsetY?: number;
+  propOffsetZ?: number;
+  propRotYDeg?: number;
+  propScale?: number;
   /** Estado de acoplamiento de la carga respecto al mobiliario fijo en secuencias humanizadas */
   loadDetachedPhase?: 'origin_rest' | 'carried' | 'dest_rest';
 }

@@ -1,10 +1,16 @@
 import React, { useRef, useState } from 'react';
-import { Camera, Compass, RotateCcw, Trash2, Upload } from 'lucide-react';
-import { AngleAnnotation, StudyPhoto } from '../types/ergonomics';
+import { Box, Camera, Compass, RotateCcw, Trash2, Upload } from 'lucide-react';
+import { AngleAnnotation, StudyPhoto, StudyTab } from '../types/ergonomics';
+import {
+  isAvatarReplicaPhoto,
+  isBiomechanicalVisualMethod,
+  renderMethodAvatarStudyPhotos,
+} from '../utils/methodAvatarReportHelper';
 
 interface PhotoGoniometerProps {
   photos: StudyPhoto[];
   onChange: (photos: StudyPhoto[]) => void;
+  tab?: StudyTab;
 }
 
 function calculateAngleDegrees(
@@ -133,14 +139,31 @@ async function renderAnnotatedImage(dataUrl: string, annotations: AngleAnnotatio
   });
 }
 
-export function PhotoGoniometer({ photos, onChange }: PhotoGoniometerProps) {
+export function PhotoGoniometer({ photos, onChange, tab }: PhotoGoniometerProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [activePhotoId, setActivePhotoId] = useState<string | null>(photos[0]?.id ?? null);
   const [goniometerActive, setGoniometerActive] = useState(false);
   const [draftPoints, setDraftPoints] = useState<{ x: number; y: number }[]>([]);
   const [segmentLabel, setSegmentLabel] = useState('Tronco / Brazo');
+  const [isGeneratingAvatar, setIsGeneratingAvatar] = useState(false);
 
   const activePhoto = photos.find((p) => p.id === activePhotoId) || photos[0] || null;
+
+  const handleGenerateAvatarReplica = async () => {
+    if (!tab || !isBiomechanicalVisualMethod(tab.method)) return;
+    setIsGeneratingAvatar(true);
+    try {
+      const generated = await renderMethodAvatarStudyPhotos(tab);
+      if (generated.length > 0) {
+        const realOperatorPhotos = photos.filter((p) => !isAvatarReplicaPhoto(p));
+        const nextPhotos = [...realOperatorPhotos, ...generated];
+        onChange(nextPhotos);
+        setActivePhotoId(generated[0].id);
+      }
+    } finally {
+      setIsGeneratingAvatar(false);
+    }
+  };
 
   const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
@@ -248,8 +271,20 @@ export function PhotoGoniometer({ photos, onChange }: PhotoGoniometerProps) {
             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-800 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0"
           >
             <Upload className="w-3.5 h-3.5" />
-            Cargar Fotografía
+            Cargar Foto Operario
           </button>
+          {tab && isBiomechanicalVisualMethod(tab.method) && (
+            <button
+              type="button"
+              disabled={isGeneratingAvatar}
+              onClick={() => void handleGenerateAvatarReplica()}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-sky-700 hover:bg-sky-800 disabled:opacity-50 rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              title="Genera e inserta la réplica del Avatar 3D con los ángulos exactos cargados en este método para el informe"
+            >
+              <Box className="w-3.5 h-3.5" />
+              {isGeneratingAvatar ? 'Generando 3D...' : 'Generar Réplica Avatar 3D'}
+            </button>
+          )}
           {activePhoto && (
             <button
               type="button"

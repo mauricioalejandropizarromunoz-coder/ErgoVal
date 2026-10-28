@@ -16,7 +16,7 @@ import {
   TextRun,
   WidthType,
 } from 'docx';
-import { GeneralStudyData, MethodId, RiskSeverity, StudyTab } from '../types/ergonomics';
+import { GeneralStudyData, MethodId, RiskSeverity, StudyPhoto, StudyTab } from '../types/ergonomics';
 import { METHOD_CATALOG } from './defaults';
 import { getMethodFormulaProfile, isMethodFormulaModified } from './formulaConfig';
 import {
@@ -28,6 +28,12 @@ import {
   buildStudyTrafficLightMatrix,
   describeNioshTrajectory,
 } from './trafficLightAlerts';
+import { ensureAvatarGlbLoaded } from './biomech3dRenderer';
+import {
+  isAvatarReplicaPhoto,
+  isBiomechanicalVisualMethod,
+  renderMethodAvatarStudyPhotos,
+} from './methodAvatarReportHelper';
 
 export const PROFESSIONAL_DISCLAIMER_TEXT =
   'AVISO Y DESCARGO DE RESPONSABILIDAD PROFESIONAL: Esta herramienta informática fue desarrollada para el uso exclusivo de profesionales con formación y competencia técnica en ergonomía laboral y salud ocupacional. Los cálculos, estimaciones y ponderaciones algorítmicas emitidos por este sistema constituyen un soporte técnico de cálculo y NO sustituyen en modo alguno el análisis crítico, la inspección presencial de campo ni la verificación obligatoria de los resultados obtenidos que debe efectuar el propio profesional evaluador en ejercicio de su responsabilidad legal.';
@@ -297,10 +303,32 @@ function getTabTrajectoryClarification(tab: StudyTab): string | null {
   return null;
 }
 
+async function getEffectiveReportPhotosForTab(tab: StudyTab): Promise<StudyPhoto[]> {
+  const existing = Array.isArray(tab.photos) ? [...tab.photos] : [];
+  if (!isBiomechanicalVisualMethod(tab.method)) {
+    return existing;
+  }
+  const hasAvatar = existing.some((p) => isAvatarReplicaPhoto(p));
+  if (hasAvatar) {
+    return existing;
+  }
+  try {
+    await ensureAvatarGlbLoaded();
+    const autoAvatarPhotos = await renderMethodAvatarStudyPhotos(tab);
+    return [...existing, ...autoAvatarPhotos];
+  } catch {
+    return existing;
+  }
+}
+
 // ============================================================================
 // 1. EXPORTACIÓN A PDF DETALLADO (jsPDF + jspdf-autotable)
 // ============================================================================
-export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab[]): Promise<void> {
+export async function exportStudyToPdf(
+  general: GeneralStudyData,
+  tabs: StudyTab[],
+  customFilename?: string,
+): Promise<void> {
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
@@ -830,19 +858,20 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
       });
     }
 
-    // Fotografías y Reconstrucciones 3D en grilla enmarcada de 2 columnas SIN SOLAPAMIENTO
-    if (tab.photos.length > 0) {
+    // Fotografías Reales de Operario + Réplicas Avatar 3D con Ángulos Exactos en grilla de 2 columnas SIN SOLAPAMIENTO
+    const effectivePdfPhotos = await getEffectiveReportPhotosForTab(tab);
+    if (effectivePdfPhotos.length > 0) {
       const preparedPhotos: Array<{
         asset: NormalizedImageAsset;
         fullCaption: string;
       }> = [];
 
-      for (const photo of tab.photos) {
+      for (const photo of effectivePdfPhotos) {
         const asset = await normalizeDataUrlToPng(photo.annotatedDataUrl || photo.dataUrl, 900);
         if (!asset) continue;
         const angleSummary =
           photo.annotations.length > 0
-            ? ` | Ángulos medidos: ${photo.annotations.map((a) => `${a.label}: ${a.degrees}°`).join(', ')}`
+            ? ` | Ángulos exactos: ${photo.annotations.map((a) => `${a.label}: ${a.degrees}°`).join(', ')}`
             : '';
         preparedPhotos.push({
           asset,
@@ -1045,7 +1074,16 @@ export async function exportStudyToPdf(general: GeneralStudyData, tabs: StudyTab
     doc.text(`Hoja ${p} de ${totalPages}`, pageWidth - margin, pageHeight - 7.5, { align: 'right' });
   }
 
-  doc.save(getSafeFilename(general, 'pdf'));
+  doc.save(customFilename || getSafeFilename(general, 'pdf'));
+}
+
+export async function exportSingleTabToPdf(
+  general: GeneralStudyData,
+  tab: StudyTab,
+): Promise<void> {
+  const safeMethod = tab.method.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+  const safeDate = (general.reportDate || 'estudio').replace(/[^a-zA-Z0-9_-]+/g, '_');
+  await exportStudyToPdf(general, [tab], `informe_ergoeval_${safeMethod}_${safeDate}.pdf`);
 }
 
 // ============================================================================
@@ -1564,14 +1602,15 @@ export async function exportStudyToWord(general: GeneralStudyData, tabs: StudyTa
       );
     }
 
-    // Imágenes anotadas con espaciado protegido
-    if (tab.photos.length > 0) {
+    // Imágenes de Operario Real + Réplica Avatar 3D con Ángulos Exactos
+    const effectiveWordPhotos = await getEffectiveReportPhotosForTab(tab);
+    if (effectiveWordPhotos.length > 0) {
       docChildren.push(
         new Paragraph({
           spacing: { before: 180, after: 80 },
           children: [
             new TextRun({
-              text: 'Registro Fotográfico y Modelización 3D:',
+              text: 'Registro Fotográfico Real y Réplica Avatar 3D con Ángulos Exactos:',
               bold: true,
               size: 20,
               color: '0F172A',
@@ -1581,7 +1620,7 @@ export async function exportStudyToWord(general: GeneralStudyData, tabs: StudyTa
         }),
       );
 
-      for (const photo of tab.photos) {
+      for (const photo of effectiveWordPhotos) {
         const asset = await normalizeDataUrlToPng(photo.annotatedDataUrl || photo.dataUrl, 800);
         if (!asset) continue;
         const maxWidthDocx = 390;

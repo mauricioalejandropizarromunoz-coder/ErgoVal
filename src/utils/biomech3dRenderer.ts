@@ -20,6 +20,7 @@ import {
   exportCanvasToOptimizedPng,
 } from './pngOptimizer';
 import { getEffectiveFigurePhotoUrl } from './figurePlanCatalog';
+import type { MocapFrameSample } from './mocapRetargeter';
 
 export const AVATAR_GLB_URL = '/models/ergo_avatar.glb';
 
@@ -234,6 +235,7 @@ interface BoneRestState {
   restPos: THREE.Vector3;
   restQuat: THREE.Quaternion;
   restWorldQuat: THREE.Quaternion;
+  restWorldPos: THREE.Vector3;
 }
 
 interface GlbAvatarRig {
@@ -454,6 +456,7 @@ function bindLoadedGlbToRig(
         restPos: bone.position.clone(),
         restQuat: bone.quaternion.clone(),
         restWorldQuat: new THREE.Quaternion(),
+        restWorldPos: new THREE.Vector3(),
       };
       // Soporta prefijos Mixamo con o sin índice ("mixamorig:Hips", "mixamorig1:Hips", "mixamorig_Hips")
       const clean = bone.name
@@ -636,6 +639,7 @@ function bindLoadedGlbToRig(
     entry.restPos.copy(entry.bone.position);
     entry.restQuat.copy(entry.bone.quaternion);
     entry.bone.getWorldQuaternion(entry.restWorldQuat);
+    entry.bone.getWorldPosition(entry.restWorldPos);
   });
 
   rig.isReady = true;
@@ -769,6 +773,9 @@ export function ensureAvatarGlbLoaded(): Promise<void> {
 // WORKSTATION & LOAD PROPS (CLEAN STUDIO GEOMETRY, NO SKELETON DEBUG LINES)
 // ============================================================================
 function clearPropsGroup(propsRoot: THREE.Group): void {
+  propsRoot.position.set(0, 0, 0);
+  propsRoot.rotation.set(0, 0, 0);
+  propsRoot.scale.set(1, 1, 1);
   while (propsRoot.children.length > 0) {
     const child = propsRoot.children[0];
     propsRoot.remove(child);
@@ -850,6 +857,8 @@ function buildSceneProp(
   rig.joints.wristR.getWorldPosition(wristRWorld);
   const wristLWorld = new THREE.Vector3();
   rig.joints.wristL.getWorldPosition(wristLWorld);
+  const elbowRWorld = new THREE.Vector3();
+  rig.joints.elbowR.getWorldPosition(elbowRWorld);
   const pelvisWorld = new THREE.Vector3();
   rig.joints.pelvis.getWorldPosition(pelvisWorld);
   const footRWorld = new THREE.Vector3();
@@ -1086,46 +1095,71 @@ function buildSceneProp(
     case 'office_desk_corner_monitor':
     case 'office_desk_lateral':
     case 'high_scanner_desk': {
-      const deskH = prop === 'high_scanner_desk' ? 0.99 : Math.max(0.68, handWorld.y - 0.035);
-      const deskW = 0.78;
-      const deskD = 0.52;
-      const deskZ = 0.44;
+      // En `work_desk_support` (ej. Fig. 4.6b / 4.4b apoyo de brazo), el objeto de apoyo debe quedar
+      // exactamente DEBAJO DEL CODO y antebrazo derecho (`elbowRWorld` -> `wristRWorld`) para descargar el hombro:
+      const isElbowSupportBlock = prop === 'work_desk_support';
+      const forearmSupportBottomY = Math.min(elbowRWorld.y, wristRWorld.y) - 0.042;
+      const deskH =
+        prop === 'high_scanner_desk'
+          ? 0.99
+          : isElbowSupportBlock
+            ? Math.max(0.56, forearmSupportBottomY)
+            : Math.max(0.68, handWorld.y - 0.035);
+      const deskW = isElbowSupportBlock ? 0.56 : 0.78;
+      const deskD = isElbowSupportBlock ? 0.50 : 0.52;
+      const deskX = isElbowSupportBlock ? (elbowRWorld.x + wristRWorld.x) * 0.5 : 0;
+      const deskZ = isElbowSupportBlock ? (elbowRWorld.z + wristRWorld.z) * 0.5 + 0.05 : 0.44;
 
       const top = new THREE.Mesh(new THREE.BoxGeometry(deskW, 0.032, deskD), structMat);
-      top.position.set(0, deskH, deskZ);
+      top.position.set(deskX, deskH, deskZ);
       addPropMesh(top);
+
+      if (isElbowSupportBlock) {
+        // Almohadilla / bloque ergonómico de apoyo directamente bajo el olécranon (codo derecho) y antebrazo
+        const padLenZ = Math.max(0.24, Math.min(0.40, Math.abs(wristRWorld.z - elbowRWorld.z) + 0.14));
+        const elbowPad = new THREE.Mesh(
+          new THREE.BoxGeometry(0.16, 0.018, padLenZ),
+          elastomerMat,
+        );
+        elbowPad.position.set(
+          (elbowRWorld.x + wristRWorld.x) * 0.5,
+          deskH + 0.024,
+          (elbowRWorld.z + wristRWorld.z) * 0.5,
+        );
+        addPropMesh(elbowPad);
+      }
 
       if (prop === 'high_scanner_desk') {
         const cabinetBody = new THREE.Mesh(
           new THREE.BoxGeometry(deskW - 0.04, Math.max(0.2, deskH - 0.02), deskD - 0.04),
           binBlueMat,
         );
-        cabinetBody.position.set(0, (deskH - 0.02) * 0.5, deskZ + 0.01);
+        cabinetBody.position.set(deskX, (deskH - 0.02) * 0.5, deskZ + 0.01);
         addPropMesh(cabinetBody);
 
         const scannerScreen = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.2, 0.024), darkMetalMat);
-        scannerScreen.position.set(0, deskH + 0.14, deskZ + 0.1);
+        scannerScreen.position.set(deskX, deskH + 0.14, deskZ + 0.1);
         scannerScreen.rotation.x = -18 * DEG2RAD;
         addPropMesh(scannerScreen);
 
         // Paquete pequeño en mostrador sostenido por mano izquierda durante el escaneo
         const smallParcel = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.11, 0.16), loadMat);
-        smallParcel.position.set(0.08, deskH + 0.07, deskZ - 0.08);
+        smallParcel.position.set(deskX + 0.08, deskH + 0.07, deskZ - 0.08);
         addPropMesh(smallParcel);
       } else {
         const legH = Math.max(0.2, deskH - 0.016);
         for (const [lx, lz] of [
-          [-deskW * 0.44, deskZ - deskD * 0.42],
-          [deskW * 0.44, deskZ - deskD * 0.42],
-          [-deskW * 0.44, deskZ + deskD * 0.42],
-          [deskW * 0.44, deskZ + deskD * 0.42],
+          [deskX - deskW * 0.44, deskZ - deskD * 0.42],
+          [deskX + deskW * 0.44, deskZ - deskD * 0.42],
+          [deskX - deskW * 0.44, deskZ + deskD * 0.42],
+          [deskX + deskW * 0.44, deskZ + deskD * 0.42],
         ]) {
           const leg = new THREE.Mesh(new THREE.BoxGeometry(0.036, legH, 0.036), darkMetalMat);
           leg.position.set(lx, legH * 0.5, lz);
           addPropMesh(leg);
         }
         const rearCrossbar = new THREE.Mesh(new THREE.BoxGeometry(deskW - 0.08, 0.03, 0.03), darkMetalMat);
-        rearCrossbar.position.set(0, 0.18, deskZ + deskD * 0.42);
+        rearCrossbar.position.set(deskX, 0.18, deskZ + deskD * 0.42);
         addPropMesh(rearCrossbar);
       }
 
@@ -1623,6 +1657,20 @@ function buildSceneProp(
       break;
     }
   }
+
+  // Regulación libre del objeto / mobiliario en escena (mesa de apoyo, pisón de tierra, pala, caja, silla, etc.)
+  const pOffX = typeof pose.propOffsetX === 'number' && Number.isFinite(pose.propOffsetX) ? pose.propOffsetX : 0;
+  const pOffY = typeof pose.propOffsetY === 'number' && Number.isFinite(pose.propOffsetY) ? pose.propOffsetY : 0;
+  const pOffZ = typeof pose.propOffsetZ === 'number' && Number.isFinite(pose.propOffsetZ) ? pose.propOffsetZ : 0;
+  const pRotY = typeof pose.propRotYDeg === 'number' && Number.isFinite(pose.propRotYDeg) ? pose.propRotYDeg : 0;
+  const pScale =
+    typeof pose.propScale === 'number' && Number.isFinite(pose.propScale)
+      ? Math.max(0.45, Math.min(2.0, pose.propScale))
+      : 1;
+
+  rig.propsRoot.position.set(pOffX, pOffY, pOffZ);
+  rig.propsRoot.rotation.set(0, pRotY * DEG2RAD, 0);
+  rig.propsRoot.scale.set(pScale, pScale, pScale);
 }
 
 // ============================================================================
@@ -1865,11 +1913,23 @@ function applyPoseToGlbBones(
   setBoneCharRotation(rig, 'RightShoulder', makeCharEulerQuat(0, 0, -elevClavR, 'XYZ'));
   setBoneCharRotation(rig, 'LeftShoulder', makeCharEulerQuat(0, 0, elevClavL, 'XYZ'));
 
-  const intRotR = pose.forearmRCrossMidline
-    ? 42 * DEG2RAD
-    : shRAbdDeg > 28 && elbRFlexDeg > 55
-      ? -18 * DEG2RAD
+  const explicitHumRotR =
+    typeof pose.shoulderRRotationDeg === 'number' && Number.isFinite(pose.shoulderRRotationDeg)
+      ? -pose.shoulderRRotationDeg * DEG2RAD
+      : null;
+  const explicitHumRotL =
+    typeof pose.shoulderLRotationDeg === 'number' && Number.isFinite(pose.shoulderLRotationDeg)
+      ? pose.shoulderLRotationDeg * DEG2RAD
       : 0;
+
+  const intRotR =
+    explicitHumRotR !== null
+      ? explicitHumRotR
+      : pose.forearmRCrossMidline
+        ? 42 * DEG2RAD
+        : shRAbdDeg > 28 && elbRFlexDeg > 55
+          ? -18 * DEG2RAD
+          : 0;
 
   setBoneCharRotation(
     rig,
@@ -1879,7 +1939,7 @@ function applyPoseToGlbBones(
   setBoneCharRotation(
     rig,
     'LeftArm',
-    makeCharEulerQuat(-compensatedShLFlexDeg * DEG2RAD, 0, shLAbdDeg * DEG2RAD, 'ZXY'),
+    makeCharEulerQuat(-compensatedShLFlexDeg * DEG2RAD, explicitHumRotL, shLAbdDeg * DEG2RAD, 'ZXY'),
   );
 
   // 4. Codos y Pronosupinación de Antebrazo (RightForeArm / LeftForeArm)
@@ -3041,6 +3101,658 @@ export function renderInteractivePose3DToCanvas(
     transparentBg,
     true,
   );
+}
+
+// ============================================================================
+// DIRECT 3D QUATERNION MOTION-CAPTURE RETARGETING (VIDEO MELLIZO 3D REAL)
+// ============================================================================
+const _mcParentWorldQuat = new THREE.Quaternion();
+const _mcTargetWorldQuat = new THREE.Quaternion();
+const _mcBasisMat = new THREE.Matrix4();
+
+function smoothstepScalar(edge0: number, edge1: number, x: number): number {
+  const t = Math.max(0, Math.min(1, (x - edge0) / Math.max(1e-5, edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+function setQuatFromUnitVectorsSafe(
+  vFrom: THREE.Vector3,
+  vTo: THREE.Vector3,
+  fallbackAxis: THREE.Vector3,
+): THREE.Quaternion {
+  const dot = Math.max(-1, Math.min(1, vFrom.dot(vTo)));
+  if (dot < -0.9995) {
+    let axis = fallbackAxis.clone().sub(vFrom.clone().multiplyScalar(fallbackAxis.dot(vFrom)));
+    if (axis.lengthSq() < 1e-5) {
+      axis = new THREE.Vector3(1, 0, 0).cross(vFrom);
+      if (axis.lengthSq() < 1e-5) axis = new THREE.Vector3(0, 0, 1).cross(vFrom);
+    }
+    axis.normalize();
+    return new THREE.Quaternion().setFromAxisAngle(axis, Math.PI);
+  }
+  return new THREE.Quaternion().setFromUnitVectors(vFrom, vTo);
+}
+
+function signedAngleAroundAxis(
+  fromUnit: THREE.Vector3,
+  toUnit: THREE.Vector3,
+  axisUnit: THREE.Vector3,
+): number {
+  const cross = new THREE.Vector3().crossVectors(fromUnit, toUnit);
+  return Math.atan2(cross.dot(axisUnit), Math.max(-1, Math.min(1, fromUnit.dot(toUnit))));
+}
+
+function makeBasisQuaternion(
+  leftUnit: THREE.Vector3,
+  upUnit: THREE.Vector3,
+  fwdUnit: THREE.Vector3,
+): THREE.Quaternion {
+  _mcBasisMat.makeBasis(leftUnit, upUnit, fwdUnit);
+  return new THREE.Quaternion().setFromRotationMatrix(_mcBasisMat);
+}
+
+function applyBoneWorldRotDelta(
+  rig: GlbAvatarRig,
+  boneName: string,
+  worldRotDelta: THREE.Quaternion,
+): void {
+  const entry = rig.bones.get(boneName);
+  if (!entry || !entry.bone.parent) return;
+  entry.bone.parent.updateMatrixWorld(true);
+  entry.bone.parent.getWorldQuaternion(_mcParentWorldQuat);
+  _mcTargetWorldQuat.copy(worldRotDelta).multiply(entry.restWorldQuat);
+  entry.bone.quaternion.copy(_mcParentWorldQuat).invert().multiply(_mcTargetWorldQuat);
+  entry.bone.updateMatrixWorld(true);
+}
+
+function getRestSegmentUnitDir(
+  rig: GlbAvatarRig,
+  fromBoneName: string,
+  toBoneName: string,
+  fallbackDir: THREE.Vector3,
+): THREE.Vector3 {
+  const a = rig.bones.get(fromBoneName);
+  const b = rig.bones.get(toBoneName);
+  if (!a || !b) return fallbackDir.clone().normalize();
+  const d = b.restWorldPos.clone().sub(a.restWorldPos);
+  if (d.lengthSq() < 1e-6) return fallbackDir.clone().normalize();
+  return d.normalize();
+}
+
+function solveSwingTwistChainWorldRot(params: {
+  vRestProx: THREE.Vector3;
+  vRestDist: THREE.Vector3;
+  restBendDir: THREE.Vector3;
+  uTarget: THREE.Vector3;
+  fTarget: THREE.Vector3;
+  refBendDir: THREE.Vector3;
+  fallbackSwingAxis: THREE.Vector3;
+  maxAxialTwistRad: number;
+}): { proxWorldRot: THREE.Quaternion; distWorldRot: THREE.Quaternion } {
+  const {
+    vRestProx,
+    vRestDist,
+    restBendDir,
+    uTarget,
+    fTarget,
+    refBendDir,
+    fallbackSwingAxis,
+    maxAxialTwistRad,
+  } = params;
+
+  const restHinge = new THREE.Vector3().crossVectors(vRestProx, restBendDir);
+  if (restHinge.lengthSq() < 1e-6) restHinge.set(1, 0, 0);
+  else restHinge.normalize();
+
+  const qSwing = setQuatFromUnitVectorsSafe(vRestProx, uTarget, fallbackSwingAxis);
+  const swungHinge = restHinge.clone().applyQuaternion(qSwing).normalize();
+
+  // Plano neutro de flexión solidario al tronco/pelvis
+  let projRef = refBendDir.clone().sub(uTarget.clone().multiplyScalar(refBendDir.dot(uTarget)));
+  if (projRef.lengthSq() < 1e-4) {
+    projRef = fallbackSwingAxis
+      .clone()
+      .sub(uTarget.clone().multiplyScalar(fallbackSwingAxis.dot(uTarget)));
+  }
+  if (projRef.lengthSq() < 1e-5) projRef.set(0, 0, 1);
+  projRef.normalize();
+
+  let neutralHinge = new THREE.Vector3().crossVectors(uTarget, projRef);
+  if (neutralHinge.lengthSq() < 1e-5) neutralHinge.copy(swungHinge);
+  else neutralHinge.normalize();
+
+  const cosBend = Math.max(-1, Math.min(1, uTarget.dot(fTarget)));
+  const bendRad = Math.acos(cosBend);
+  const wBend = smoothstepScalar(0.24, 0.64, bendRad);
+
+  let desiredHinge = neutralHinge.clone();
+  const rawVideoHinge = new THREE.Vector3().crossVectors(uTarget, fTarget);
+  if (wBend > 0.001 && rawVideoHinge.lengthSq() > 1e-4) {
+    rawVideoHinge.normalize();
+    const deltaFromNeutral = signedAngleAroundAxis(neutralHinge, rawVideoHinge, uTarget);
+    const clampedDelta = Math.max(-maxAxialTwistRad, Math.min(maxAxialTwistRad, deltaFromNeutral));
+    const qClamp = new THREE.Quaternion().setFromAxisAngle(uTarget, clampedDelta);
+    const clampedVideoHinge = neutralHinge.clone().applyQuaternion(qClamp).normalize();
+    desiredHinge.lerp(clampedVideoHinge, wBend).normalize();
+  }
+
+  const twistRad = signedAngleAroundAxis(swungHinge, desiredHinge, uTarget);
+  const qTwist = new THREE.Quaternion().setFromAxisAngle(uTarget, twistRad);
+  const proxWorldRot = qTwist.multiply(qSwing);
+
+  const distRestAfterProx = vRestDist.clone().applyQuaternion(proxWorldRot).normalize();
+  const qDistSwing = setQuatFromUnitVectorsSafe(distRestAfterProx, fTarget, desiredHinge);
+  const distWorldRot = qDistSwing.multiply(proxWorldRot);
+
+  return { proxWorldRot, distWorldRot };
+}
+
+/**
+ * Aplica retargeting esquelético 3D directo por cuaterniones en espacio mundial desde
+ * los 33 puntos de MediaPipe Pose Heavy hacia todos los huesos del avatar `.glb`.
+ */
+function applyDirectMocapRetargetToGlbBones(
+  engine: StudioEngine3D,
+  sample: MocapFrameSample,
+  sceneProp: ScenePropType = 'none',
+): void {
+  const { rig, isSoftwareRenderer } = engine;
+  if (!rig.isReady || !sample.world3D || sample.world3D.length < 33) return;
+
+  resetAllBonesToRest(rig);
+
+  const P = (idx: number) => {
+    const p = sample.world3D[idx];
+    return new THREE.Vector3(p.x, p.y, p.z);
+  };
+
+  const nose = P(0);
+  const earL = P(7);
+  const earR = P(8);
+  const shL = P(11);
+  const shR = P(12);
+  const elbL = P(13);
+  const elbR = P(14);
+  const wrL = P(15);
+  const wrR = P(16);
+  const pinkyL = P(17);
+  const pinkyR = P(18);
+  const idxL = P(19);
+  const idxR = P(20);
+  const hipL = P(23);
+  const hipR = P(24);
+  const kneeL = P(25);
+  const kneeR = P(26);
+  const ankL = P(27);
+  const ankR = P(28);
+  const heelL = P(29);
+  const heelR = P(30);
+  const toeL = P(31);
+  const toeR = P(32);
+
+  const midHip = hipL.clone().add(hipR).multiplyScalar(0.5);
+  const midSh = shL.clone().add(shR).multiplyScalar(0.5);
+  const midEar = earL.clone().add(earR).multiplyScalar(0.5);
+  const worldUp = new THREE.Vector3(0, 1, 0);
+
+  // 1. Base ortonormal 3D de Pelvis (Hips) — incluye Yaw global, inclinación pélvica y balanceo lateral
+  const shLeftDir = shL.clone().sub(shR).normalize();
+  const hipLeftRaw = hipL.clone().sub(hipR).normalize();
+  const pelvisLeftBlend = hipLeftRaw.clone().multiplyScalar(0.72).addScaledVector(shLeftDir, 0.28).normalize();
+  const trunkUpUnit = midSh.clone().sub(midHip).normalize();
+  const pelvisUpUnit = worldUp.clone().lerp(trunkUpUnit, 0.44).normalize();
+
+  let pelvisFwd = new THREE.Vector3().crossVectors(pelvisLeftBlend, pelvisUpUnit);
+  if (pelvisFwd.lengthSq() < 1e-5) pelvisFwd.set(0, 0, 1);
+  else pelvisFwd.normalize();
+  const pelvisLeft = new THREE.Vector3().crossVectors(pelvisUpUnit, pelvisFwd).normalize();
+  const qHipsWorld = makeBasisQuaternion(pelvisLeft, pelvisUpUnit, pelvisFwd);
+
+  applyBoneWorldRotDelta(rig, 'Hips', qHipsWorld);
+
+  // 2. Columna Lumbar y Torácica (Spine -> Spine1 -> Spine2) con torsión axial y flexión lateral real
+  let thoraxFwd = new THREE.Vector3().crossVectors(shLeftDir, trunkUpUnit);
+  if (thoraxFwd.lengthSq() < 1e-5) thoraxFwd.copy(pelvisFwd);
+  else thoraxFwd.normalize();
+  const thoraxLeft = new THREE.Vector3().crossVectors(trunkUpUnit, thoraxFwd).normalize();
+  const qThoraxWorld = makeBasisQuaternion(thoraxLeft, trunkUpUnit, thoraxFwd);
+
+  if (rig.bones.has('Spine2')) {
+    applyBoneWorldRotDelta(rig, 'Spine', qHipsWorld.clone().slerp(qThoraxWorld, 0.36));
+    applyBoneWorldRotDelta(rig, 'Spine1', qHipsWorld.clone().slerp(qThoraxWorld, 0.70));
+    applyBoneWorldRotDelta(rig, 'Spine2', qThoraxWorld);
+  } else {
+    applyBoneWorldRotDelta(rig, 'Spine', qHipsWorld.clone().slerp(qThoraxWorld, 0.52));
+    applyBoneWorldRotDelta(rig, 'Spine1', qThoraxWorld);
+  }
+
+  // 3. Cuello y Cabeza (Neck -> Head) orientados según vector interauricular + nariz
+  const earSpan = earL.clone().sub(earR);
+  const headLeftRaw = earSpan.lengthSq() > 1e-4 ? earSpan.normalize() : thoraxLeft.clone();
+  const gazeRaw = nose.clone().sub(midEar);
+  const neckChordUp = midEar.clone().sub(midSh).normalize();
+  const headUpRaw =
+    gazeRaw.lengthSq() > 1e-4
+      ? neckChordUp
+          .clone()
+          .multiplyScalar(0.68)
+          .addScaledVector(new THREE.Vector3().crossVectors(gazeRaw.normalize(), headLeftRaw).normalize(), 0.32)
+          .normalize()
+      : neckChordUp;
+  let headFwd = new THREE.Vector3().crossVectors(headLeftRaw, headUpRaw);
+  if (headFwd.lengthSq() < 1e-5) headFwd.copy(thoraxFwd);
+  else headFwd.normalize();
+  const headLeft = new THREE.Vector3().crossVectors(headUpRaw, headFwd).normalize();
+  const qHeadRaw = makeBasisQuaternion(headLeft, headUpRaw, headFwd);
+  // Limitar rotación cervical extrema si la cara queda parcialmente oculta de espaldas
+  const headAngleDiff = 2 * Math.acos(Math.min(1, Math.abs(qThoraxWorld.dot(qHeadRaw))));
+  const qHeadWorld =
+    headAngleDiff > 1.28
+      ? qThoraxWorld.clone().slerp(qHeadRaw, 1.28 / headAngleDiff)
+      : qHeadRaw;
+
+  applyBoneWorldRotDelta(rig, 'Neck', qThoraxWorld.clone().slerp(qHeadWorld, 0.55));
+  applyBoneWorldRotDelta(rig, 'Head', qHeadWorld);
+
+  // 4. Cintura Escapular + Brazos y Antebrazos (Derecho e Izquierdo)
+  const uR = elbR.clone().sub(shR).normalize();
+  const fR = wrR.clone().sub(elbR).normalize();
+  const uL = elbL.clone().sub(shL).normalize();
+  const fL = wrL.clone().sub(elbL).normalize();
+
+  // Ritmo escapulohumeral sutil en elevaciones por encima del hombro
+  const elevFactorR = Math.max(0, (uR.dot(trunkUpUnit) + 0.15) * 0.24);
+  const elevFactorL = Math.max(0, (uL.dot(trunkUpUnit) + 0.15) * 0.24);
+  if (elevFactorR > 0.01) {
+    const qClavR = new THREE.Quaternion().setFromAxisAngle(thoraxFwd, -elevFactorR).multiply(qThoraxWorld);
+    applyBoneWorldRotDelta(rig, 'RightShoulder', qClavR);
+  } else {
+    applyBoneWorldRotDelta(rig, 'RightShoulder', qThoraxWorld);
+  }
+  if (elevFactorL > 0.01) {
+    const qClavL = new THREE.Quaternion().setFromAxisAngle(thoraxFwd, elevFactorL).multiply(qThoraxWorld);
+    applyBoneWorldRotDelta(rig, 'LeftShoulder', qClavL);
+  } else {
+    applyBoneWorldRotDelta(rig, 'LeftShoulder', qThoraxWorld);
+  }
+
+  const vRestArmR = getRestSegmentUnitDir(rig, 'RightArm', 'RightForeArm', new THREE.Vector3(-0.04, -1, 0));
+  const vRestForeR = getRestSegmentUnitDir(rig, 'RightForeArm', 'RightHand', new THREE.Vector3(-0.04, -1, 0));
+  const armChainR = solveSwingTwistChainWorldRot({
+    vRestProx: vRestArmR,
+    vRestDist: vRestForeR,
+    restBendDir: new THREE.Vector3(0, 0, 1),
+    uTarget: uR,
+    fTarget: fR,
+    refBendDir: thoraxFwd,
+    fallbackSwingAxis: thoraxLeft,
+    maxAxialTwistRad: 1.38,
+  });
+  applyBoneWorldRotDelta(rig, 'RightArm', armChainR.proxWorldRot);
+
+  // Pronosupinación real de muñeca derecha si índice y meñique son visibles
+  let foreWorldRotR = armChainR.distWorldRot.clone();
+  const visHandR = Math.min(sample.world3D[18]?.visibility ?? 0, sample.world3D[20]?.visibility ?? 0);
+  if (visHandR >= 0.55) {
+    const spanR = idxR.clone().sub(pinkyR);
+    const projSpan = spanR.sub(fR.clone().multiplyScalar(spanR.dot(fR)));
+    if (projSpan.lengthSq() > 1e-4) {
+      projSpan.normalize();
+      const restSpanAfter = new THREE.Vector3(0, 0, 1).applyQuaternion(foreWorldRotR);
+      const restSpanProj = restSpanAfter.sub(fR.clone().multiplyScalar(restSpanAfter.dot(fR)));
+      if (restSpanProj.lengthSq() > 1e-4) {
+        restSpanProj.normalize();
+        const pronoRad = Math.max(
+          -1.35,
+          Math.min(1.35, signedAngleAroundAxis(restSpanProj, projSpan, fR) * 0.65),
+        );
+        foreWorldRotR = new THREE.Quaternion().setFromAxisAngle(fR, pronoRad).multiply(foreWorldRotR);
+      }
+    }
+  }
+  applyBoneWorldRotDelta(rig, 'RightForeArm', foreWorldRotR);
+
+  // Mano derecha (orientación muñeca -> nudillos)
+  const midKnuckleR = idxR.clone().add(pinkyR).multiplyScalar(0.5);
+  const handVecR = midKnuckleR.sub(wrR);
+  if (visHandR >= 0.5 && handVecR.lengthSq() > 1e-4) {
+    handVecR.normalize();
+    const vRestHandR = getRestSegmentUnitDir(rig, 'RightHand', 'RightHandMiddle1', vRestForeR);
+    const handRestAfter = vRestHandR.clone().applyQuaternion(foreWorldRotR).normalize();
+    if (handRestAfter.angleTo(handVecR) < 0.85) {
+      const qWristR = setQuatFromUnitVectorsSafe(handRestAfter, handVecR, thoraxLeft).multiply(foreWorldRotR);
+      applyBoneWorldRotDelta(rig, 'RightHand', qWristR);
+    } else {
+      applyBoneWorldRotDelta(rig, 'RightHand', foreWorldRotR);
+    }
+  } else {
+    applyBoneWorldRotDelta(rig, 'RightHand', foreWorldRotR);
+  }
+
+  const vRestArmL = getRestSegmentUnitDir(rig, 'LeftArm', 'LeftForeArm', new THREE.Vector3(0.04, -1, 0));
+  const vRestForeL = getRestSegmentUnitDir(rig, 'LeftForeArm', 'LeftHand', new THREE.Vector3(0.04, -1, 0));
+  const armChainL = solveSwingTwistChainWorldRot({
+    vRestProx: vRestArmL,
+    vRestDist: vRestForeL,
+    restBendDir: new THREE.Vector3(0, 0, 1),
+    uTarget: uL,
+    fTarget: fL,
+    refBendDir: thoraxFwd,
+    fallbackSwingAxis: thoraxLeft,
+    maxAxialTwistRad: 1.38,
+  });
+  applyBoneWorldRotDelta(rig, 'LeftArm', armChainL.proxWorldRot);
+
+  let foreWorldRotL = armChainL.distWorldRot.clone();
+  const visHandL = Math.min(sample.world3D[17]?.visibility ?? 0, sample.world3D[19]?.visibility ?? 0);
+  if (visHandL >= 0.55) {
+    const spanL = idxL.clone().sub(pinkyL);
+    const projSpanL = spanL.sub(fL.clone().multiplyScalar(spanL.dot(fL)));
+    if (projSpanL.lengthSq() > 1e-4) {
+      projSpanL.normalize();
+      const restSpanAfterL = new THREE.Vector3(0, 0, 1).applyQuaternion(foreWorldRotL);
+      const restSpanProjL = restSpanAfterL.sub(fL.clone().multiplyScalar(restSpanAfterL.dot(fL)));
+      if (restSpanProjL.lengthSq() > 1e-4) {
+        restSpanProjL.normalize();
+        const pronoRadL = Math.max(
+          -1.35,
+          Math.min(1.35, signedAngleAroundAxis(restSpanProjL, projSpanL, fL) * 0.65),
+        );
+        foreWorldRotL = new THREE.Quaternion().setFromAxisAngle(fL, pronoRadL).multiply(foreWorldRotL);
+      }
+    }
+  }
+  applyBoneWorldRotDelta(rig, 'LeftForeArm', foreWorldRotL);
+
+  const midKnuckleL = idxL.clone().add(pinkyL).multiplyScalar(0.5);
+  const handVecL = midKnuckleL.sub(wrL);
+  if (visHandL >= 0.5 && handVecL.lengthSq() > 1e-4) {
+    handVecL.normalize();
+    const vRestHandL = getRestSegmentUnitDir(rig, 'LeftHand', 'LeftHandMiddle1', vRestForeL);
+    const handRestAfterL = vRestHandL.clone().applyQuaternion(foreWorldRotL).normalize();
+    if (handRestAfterL.angleTo(handVecL) < 0.85) {
+      const qWristL = setQuatFromUnitVectorsSafe(handRestAfterL, handVecL, thoraxLeft).multiply(foreWorldRotL);
+      applyBoneWorldRotDelta(rig, 'LeftHand', qWristL);
+    } else {
+      applyBoneWorldRotDelta(rig, 'LeftHand', foreWorldRotL);
+    }
+  } else {
+    applyBoneWorldRotDelta(rig, 'LeftHand', foreWorldRotL);
+  }
+
+  // Dedos relajados o acople sobre carga si hay objeto activo
+  if (sceneProp !== 'none') {
+    curlHandFingers(rig, 'Right', 0.26, 0.30, 0.26);
+    curlHandFingers(rig, 'Left', 0.26, 0.30, 0.26);
+  } else {
+    curlHandFingers(rig, 'Right', 0.18, 0.16, 0.18);
+    curlHandFingers(rig, 'Left', 0.18, 0.16, 0.18);
+  }
+
+  // 5. Miembros Inferiores: Caderas, Rodillas y Pies (la rodilla flexiona hacia -pelvisFwd)
+  const thighR = kneeR.clone().sub(hipR).normalize();
+  const shankR = ankR.clone().sub(kneeR).normalize();
+  const thighL = kneeL.clone().sub(hipL).normalize();
+  const shankL = ankL.clone().sub(kneeL).normalize();
+  const pelvisBack = pelvisFwd.clone().negate();
+
+  const vRestThighR = getRestSegmentUnitDir(rig, 'RightUpLeg', 'RightLeg', new THREE.Vector3(0, -1, 0));
+  const vRestShankR = getRestSegmentUnitDir(rig, 'RightLeg', 'RightFoot', new THREE.Vector3(0, -1, 0));
+  const legChainR = solveSwingTwistChainWorldRot({
+    vRestProx: vRestThighR,
+    vRestDist: vRestShankR,
+    restBendDir: new THREE.Vector3(0, 0, -1),
+    uTarget: thighR,
+    fTarget: shankR,
+    refBendDir: pelvisBack,
+    fallbackSwingAxis: pelvisLeft,
+    maxAxialTwistRad: 0.72,
+  });
+  applyBoneWorldRotDelta(rig, 'RightUpLeg', legChainR.proxWorldRot);
+  applyBoneWorldRotDelta(rig, 'RightLeg', legChainR.distWorldRot);
+
+  const visFootR = Math.min(sample.world3D[30]?.visibility ?? 0, sample.world3D[32]?.visibility ?? 0);
+  const footDirR = toeR.clone().sub(heelR);
+  if (visFootR >= 0.45 && footDirR.lengthSq() > 1e-4) {
+    footDirR.normalize();
+    const vRestFootR = getRestSegmentUnitDir(rig, 'RightFoot', 'RightToeBase', new THREE.Vector3(0, -0.35, 0.94));
+    const footRestAfterR = vRestFootR.clone().applyQuaternion(legChainR.distWorldRot).normalize();
+    const maxFootAngle = 0.72;
+    const angFootR = footRestAfterR.angleTo(footDirR);
+    const targetFootDirR =
+      angFootR > maxFootAngle
+        ? footRestAfterR.clone().lerp(footDirR, maxFootAngle / angFootR).normalize()
+        : footDirR;
+    const qFootR = setQuatFromUnitVectorsSafe(footRestAfterR, targetFootDirR, pelvisLeft).multiply(
+      legChainR.distWorldRot,
+    );
+    applyBoneWorldRotDelta(rig, 'RightFoot', qFootR);
+  } else {
+    applyBoneWorldRotDelta(rig, 'RightFoot', legChainR.distWorldRot);
+  }
+
+  const vRestThighL = getRestSegmentUnitDir(rig, 'LeftUpLeg', 'LeftLeg', new THREE.Vector3(0, -1, 0));
+  const vRestShankL = getRestSegmentUnitDir(rig, 'LeftLeg', 'LeftFoot', new THREE.Vector3(0, -1, 0));
+  const legChainL = solveSwingTwistChainWorldRot({
+    vRestProx: vRestThighL,
+    vRestDist: vRestShankL,
+    restBendDir: new THREE.Vector3(0, 0, -1),
+    uTarget: thighL,
+    fTarget: shankL,
+    refBendDir: pelvisBack,
+    fallbackSwingAxis: pelvisLeft,
+    maxAxialTwistRad: 0.72,
+  });
+  applyBoneWorldRotDelta(rig, 'LeftUpLeg', legChainL.proxWorldRot);
+  applyBoneWorldRotDelta(rig, 'LeftLeg', legChainL.distWorldRot);
+
+  const visFootL = Math.min(sample.world3D[29]?.visibility ?? 0, sample.world3D[31]?.visibility ?? 0);
+  const footDirL = toeL.clone().sub(heelL);
+  if (visFootL >= 0.45 && footDirL.lengthSq() > 1e-4) {
+    footDirL.normalize();
+    const vRestFootL = getRestSegmentUnitDir(rig, 'LeftFoot', 'LeftToeBase', new THREE.Vector3(0, -0.35, 0.94));
+    const footRestAfterL = vRestFootL.clone().applyQuaternion(legChainL.distWorldRot).normalize();
+    const maxFootAngle = 0.72;
+    const angFootL = footRestAfterL.angleTo(footDirL);
+    const targetFootDirL =
+      angFootL > maxFootAngle
+        ? footRestAfterL.clone().lerp(footDirL, maxFootAngle / angFootL).normalize()
+        : footDirL;
+    const qFootL = setQuatFromUnitVectorsSafe(footRestAfterL, targetFootDirL, pelvisLeft).multiply(
+      legChainL.distWorldRot,
+    );
+    applyBoneWorldRotDelta(rig, 'LeftFoot', qFootL);
+  } else {
+    applyBoneWorldRotDelta(rig, 'LeftFoot', legChainL.distWorldRot);
+  }
+
+  // 6. Traslación Espacial Real (Root Motion X/Z) + Anclaje Físico de Pies al Suelo (Foot-Planting Y=0)
+  rig.avatarContainer.rotation.set(0, 0, 0);
+  rig.avatarContainer.position.set(
+    sample.rootTranslation.x,
+    0,
+    sample.rootTranslation.z,
+  );
+  rig.avatarContainer.updateMatrixWorld(true);
+
+  let minSupportY = Infinity;
+  for (const supportObj of [
+    rig.joints.ankleR,
+    rig.joints.footR,
+    rig.joints.ankleL,
+    rig.joints.footL,
+  ]) {
+    supportObj.getWorldPosition(_tmpWorldVec);
+    if (_tmpWorldVec.y < minSupportY) minSupportY = _tmpWorldVec.y;
+  }
+  if (Number.isFinite(minSupportY)) {
+    rig.avatarContainer.position.y = 0.022 - minSupportY;
+  }
+  rig.avatarContainer.updateMatrixWorld(true);
+
+  // Asegurar que la sombra de piso acompañe el desplazamiento horizontal del operario
+  rig.groundShadowMesh.visible = true;
+  rig.groundShadowMesh.position.x = sample.rootTranslation.x;
+  rig.groundShadowMesh.position.z = sample.rootTranslation.z;
+
+  // Actualizar todas las mallas PBR de cuerpo completo
+  for (const sm of rig.skinnedMeshes) {
+    sm.visible = true;
+    sm.material = rig.baseMaterials.get(sm) || sm.material;
+    sm.skeleton.update();
+  }
+
+  const poseWithProp: PosturePose3D = {
+    ...sample.ergonomicPose,
+    prop: sceneProp,
+  };
+  buildSceneProp(rig, poseWithProp, isSoftwareRenderer);
+  rig.propsRoot.updateMatrixWorld(true);
+}
+
+/**
+ * Renderiza un fotograma de Captura de Movimiento 3D Real (Vídeo Mellizo) con CÁMARA FIJA DE ESTUDIO
+ * alineada 1:1 con el eje óptico del vídeo original para que agachadas, alcances, giros y pasos
+ * se reflejen fielmente sin auto-zoom ni efecto "cinta de correr".
+ */
+export function renderMocapTwinFrameToCanvas(
+  sample: MocapFrameSample,
+  canvas: HTMLCanvasElement,
+  widthPx = 560,
+  heightPx = 460,
+  orbitOverride: CameraOrbitOverride = DEFAULT_ORBIT_OVERRIDE,
+  options?: {
+    cameraPreset?: CameraPreset;
+    sceneProp?: ScenePropType;
+    showAngleHUD?: boolean;
+    dpiScale?: number;
+  },
+): void {
+  const scale = Math.max(1, options?.dpiScale ?? 1.5);
+  if (
+    canvas.width !== Math.round(widthPx * scale) ||
+    canvas.height !== Math.round(heightPx * scale)
+  ) {
+    canvas.width = Math.round(widthPx * scale);
+    canvas.height = Math.round(heightPx * scale);
+  }
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, widthPx, heightPx);
+
+  const engine = getSharedEngine();
+  if (!engine || !engine.rig.isReady) {
+    ctx.save();
+    ctx.fillStyle = '#64748b';
+    ctx.font = '600 12px "Public Sans", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Inicializando gemelo anatómico 3D (.glb)...', widthPx / 2, heightPx / 2);
+    ctx.restore();
+    return;
+  }
+
+  applyDirectMocapRetargetToGlbBones(engine, sample, options?.sceneProp ?? 'none');
+
+  // Restaurar posición centrada de la malla de sombra tras el render para no afectar vistas estáticas
+  const fixedStudioCenter = new THREE.Vector3(0, 0.88, 0);
+  const fixedHalfExtent = 1.16;
+  const preset: CameraPreset = options?.cameraPreset ?? 'frontal';
+  const camera = configureCameraForPanel(
+    engine,
+    preset,
+    fixedStudioCenter,
+    fixedHalfExtent,
+    widthPx / Math.max(1, heightPx),
+    orbitOverride,
+  );
+
+  // Grilla sutil de piso estacionario (referencia métrica real para pasos y cuclillas)
+  ctx.save();
+  const projFloorPt = (wx: number, wz: number): { x: number; y: number } | null => {
+    const v = new THREE.Vector3(wx, 0.002, wz).project(camera);
+    if (v.z > 1) return null;
+    return {
+      x: (v.x * 0.5 + 0.5) * widthPx,
+      y: (-v.y * 0.5 + 0.5) * heightPx,
+    };
+  };
+  ctx.strokeStyle = '#e2e8f0';
+  ctx.lineWidth = 1;
+  for (let gx = -1.5; gx <= 1.501; gx += 0.3) {
+    const a = projFloorPt(gx, -1.2);
+    const b = projFloorPt(gx, 1.2);
+    if (a && b) {
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+  }
+  for (let gz = -1.2; gz <= 1.201; gz += 0.3) {
+    const a = projFloorPt(-1.5, gz);
+    const b = projFloorPt(1.5, gz);
+    if (a && b) {
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+
+  engine.scene.background = null;
+  engine.renderer.setClearColor(PALETTE.bgHex, 0);
+  const glScale = engine.isSoftwareRenderer ? 1 : Math.min(2, scale * 1.25);
+  engine.renderer.setSize(Math.round(widthPx * glScale), Math.round(heightPx * glScale), false);
+
+  try {
+    engine.renderer.render(engine.scene, camera);
+    ctx.drawImage(engine.renderer.domElement, 0, 0, widthPx, heightPx);
+  } catch (err) {
+    console.warn('Mocap twin WebGL frame error:', err);
+  } finally {
+    engine.rig.groundShadowMesh.position.set(0, 0.001, 0);
+  }
+
+  if (options?.showAngleHUD !== false) {
+    const pts = projectJoints2D(engine.rig, camera, 0, 0, widthPx, heightPx);
+    const ep = sample.ergonomicPose;
+    const viewportBounds = { x: 8, y: 8, w: widthPx - 16, h: heightPx - 16 };
+    const placed: OverlayBoxRect[] = [];
+
+    const dynamicArcs: AngleArcAnnotation[] = [
+      {
+        joint: 'l5s1',
+        refType: 'vertical_up',
+        toJoint: 'c7',
+        label: `Tronco ${Math.round(ep.trunkFlexionDeg)}°`,
+      },
+      {
+        joint: 'elbowR',
+        refType: 'segment',
+        parentJoint: 'shoulderR',
+        toJoint: 'wristR',
+        label: `Codo D ${Math.round(ep.elbowRFlexionDeg)}°`,
+      },
+    ];
+    if (Math.max(ep.kneeRFlexionDeg, ep.kneeLFlexionDeg) >= 18) {
+      dynamicArcs.push({
+        joint: 'kneeR',
+        refType: 'segment',
+        parentJoint: 'hipR',
+        toJoint: 'ankleR',
+        label: `Rodilla ${Math.round(Math.max(ep.kneeRFlexionDeg, ep.kneeLFlexionDeg))}°`,
+      });
+    }
+    for (const arc of dynamicArcs) {
+      drawAngleArcOverlay(ctx, arc, pts, viewportBounds, placed);
+    }
+  }
 }
 
 /**

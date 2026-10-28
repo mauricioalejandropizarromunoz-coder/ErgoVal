@@ -240,7 +240,7 @@ function getDefaultPlateForMethodSegment(
 export const Biomech3DControlPanel: React.FC<Biomech3DControlProps> = (props) => {
   const { method } = props;
   const [isExpanded, setIsExpanded] = useState<boolean>(true);
-  const [viewMode, setViewMode] = useState<InspectionViewMode>('pure_3d');
+  const [viewMode, setViewMode] = useState<InspectionViewMode>('split_compare');
   const [showAngleGuides, setShowAngleGuides] = useState<boolean>(true);
   const [glbReadyTick, setGlbReadyTick] = useState<number>(0);
 
@@ -885,7 +885,7 @@ export const Biomech3DControlPanel: React.FC<Biomech3DControlProps> = (props) =>
     if (!isExpanded || viewMode === 'goniometer') return;
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const widthPx = viewMode === 'pure_3d' ? 680 : 460;
+    const widthPx = 680;
     const heightPx = viewMode === 'pure_3d' ? 430 : 390;
     renderInteractivePose3DToCanvas(
       livePanelSpec,
@@ -991,7 +991,7 @@ export const Biomech3DControlPanel: React.FC<Biomech3DControlProps> = (props) =>
                 }`}
               >
                 <ImageIcon className="w-3.5 h-3.5" />
-                Comparar Lado a Lado con Lámina
+                Arriba Avatar 3D + Debajo Foto Asignada
               </button>
               <button
                 type="button"
@@ -1080,40 +1080,53 @@ export const Biomech3DControlPanel: React.FC<Biomech3DControlProps> = (props) =>
               )}
 
               {viewMode === 'split_compare' && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {/* Lienzo 3D Interactivo */}
-                  <div className="rounded-md border border-slate-300 bg-slate-50 p-2 flex flex-col">
+                <div className="space-y-3">
+                  {/* ARRIBA: Avatar 3D Interactivo */}
+                  <div className="rounded-md border border-slate-300 bg-slate-50 p-2.5 flex flex-col">
                     <div className="flex items-center justify-between text-[11px] text-slate-600 pb-1.5 px-1">
-                      <span className="font-semibold text-slate-800">Avatar 3D (.glb · Arrastre 360°)</span>
+                      <span className="font-semibold text-slate-900">
+                        ARRIBA · Avatar 3D Anatómico (.glb · Arrastre 360°)
+                      </span>
                       <span className="font-mono tabular-nums">
                         Az {orbit.azimuthDeg}° · El {orbit.elevationDeg}°
                       </span>
                     </div>
-                    <canvas
-                      ref={canvasRef}
-                      onPointerDown={handlePointerDown}
-                      onPointerMove={handlePointerMove}
-                      onPointerUp={handlePointerUp}
-                      className="w-full h-auto bg-white rounded border border-slate-200 cursor-grab active:cursor-grabbing"
-                    />
+                    <div className="flex justify-center">
+                      <canvas
+                        ref={canvasRef}
+                        onPointerDown={handlePointerDown}
+                        onPointerMove={handlePointerMove}
+                        onPointerUp={handlePointerUp}
+                        className="w-full max-w-[680px] h-auto bg-white rounded border border-slate-200 cursor-grab active:cursor-grabbing"
+                      />
+                    </div>
                   </div>
 
-                  {/* Lámina Anatómica Separada */}
-                  <div className="rounded-md border border-slate-300 bg-slate-50 p-2 flex flex-col justify-between">
-                    <div className="flex items-center justify-between gap-2 text-[11px] pb-1.5 px-1">
-                      <span className="font-semibold text-slate-900 truncate">
-                        {activePlate.figCode} — {activePlate.shortLabel}
+                  {/* DEBAJO: Foto Asignada Completa con todas las posturas del punto */}
+                  <div className="rounded-md border border-slate-300 bg-white p-2.5 flex flex-col justify-between">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] pb-1.5 px-1">
+                      <span className="font-semibold text-slate-900">
+                        DEBAJO · Foto Asignada ({activePlate.figCode} — {activePlate.shortLabel})
                       </span>
-                      <button
-                        type="button"
-                        onClick={() => setViewMode('goniometer')}
-                        className="inline-flex items-center gap-1 text-sky-700 hover:text-sky-900 font-semibold whitespace-nowrap shrink-0 cursor-pointer"
-                      >
-                        <Crosshair className="w-3 h-3" />
-                        Medir ángulo
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setViewMode('pure_3d')}
+                          className="text-slate-600 hover:text-slate-900 font-medium cursor-pointer"
+                        >
+                          Ocultar foto
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setViewMode('goniometer')}
+                          className="inline-flex items-center gap-1 text-sky-700 hover:text-sky-900 font-semibold whitespace-nowrap shrink-0 cursor-pointer"
+                        >
+                          <Crosshair className="w-3 h-3" />
+                          Medir ángulo en foto
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex-1 bg-white rounded border border-slate-200 flex items-center justify-center p-2 min-h-[260px]">
+                    <div className="bg-slate-50/50 rounded border border-slate-200 flex items-center justify-center p-2 min-h-[210px]">
                       {!plateImgFailed[activePlate.figId] ? (
                         <img
                           src={activePlate.url}
@@ -1122,21 +1135,17 @@ export const Biomech3DControlPanel: React.FC<Biomech3DControlProps> = (props) =>
                           onError={() =>
                             setPlateImgFailed((prev) => ({ ...prev, [activePlate.figId]: true }))
                           }
-                          className="max-h-[330px] w-full object-contain"
+                          className="max-h-[260px] w-full object-contain"
                         />
                       ) : (
                         <span className="text-xs text-slate-500">Imagen de referencia no disponible</span>
                       )}
                     </div>
                     <div className="pt-1.5 px-1 space-y-1.5">
-                      <div className="flex items-center justify-between text-[11px] text-slate-500">
-                        <span>Lámina de referencia Cap. 4</span>
-                        <span className="font-mono">{activePlate.figId}.png</span>
-                      </div>
                       {activeCatalogPanels.length > 0 && (
                         <div className="flex flex-wrap items-center gap-1 pt-0.5">
                           <span className="text-[10px] font-semibold text-slate-600 mr-0.5">
-                            Adoptar referencia:
+                            Adoptar postura en el Avatar 3D superior:
                           </span>
                           {activeCatalogPanels.map((refP, rIdx) => {
                             const bodyLet = ['A', 'B', 'C', 'D'][rIdx] || String(rIdx + 1);
@@ -1148,7 +1157,9 @@ export const Biomech3DControlPanel: React.FC<Biomech3DControlProps> = (props) =>
                                 className="px-2 py-0.5 rounded border border-sky-300 bg-sky-50 hover:bg-sky-100 text-[10px] font-semibold text-sky-900 whitespace-nowrap cursor-pointer"
                                 title={refP.subTitle}
                               >
-                                {activeCatalogPanels.length > 1 ? `Cuerpo ${bodyLet}` : 'Postura Ref.'}
+                                {activeCatalogPanels.length > 1
+                                  ? `Cuerpo ${bodyLet} (${refP.scoreBadge || rIdx + 1})`
+                                  : 'Postura Ref.'}
                               </button>
                             );
                           })}

@@ -1,3427 +1,2997 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { trackVideoFrames } from '../utils/poseExtractor';
-
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertCircle,
-  AlertOctagon,
+  Activity,
   AlertTriangle,
-  ArrowDownUp,
   ArrowLeft,
+  BookOpen,
+  Check,
   CheckCircle2,
-  ChevronDown,
-  ChevronUp,
-  Copy,
+  ClipboardCopy,
+  Crosshair,
   Download,
+  Expand,
   FileDown,
-  FileSpreadsheet,
+  FileJson,
+  FileText,
   Film,
-  Layers,
-  Maximize2,
   Minimize2,
+  Move3d,
+  Pause,
   Play,
   RefreshCw,
   RotateCcw,
-  Sparkles,
+  Sliders,
   Upload,
   Video,
+  X,
 } from 'lucide-react';
 import {
+  AngleAnnotation,
   GeneralStudyData,
-  MethodEvaluationResult,
+  JsiData,
   MethodId,
+  Nam295Data,
   NioshData,
+  OcraChecklistData,
   RebaData,
   StudyPhoto,
   StudyTab,
 } from '../types/ergonomics';
-import { Panel3DSpec } from '../types/figurePlan';
+import {
+  CameraPreset,
+  JointKey,
+  Panel3DSpec,
+  ScenePropType,
+} from '../types/figurePlan';
+import { evaluateNiosh, evaluateReba, evaluateStudyTab } from '../utils/calculations';
 import { createNewStudyTab } from '../utils/defaults';
-import { evaluateStudyTab } from '../utils/calculations';
-import {
-  normalizeAnatomicalElbowFlexion,
-  solveAvatarLiftPoseForTarget,
-} from '../utils/avatarPoseInverseKinematics';
-import {
-  DEFAULT_ORBIT_OVERRIDE,
-  ensureAvatarGlbLoaded,
-  renderInteractivePose3DToCanvas,
-} from '../utils/biomech3dRenderer';
 import {
   CENEA_SAMPLE_VIDEOS_CATALOG,
   CeneaSampleCaseId,
+  CeneaSampleVideoSpec,
   buildCeneaSampleFrameSpec,
-  getCeneaSampleCaseById,
 } from '../utils/ceneaSampleVideosCatalog';
 import {
-  TrafficLightColor,
-  TrafficLightSummary,
-  buildVideoBiomechTrafficLight,
-  describeNioshTrajectory,
-} from '../utils/trafficLightAlerts';
-import { getSeverityStyles } from './StudyTabWorkspace';
+  BiologicalSex,
+  ErgonizaDigitalTwinJson,
+  InvisibleErgonizaParameters,
+  OperatorComplexion,
+  buildErgonizaDigitalTwinJson,
+  computeErgonizaStaticBiomechanics,
+  detectMissingInvisibleParameters,
+  sanitizeErgonizaAngles,
+  syncAvatarPoseFromErgonizaJson,
+} from '../utils/ergonizaBiomechEngine';
+import { RepetitiveVideoMetrics, trackVideoFrames } from '../utils/poseExtractor';
+import {
+  CameraOrbitOverride,
+  DEFAULT_ORBIT_OVERRIDE,
+  ensureAvatarGlbLoaded,
+  renderInteractiveFreeAvatarToCanvas,
+  renderInteractivePose3DToCanvas,
+  subscribeAvatarGlbLoaded,
+} from '../utils/biomech3dRenderer';
+import {
+  renderAnnotatedOperatorFrameJpeg,
+  renderSinglePanelAvatarJpeg,
+} from '../utils/methodAvatarReportHelper';
+import { NioshGeometryGuide, RepetitiveCycleAndAnglesGuide } from './AngleGuides';
+import { InteractivePhotoGoniometer } from './InteractivePhotoGoniometer';
 
-export const DEFAULT_VIDEO_SYSTEM_INSTRUCTION = `SYSTEM INSTRUCTION: EXTRACTOR DE VARIABLES BIOMECÁNICAS DESDE ARCHIVO DE VIDEO
-
-Eres un sistema de visión por computador y estimación biomecánica 3D espacial. Tu tarea es analizar la secuencia cronológica de fotogramas numerados del video laboral para seleccionar los fotogramas útiles reales y extraer las variables geométricas y angulares exactas de cada postura observada.
-
-REGLAS ESTRICTAS DE ANÁLISIS VISUAL Y CALIBRACIÓN POR HITOS ANATÓMICOS:
-1. Selecciona obligatoriamente DOS fotogramas distintos y verificables dentro de la secuencia numerada:
-   - 'origen_frame_index' y 'origen_timestamp': Fotograma exacto donde las manos sujetan la carga al INICIAR el movimiento (ej. abajo cerca del suelo/espinilla/rodillas si levanta, o arriba si desciende).
-   - 'destino_frame_index' y 'destino_timestamp': Fotograma exacto (DISTINTO al de origen) donde el operario coloca o sostiene la carga en su punto FINAL (ej. arriba en pecho/hombros/estantería si levanta, o abajo si desciende).
-   - 'critico_frame_index': Fotograma de mayor exigencia postural global (REBA).
-2. Calibra 'v_origen_cm' y 'v_destino_cm' según la altura corporal donde el humano sostiene la carga en ESE fotograma (estatura ~172 cm):
-   - Suelo / tobillos: 8 a 24 cm | Espinillas: 25 a 45 cm | Rodillas: 46 a 62 cm | Muslos/nudillos: 63 a 82 cm
-   - Cintura/cadera: 83 a 108 cm | Pecho: 109 a 134 cm | Hombros: 135 a 152 cm | Sobre hombros/cabeza: 153 a 185 cm
-3. Convención goniométrica anatómica (0° = extendido):
-   - 'trunk_flexion': 0° = erguido vertical; 10°–24° si el operario levanta con ESPALDA RECTA y rodillas flexionadas; 40°–75° solo si encorva o inclina severamente el tronco hacia adelante.
-   - 'knee_flexion': 0° = piernas rectas; 80°–125° si flexiona las rodillas en cuclillas; 5°–25° si mantiene las piernas casi rectas.
-   - 'shoulder_flexion': 0° = brazo alineado al tronco; 30°–90° = adelante; >100° = sobre hombros.
-   - 'right_elbow' y 'left_elbow': 0° = brazo recto extendido (10°–35° al tomar carga abajo), 90° = ángulo recto L (NUNCA 160°–180°).
-
-FORMATO DE SALIDA (ESTRICTAMENTE JSON):
-Responde ÚNICAMENTE con un objeto JSON válido conforme al esquema requerido.`;
-
-export type MovementDirectionCode =
-  | 'levantamiento_suelo_a_estanteria'
-  | 'descenso_altura_a_bajo'
-  | 'traslado_mismo_nivel'
-  | 'ciclo_bidireccional';
-
-export type MovementModeHint = 'auto' | 'levantamiento' | 'descenso' | 'bidireccional';
-
-export interface PhasePosturalAnglesDeg {
-  trunk_flexion: number;
-  knee_flexion: number;
-  shoulder_flexion: number;
-  right_elbow: number;
-  left_elbow: number;
-}
-
-export interface ExtractedVideoBiomechJson {
-  status: 'processed';
-  critical_events: {
-    origen_frame_index?: number;
-    destino_frame_index?: number;
-    critico_frame_index?: number;
-    origen_timestamp: string;
-    destino_timestamp: string;
-  };
-  movement_analysis?: {
-    direction: MovementDirectionCode;
-    v_origen_cm: number;
-    v_destino_cm: number;
-    h_origen_cm: number;
-    h_destino_cm: number;
-    trajectory_note: string;
-  };
-  niosh_inputs: {
-    H_cm: number;
-    V_cm: number;
-    D_cm: number;
-    A_deg: number;
-  };
-  origen_angles_deg?: PhasePosturalAnglesDeg;
-  destino_angles_deg?: PhasePosturalAnglesDeg;
-  postural_angles_deg: {
-    trunk_flexion: number;
-    knee_flexion: number;
-    right_elbow: number;
-    left_elbow: number;
-  };
-}
-
-interface SampledFrame {
-  index: number;
-  timestamp: string;
-  timeSec: number;
-  mimeType: string;
-  dataBase64: string;
-  cleanDataUrl: string;
-  previewUrl: string;
-}
-
-interface EmittedBiomechReportBundle {
-  extracted: ExtractedVideoBiomechJson;
-  sampledCount: number;
-  processingMs: number;
-  rawOriginCleanUrl: string;
-  rawDestCleanUrl: string;
-  originKeyframeUrl: string;
-  destKeyframeUrl: string;
-  origin3DUrl: string;
-  dest3DUrl: string;
-  nioshData: NioshData;
-  nioshTab: StudyTab;
-  rebaTab: StudyTab;
-  nioshResult: MethodEvaluationResult;
-  rebaResult: MethodEvaluationResult;
-  trafficLight: TrafficLightSummary;
-  pdfAutoEmitted: boolean;
-  invertedCycle: boolean;
-}
-
-interface VideoBiomechExtractorProps {
+export interface VideoBiomechExtractorProps {
   general: GeneralStudyData;
   onBackToEvaluator: () => void;
   onEmitTabsAndReport: (payload: {
     nioshTab: StudyTab;
     rebaTab: StudyTab;
+    emittedTabs?: StudyTab[];
     autoDownloadPdf: boolean;
   }) => Promise<void>;
   onExportCurrentPdf: () => Promise<void>;
   onExportCurrentWord: () => Promise<void>;
   onOpenGeneratedTabsInEvaluator: () => void;
+  onOpenTwinVideoStudio?: () => void;
   isExpandedView?: boolean;
   onToggleExpandedView?: () => void;
 }
 
-function formatSecondsToTimestamp(sec: number): string {
-  const safe = Math.max(0, Number.isFinite(sec) ? sec : 0);
+interface ExtractedFramePreview {
+  index: number;
+  timeSec: number;
+  timestamp: string;
+  dataUrl: string;
+  mimeType: string;
+  dataBase64: string;
+}
+
+interface PlumbLineAnchor {
+  top: { x: number; y: number };
+  bottom: { x: number; y: number };
+}
+
+const ERGONIZA_MANUAL_PDF_URL =
+  '/assets/aistudio/Ergoniza_Intelligent_-_Bases_de_funcionamiento_3957c1bb.pdf';
+
+function formatTimeSecToTimestamp(sec: number): string {
+  const safe = Math.max(0, sec);
   const mins = Math.floor(safe / 60);
   const rem = safe - mins * 60;
-  const wholeSecs = Math.floor(rem);
-  const ms = Math.min(999, Math.round((rem - wholeSecs) * 1000));
-  return `${String(mins).padStart(2, '0')}:${String(wholeSecs).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
+  const sInt = Math.floor(rem);
+  const ms = Math.round((rem - sInt) * 1000);
+  return `${String(mins).padStart(2, '0')}:${String(sInt).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
 }
 
-function parseTimestampToSeconds(ts: string, maxDurationSec: number): number {
-  const cleaned = (ts || '').trim().replace(/^ts:\s*/i, '').replace(/s$/i, '').trim();
-  const safeMax = Math.max(0.05, maxDurationSec - 0.02);
-
-  const hhmmss = cleaned.match(/^(\d+):(\d{1,2}):(\d{1,2})(?:[.,](\d{1,3}))?$/);
-  if (hhmmss) {
-    const hh = parseInt(hhmmss[1], 10);
-    const mins = parseInt(hhmmss[2], 10);
-    const secs = parseInt(hhmmss[3], 10);
-    const ms = parseInt((hhmmss[4] || '0').padEnd(3, '0').slice(0, 3), 10);
-    const total = hh * 3600 + mins * 60 + secs + ms / 1000;
-    return Math.max(0, Math.min(safeMax, total));
-  }
-
-  const match = cleaned.match(/^(\d+):(\d{1,2})(?:[.,](\d{1,3}))?$/);
-  if (match) {
-    const mins = parseInt(match[1], 10);
-    const secs = parseInt(match[2], 10);
-    const msStr = (match[3] || '0').padEnd(3, '0').slice(0, 3);
-    const ms = parseInt(msStr, 10);
-    const total = mins * 60 + secs + ms / 1000;
-    return Math.max(0, Math.min(safeMax, total));
-  }
-  const numeric = Number(cleaned);
-  if (Number.isFinite(numeric) && numeric >= 0) {
-    return Math.max(0, Math.min(safeMax, numeric));
-  }
-  return 0;
-}
-
-function waitNextDecodedVideoFrame(video: HTMLVideoElement): Promise<void> {
-  return new Promise((resolve) => {
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      window.requestAnimationFrame(() => resolve());
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const raw = String(reader.result || '');
+      const idx = raw.indexOf(',');
+      resolve(idx >= 0 ? raw.slice(idx + 1) : raw);
     };
-    const fallbackTimer = window.setTimeout(finish, 140);
-    const anyVid = video as HTMLVideoElement & {
-      requestVideoFrameCallback?: (cb: () => void) => number;
-    };
-    if (typeof anyVid.requestVideoFrameCallback === 'function') {
-      anyVid.requestVideoFrameCallback(() => {
-        window.clearTimeout(fallbackTimer);
-        finish();
-      });
-    } else {
-      window.requestAnimationFrame(() => {
-        window.clearTimeout(fallbackTimer);
-        finish();
-      });
-    }
+    reader.onerror = () => reject(new Error('No se pudo leer el archivo de vídeo.'));
+    reader.readAsDataURL(file);
   });
 }
 
-function seekVideoElement(video: HTMLVideoElement, targetSec: number): Promise<void> {
-  return new Promise((resolve) => {
-    const maxAllowed =
-      Number.isFinite(video.duration) && video.duration > 0
-        ? Math.max(0, video.duration - 0.01)
-        : Math.max(0, targetSec);
-    const clamped = Math.max(0, Math.min(maxAllowed, targetSec));
-    if (Math.abs(video.currentTime - clamped) < 0.008 && video.readyState >= 2) {
-      void waitNextDecodedVideoFrame(video).then(resolve);
-      return;
-    }
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      video.removeEventListener('seeked', onSeeked);
-      void waitNextDecodedVideoFrame(video).then(resolve);
-    };
-    const onSeeked = () => {
-      window.clearTimeout(timer);
-      finish();
-    };
-    const timer = window.setTimeout(finish, 1100);
-    video.addEventListener('seeked', onSeeked, { once: true });
-    try {
-      video.currentTime = clamped;
-    } catch {
-      window.clearTimeout(timer);
-      finish();
-    }
-  });
-}
+function buildRoleJsonFromSample(
+  sample: CeneaSampleVideoSpec,
+  role: 'origin' | 'dest',
+  invisibleParams?: Partial<InvisibleErgonizaParameters>,
+  verticalOffsetDeg = 0,
+): ErgonizaDigitalTwinJson {
+  const isOrigin = role === 'origin';
+  const vCm = isOrigin ? sample.vOriginCm : sample.vDestCm;
+  const trunkDeg = isOrigin ? sample.trunkOriginDeg : sample.trunkDestDeg;
+  const kneeDeg = isOrigin ? sample.kneeOriginDeg : sample.kneeDestDeg;
+  const asymDeg = isOrigin ? sample.asymmetryOriginDeg : sample.asymmetryDestDeg;
+  const hipDeg = Math.round(Math.min(115, kneeDeg * 0.72 + trunkDeg * 0.32));
+  const shoulderDeg = vCm > 115 ? 92 : vCm >= 75 ? 56 : 44;
+  const elbowDeg = vCm < 50 ? 28 : 68;
+  const support =
+    kneeDeg >= 65
+      ? 'Bipedestación bilateral con flexión profunda de rodillas'
+      : sample.id === 'cenea_empuje_traccion'
+        ? 'Bipedestación dinámica en marcha (empuje bimanual)'
+        : 'Bipedestación bilateral';
 
-function stampBadgeOnCanvas(ctx: CanvasRenderingContext2D, w: number, h: number, badgeText: string): void {
-  ctx.save();
-  ctx.font = '700 11.5px "IBM Plex Mono", monospace';
-  const textW = Math.ceil(ctx.measureText(badgeText).width);
-  const boxW = Math.min(w - 16, textW + 18);
-  const boxH = 25;
-  const boxX = Math.max(8, w - boxW - 8);
-  const boxY = Math.max(8, h - boxH - 8);
-
-  ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
-  ctx.fillRect(boxX, boxY, boxW, boxH);
-  ctx.strokeStyle = 'rgba(56, 189, 248, 0.88)';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(boxX + 0.5, boxY + 0.5, boxW - 1, boxH - 1);
-  ctx.fillStyle = '#f8fafc';
-  ctx.textBaseline = 'middle';
-  ctx.textAlign = 'left';
-  ctx.fillText(badgeText, boxX + 9, boxY + boxH / 2 + 0.5, boxW - 16);
-  ctx.restore();
-}
-
-function stampBadgeOnImageDataUrl(
-  sourceDataUrl: string,
-  badgeText: string,
-  maxWidth = 840,
-  format: 'image/jpeg' | 'image/png' = 'image/png',
-): Promise<string> {
-  return new Promise((resolve) => {
-    if (!sourceDataUrl) {
-      resolve('');
-      return;
-    }
-    const img = new Image();
-    img.onload = () => {
-      const scale = Math.min(1, maxWidth / Math.max(1, img.naturalWidth || img.width || 640));
-      const w = Math.max(160, Math.round((img.naturalWidth || img.width) * scale));
-      const h = Math.max(120, Math.round((img.naturalHeight || img.height) * scale));
-      const canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        resolve(sourceDataUrl);
-        return;
-      }
-      ctx.fillStyle = '#0f172a';
-      ctx.fillRect(0, 0, w, h);
-      ctx.drawImage(img, 0, 0, w, h);
-      if (badgeText) {
-        stampBadgeOnCanvas(ctx, w, h, badgeText);
-      }
-      resolve(
-        format === 'image/jpeg'
-          ? canvas.toDataURL('image/jpeg', 0.86)
-          : canvas.toDataURL('image/png'),
-      );
-    };
-    img.onerror = () => resolve(sourceDataUrl);
-    img.src = sourceDataUrl;
-  });
-}
-
-/**
- * Comprime cada fotograma a ~448px JPEG liviano (~18 KB) exclusivamente para la petición del Paso 2,
- * reduciendo el peso de red en >10x para evitar cortes de conexión, manteniendo intactos los fotogramas HD para el informe.
- */
-function compactFrameForAiPayload(
-  sourceDataUrl: string,
-  fallbackBase64: string,
-  maxWidth = 448,
-  quality = 0.74,
-): Promise<string> {
-  return new Promise((resolve) => {
-    if (!sourceDataUrl) {
-      resolve(fallbackBase64);
-      return;
-    }
-    const img = new Image();
-    img.onload = () => {
-      const scale = Math.min(1, maxWidth / Math.max(1, img.naturalWidth || img.width || 448));
-      const w = Math.max(160, Math.round((img.naturalWidth || img.width) * scale));
-      const h = Math.max(120, Math.round((img.naturalHeight || img.height) * scale));
-      const canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        resolve(fallbackBase64);
-        return;
-      }
-      ctx.fillStyle = '#0f172a';
-      ctx.fillRect(0, 0, w, h);
-      ctx.drawImage(img, 0, 0, w, h);
-      const compactUrl = canvas.toDataURL('image/jpeg', quality);
-      const b64 = compactUrl.split(',')[1] || fallbackBase64;
-      resolve(b64);
-    };
-    img.onerror = () => resolve(fallbackBase64);
-    img.src = sourceDataUrl;
-  });
-}
-
-function captureVideoFrameDataUrl(
-  video: HTMLVideoElement,
-  timestampLabel: string,
-  maxWidth = 640,
-  format: 'image/jpeg' | 'image/png' = 'image/jpeg',
-  stampTimestamp = true,
-): string {
-  const vw = Math.max(1, video.videoWidth || 640);
-  const vh = Math.max(1, video.videoHeight || 480);
-  const scale = Math.min(1, maxWidth / vw);
-  const w = Math.max(160, Math.round(vw * scale));
-  const h = Math.max(120, Math.round(vh * scale));
-
-  const canvas = document.createElement('canvas');
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return '';
-
-  ctx.fillStyle = '#0f172a';
-  ctx.fillRect(0, 0, w, h);
-  ctx.drawImage(video, 0, 0, w, h);
-
-  if (stampTimestamp) {
-    stampBadgeOnCanvas(ctx, w, h, `TS: ${timestampLabel}`);
-  }
-
-  return format === 'image/jpeg' ? canvas.toDataURL('image/jpeg', 0.85) : canvas.toDataURL('image/png');
-}
-
-function needsImmediateTranscodeByFilename(file: File): boolean {
-  const lower = file.name.toLowerCase();
-  const mime = (file.type || '').toLowerCase();
-  if (
-    lower.endsWith('.mov') ||
-    lower.endsWith('.qt') ||
-    lower.endsWith('.hevc') ||
-    lower.endsWith('.h265') ||
-    lower.endsWith('.avi') ||
-    lower.endsWith('.mkv') ||
-    lower.endsWith('.3gp') ||
-    lower.endsWith('.wmv') ||
-    lower.endsWith('.m4v')
-  ) {
-    return true;
-  }
-  if (
-    mime.includes('quicktime') ||
-    mime.includes('matroska') ||
-    mime.includes('msvideo') ||
-    mime.includes('3gpp')
-  ) {
-    return true;
-  }
-  return false;
-}
-
-function getResolvedMovementHeights(extracted: ExtractedVideoBiomechJson): {
-  vOrigCm: number;
-  vDestCm: number;
-  hOrigCm: number;
-  hDestCm: number;
-  dCm: number;
-  direction: MovementDirectionCode;
-  trajectoryNote: string;
-} {
-  const { H_cm, V_cm, D_cm } = extracted.niosh_inputs;
-  const mov = extracted.movement_analysis;
-  const vOrigCm = mov?.v_origen_cm ?? V_cm;
-  const vDestCm = mov?.v_destino_cm ?? Math.min(195, Math.round((V_cm + D_cm) * 10) / 10);
-  const hOrigCm = mov?.h_origen_cm ?? H_cm;
-  const hDestCm = mov?.h_destino_cm ?? H_cm;
-  const dCm = Math.max(5, Math.round(Math.abs(vDestCm - vOrigCm) * 10) / 10);
-
-  const inferredDir: MovementDirectionCode =
-    mov?.direction ||
-    (vDestCm - vOrigCm >= 10
-      ? 'levantamiento_suelo_a_estanteria'
-      : vOrigCm - vDestCm >= 10
-        ? 'descenso_altura_a_bajo'
-        : 'traslado_mismo_nivel');
-
-  const trajectoryNote =
-    mov?.trajectory_note || describeNioshTrajectory(vOrigCm, vDestCm).technicalExplanation;
-
-  return { vOrigCm, vDestCm, hOrigCm, hDestCm, dCm, direction: inferredDir, trajectoryNote };
-}
-
-function resolvePhasePosturalAngles(
-  extracted: ExtractedVideoBiomechJson,
-  phase: 'origin' | 'destination',
-  vPhaseCm: number,
-  vOtherCm: number,
-  hPhaseCm: number,
-  invertedCycle = false,
-): PhasePosturalAnglesDeg {
-  const sourcePhase = invertedCycle
-    ? phase === 'origin'
-      ? extracted.destino_angles_deg
-      : extracted.origen_angles_deg
-    : phase === 'origin'
-      ? extracted.origen_angles_deg
-      : extracted.destino_angles_deg;
-
-  if (sourcePhase) {
-    return {
-      trunk_flexion: Math.round(sourcePhase.trunk_flexion * 10) / 10,
-      knee_flexion: Math.round(sourcePhase.knee_flexion * 10) / 10,
-      shoulder_flexion: Math.round(sourcePhase.shoulder_flexion * 10) / 10,
-      right_elbow: normalizeAnatomicalElbowFlexion(sourcePhase.right_elbow, vPhaseCm),
-      left_elbow: normalizeAnatomicalElbowFlexion(sourcePhase.left_elbow, vPhaseCm),
-    };
-  }
-
-  const { trunk_flexion, knee_flexion, right_elbow, left_elbow } = extracted.postural_angles_deg;
-  const isLowerPoint = vPhaseCm <= Math.min(vPhaseCm, vOtherCm) + 8 && vPhaseCm < 75;
-  const isHighShelfPoint = vPhaseCm >= 115;
-
-  const trunkHint = isLowerPoint
-    ? trunk_flexion
-    : isHighShelfPoint
-      ? Math.max(4, Math.round(trunk_flexion * 0.14))
-      : Math.max(8, Math.round(trunk_flexion * 0.32));
-
-  const kneeHint = isLowerPoint
-    ? knee_flexion
-    : isHighShelfPoint
-      ? Math.max(4, Math.round(knee_flexion * 0.14))
-      : Math.max(6, Math.round(knee_flexion * 0.24));
-
-  const solvedFallback = solveAvatarLiftPoseForTarget({
-    vCm: vPhaseCm,
-    hCm: hPhaseCm,
-    trunkFlexHintDeg: trunkHint,
-    kneeFlexHintDeg: kneeHint,
-  });
-
-  return {
-    trunk_flexion: solvedFallback.trunkFlexionDeg,
-    knee_flexion: solvedFallback.kneeFlexionDeg,
-    shoulder_flexion: solvedFallback.shoulderFlexionDeg,
-    right_elbow: isLowerPoint
-      ? solvedFallback.elbowFlexionDeg
-      : normalizeAnatomicalElbowFlexion(right_elbow, vPhaseCm),
-    left_elbow: isLowerPoint
-      ? solvedFallback.elbowFlexionDeg
-      : normalizeAnatomicalElbowFlexion(left_elbow, vPhaseCm),
-  };
-}
-
-/**
- * Construye el panel 3D resolviendo cinemática inversa de 2 eslabones + compensación lumbo-pélvica
- * hacia (H_cm, V_cm) de esa fase exacta (Origen abajo vs Destino arriba) para que el avatar copie
- * fielmente dónde está la carga y la postura del humano en cada foto del video.
- */
-function build3DPanelFromExtraction(
-  extracted: ExtractedVideoBiomechJson,
-  phase: 'origin' | 'destination',
-  loadKg: number,
-  workerHeightCm = 172,
-  vOrigOverride?: number,
-  vDestOverride?: number,
-  hOrigOverride?: number,
-  hDestOverride?: number,
-  invertedCycle = false,
-): { panel: Panel3DSpec; solvedAngles: PhasePosturalAnglesDeg } {
-  const resolved = getResolvedMovementHeights(extracted);
-  const vOrig = vOrigOverride ?? resolved.vOrigCm;
-  const vDest = vDestOverride ?? resolved.vDestCm;
-  const hOrig = hOrigOverride ?? resolved.hOrigCm;
-  const hDest = hDestOverride ?? resolved.hDestCm;
-  const { A_deg } = extracted.niosh_inputs;
-
-  const isOrigin = phase === 'origin';
-  const vPhaseCm = isOrigin ? vOrig : vDest;
-  const vOtherCm = isOrigin ? vDest : vOrig;
-  const hPhaseCm = isOrigin ? hOrig : hDest;
-  const phaseTs = isOrigin
-    ? invertedCycle
-      ? extracted.critical_events.destino_timestamp
-      : extracted.critical_events.origen_timestamp
-    : invertedCycle
-      ? extracted.critical_events.origen_timestamp
-      : extracted.critical_events.destino_timestamp;
-
-  const phaseAngles = resolvePhasePosturalAngles(
-    extracted,
-    phase,
-    vPhaseCm,
-    vOtherCm,
-    hPhaseCm,
-    invertedCycle,
-  );
-  const twistDeg = isOrigin ? Math.round(A_deg * 0.45) : Math.round(A_deg);
-
-  const ikSolved = solveAvatarLiftPoseForTarget({
-    vCm: vPhaseCm,
-    hCm: hPhaseCm,
-    workerHeightCm,
-    trunkFlexHintDeg: phaseAngles.trunk_flexion,
-    kneeFlexHintDeg: phaseAngles.knee_flexion,
-    asymmetryDeg: twistDeg,
-    loadKg,
-  });
-
-  const trunkDeg = ikSolved.trunkFlexionDeg;
-  const kneeDeg = ikSolved.kneeFlexionDeg;
-  const shoulderFlexDeg = ikSolved.shoulderFlexionDeg;
-  const elbowDeg = ikSolved.elbowFlexionDeg;
-
-  const solvedAngles: PhasePosturalAnglesDeg = {
-    trunk_flexion: trunkDeg,
-    knee_flexion: kneeDeg,
-    shoulder_flexion: shoulderFlexDeg,
-    right_elbow: elbowDeg,
-    left_elbow: elbowDeg,
-  };
-
-  return {
-    solvedAngles,
-    panel: {
-      subTitle: isOrigin
-        ? `Origen (${phaseTs}) · H=${hPhaseCm} cm, V=${vPhaseCm} cm`
-        : `Destino (${phaseTs}) · H=${hPhaseCm} cm, V=${vPhaseCm} cm`,
-      scoreBadge: isOrigin ? `Origen V=${vPhaseCm} cm` : `Destino V=${vPhaseCm} cm`,
-      focusZone: 'full_body',
-      cameraPreset: Math.abs(twistDeg) >= 22 && !isOrigin ? 'isometric' : 'sagittal_right',
-      pose: ikSolved.pose,
-      angleArcs: [
-        {
-          joint: 'l5s1',
-          refType: 'vertical_up',
-          toJoint: 'c7',
-          radiusPx: 40,
-          label: `Tronco ${trunkDeg}°`,
-        },
-        {
-          joint: 'kneeR',
-          refType: 'vertical_down',
-          toJoint: 'ankleR',
-          radiusPx: 36,
-          label: `Rodilla ${kneeDeg}°`,
-        },
-      ],
-      forceVectors: [
-        {
-          atJoint: 'handR',
-          dx: 0,
-          dy: 1,
-          lengthPx: 40,
-          label: `${loadKg} kg`,
-        },
-      ],
-      dimensions: [
-        {
-          fromJoint: 'ankleR',
-          toJoint: 'handR',
-          axis: 'horizontal',
-          label: `H = ${hPhaseCm} cm`,
-        },
-      ],
-      noteBottom: isOrigin
-        ? `Toma inicial V=${vPhaseCm} cm · Tronco ${trunkDeg}° · Codos ${elbowDeg}°`
-        : `Colocación V=${vPhaseCm} cm · D=${Math.round(Math.abs(vDest - vOrig) * 10) / 10} cm · A=${A_deg}°`,
+  return buildErgonizaDigitalTwinJson({
+    analisisExitoso: true,
+    fotogramaCriticoSegundo: isOrigin ? 1.1 : 3.6,
+    condicionesApoyo: support,
+    planoReferencia: asymDeg >= 20 ? 'Sagital/Frontal' : 'Sagital',
+    articulaciones: {
+      tronco: {
+        flexion_extension_grados: trunkDeg,
+        lateralizacion_grados: asymDeg >= 25 ? 8 : 0,
+        rotacion_axial_grados: asymDeg,
+      },
+      hombro_derecho: {
+        flexion_anteroposterior_grados: shoulderDeg,
+        abduccion_aduccion_grados: 12,
+        rotacion_humeral_grados: asymDeg >= 20 ? -10 : 0,
+      },
+      codo_derecho: {
+        flexion_extension_grados: elbowDeg,
+      },
+      cadera_derecha: {
+        flexion_extension_grados: hipDeg,
+      },
+      rodilla_derecha: {
+        flexion_extension_grados: kneeDeg,
+      },
     },
-  };
+    invisibleParams,
+    verticalCalibrationOffsetDeg: verticalOffsetDeg,
+  });
 }
 
-function mapExtractedToRebaData(
-  extracted: ExtractedVideoBiomechJson,
-  loadWeightKg: number,
-  couplingQuality: 'bueno' | 'regular' | 'malo',
-  vMaxCm: number,
-  vMinCm: number,
-  hWorstCm: number,
+function buildRebaPayloadFromTwin(
+  json: ErgonizaDigitalTwinJson,
+  loadKg: number,
+  coupling: 'bueno' | 'regular' | 'malo',
 ): RebaData {
-  const { trunk_flexion, knee_flexion, right_elbow, left_elbow } = extracted.postural_angles_deg;
-  const { A_deg } = extracted.niosh_inputs;
+  const art = json.sincronizacion_avatar_3d.articulaciones_principales;
+  const tr = art.tronco.flexion_extension_grados;
+  const trunkPos: 1 | 2 | 3 | 4 =
+    Math.abs(tr) <= 4 ? 1 : tr <= 20 && tr >= -20 ? 2 : tr <= 60 ? 3 : 4;
+  const trunkTwistedOrSide =
+    Math.abs(art.tronco.lateralizacion_grados) >= 8 ||
+    Math.abs(art.tronco.rotacion_axial_grados) >= 10;
 
-  let trunkPos: 1 | 2 | 3 | 4 = 1;
-  if (Math.abs(trunk_flexion) <= 5) trunkPos = 1;
-  else if (trunk_flexion < 0 || trunk_flexion <= 20) trunkPos = 2;
-  else if (trunk_flexion <= 60) trunkPos = 3;
-  else trunkPos = 4;
+  const kn = art.rodilla_derecha.flexion_extension_grados;
+  const isUnipodal = json.condiciones_apoyo_detectadas.toLowerCase().includes('monoped');
+  const legsBase: 1 | 2 = isUnipodal ? 2 : 1;
+  const legsKneeFlexion: 0 | 1 | 2 = kn > 60 ? 2 : kn >= 30 ? 1 : 0;
 
-  const legsKneeFlexion: 0 | 1 | 2 = knee_flexion > 60 ? 2 : knee_flexion >= 30 ? 1 : 0;
-  const loadForce: 0 | 1 | 2 = loadWeightKg > 10 ? 2 : loadWeightKg >= 5 ? 1 : 0;
-  const couplingScore: 0 | 1 | 2 | 3 = couplingQuality === 'bueno' ? 0 : couplingQuality === 'regular' ? 1 : 2;
-
-  const estUpperArmDeg =
-    vMaxCm >= 125
-      ? Math.min(115, 65 + (vMaxCm - 110) * 0.8)
-      : Math.max(15, Math.min(110, trunk_flexion * 0.7 + (hWorstCm - 25) * 0.6));
+  const sh = art.hombro_derecho.flexion_anteroposterior_grados;
   const upperArmPos: 1 | 2 | 3 | 4 =
-    estUpperArmDeg <= 20 ? 1 : estUpperArmDeg <= 45 ? 2 : estUpperArmDeg <= 90 ? 3 : 4;
+    Math.abs(sh) <= 20 ? 1 : sh <= 45 ? 2 : sh <= 90 ? 3 : 4;
+  const elb = art.codo_derecho.flexion_extension_grados;
+  const lowerArmPos: 1 | 2 = elb >= 60 && elb <= 100 ? 1 : 2;
 
-  const lowerArmR: 1 | 2 = right_elbow >= 60 && right_elbow <= 100 ? 1 : 2;
-  const lowerArmL: 1 | 2 = left_elbow >= 60 && left_elbow <= 100 ? 1 : 2;
-  const wristPos: 1 | 2 = vMinCm < 45 || vMaxCm > 135 || hWorstCm > 45 ? 2 : 1;
+  const loadForce: 0 | 1 | 2 = loadKg > 10 ? 2 : loadKg >= 5 ? 1 : 0;
+  const couplingCode: 0 | 1 | 2 = coupling === 'bueno' ? 0 : coupling === 'regular' ? 1 : 2;
+
+  const side = {
+    upperArmPos,
+    shoulderRaised: false,
+    armAbducted: art.hombro_derecho.abduccion_aduccion_grados > 20,
+    armSupported: false,
+    lowerArmPos,
+    wristPos: 1 as const,
+    wristTwistedOrDeviated: Math.abs(art.hombro_derecho.rotacion_humeral_grados) > 25,
+    coupling: couplingCode,
+  };
 
   return {
-    evaluatedSide: 'ambos',
+    evaluatedSide: 'derecho',
     trunkPos,
-    trunkTwistedOrSide: A_deg >= 10,
-    neckPos: trunk_flexion > 25 || vMaxCm > 140 ? 2 : 1,
-    neckTwistedOrSide: A_deg >= 20,
-    legsBase: 1,
+    trunkTwistedOrSide,
+    neckPos: tr > 40 ? 2 : 1,
+    neckTwistedOrSide: trunkTwistedOrSide,
+    legsBase,
     legsKneeFlexion,
     loadForce,
     shockForce: false,
-    right: {
-      upperArmPos,
-      shoulderRaised: vMaxCm > 135,
-      armAbducted: hWorstCm > 48,
-      armSupported: false,
-      lowerArmPos: lowerArmR,
-      wristPos,
-      wristTwistedOrDeviated: couplingQuality !== 'bueno',
-      coupling: couplingScore,
-    },
-    left: {
-      upperArmPos,
-      shoulderRaised: vMaxCm > 135,
-      armAbducted: hWorstCm > 48,
-      armSupported: false,
-      lowerArmPos: lowerArmL,
-      wristPos,
-      wristTwistedOrDeviated: couplingQuality !== 'bueno',
-      coupling: couplingScore,
-    },
+    right: side,
+    left: { ...side },
     activityStatic: false,
     activityRepetitive: true,
-    activityUnstableChanges: Math.abs(vMaxCm - vMinCm) >= 45,
+    activityUnstableChanges: kn > 65 || tr > 50,
   };
 }
 
-function getTrafficStyles(color: TrafficLightColor): {
-  rowBg: string;
-  dotBg: string;
-  badgeText: string;
-} {
-  if (color === 'rojo') {
-    return {
-      rowBg: 'bg-red-50/90',
-      dotBg: 'bg-red-600',
-      badgeText: 'text-red-900 font-bold',
-    };
-  }
-  if (color === 'ambar') {
-    return {
-      rowBg: 'bg-amber-50/90',
-      dotBg: 'bg-amber-500',
-      badgeText: 'text-amber-900 font-bold',
-    };
-  }
-  return {
-    rowBg: 'bg-emerald-50/90',
-    dotBg: 'bg-emerald-600',
-    badgeText: 'text-emerald-900 font-bold',
-  };
+function makeAngleAnnotationsFromTwin(json: ErgonizaDigitalTwinJson): AngleAnnotation[] {
+  const art = json.sincronizacion_avatar_3d.articulaciones_principales;
+  return [
+    {
+      id: 'ann-trunk',
+      label: 'Tronco',
+      p1: { x: 0.5, y: 0.2 },
+      vertex: { x: 0.5, y: 0.5 },
+      p2: { x: 0.5, y: 0.8 },
+      degrees: Math.round(art.tronco.flexion_extension_grados),
+    },
+    {
+      id: 'ann-shoulder',
+      label: 'Hombro',
+      p1: { x: 0.5, y: 0.3 },
+      vertex: { x: 0.5, y: 0.4 },
+      p2: { x: 0.7, y: 0.5 },
+      degrees: Math.round(art.hombro_derecho.flexion_anteroposterior_grados),
+    },
+    {
+      id: 'ann-elbow',
+      label: 'Codo',
+      p1: { x: 0.5, y: 0.3 },
+      vertex: { x: 0.6, y: 0.5 },
+      p2: { x: 0.8, y: 0.5 },
+      degrees: Math.round(art.codo_derecho.flexion_extension_grados),
+    },
+    {
+      id: 'ann-hip',
+      label: 'Cadera',
+      p1: { x: 0.5, y: 0.3 },
+      vertex: { x: 0.5, y: 0.55 },
+      p2: { x: 0.5, y: 0.75 },
+      degrees: Math.round(art.cadera_derecha.flexion_extension_grados),
+    },
+    {
+      id: 'ann-knee',
+      label: 'Rodilla',
+      p1: { x: 0.5, y: 0.5 },
+      vertex: { x: 0.5, y: 0.72 },
+      p2: { x: 0.5, y: 0.92 },
+      degrees: Math.round(art.rodilla_derecha.flexion_extension_grados),
+    },
+  ];
 }
 
 export const VideoBiomechExtractor: React.FC<VideoBiomechExtractorProps> = ({
   general,
   onBackToEvaluator,
   onEmitTabsAndReport,
-  onExportCurrentPdf,
   onExportCurrentWord,
   onOpenGeneratedTabsInEvaluator,
-  isExpandedView,
+  onOpenTwinVideoStudio,
+  isExpandedView = false,
   onToggleExpandedView,
 }) => {
-  // Video file & player state
-  const [videoFile, setVideoFile] = useState<File | null>(null);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [videoDurationSec, setVideoDurationSec] = useState<number>(0);
-  const [currentPlaySec, setCurrentPlaySec] = useState<number>(0);
-  const [isGeneratingTestVideo, setIsGeneratingTestVideo] = useState<boolean>(false);
-  const [isNormalizingVideo, setIsNormalizingVideo] = useState<boolean>(false);
-  const [normalizingNotice, setNormalizingNotice] = useState<string>('');
-  const [videoWasNormalized, setVideoWasNormalized] = useState<boolean>(false);
-  const [selectedCeneaCaseId, setSelectedCeneaCaseId] = useState<CeneaSampleCaseId>('cenea_mmc_almacen');
-  const [localExpanded, setLocalExpanded] = useState<boolean>(false);
-
-  const effectiveExpanded = isExpandedView ?? localExpanded;
-  const handleToggleExpand = () => {
-    if (onToggleExpandedView) {
-      onToggleExpandedView();
-    } else {
-      setLocalExpanded((prev) => !prev);
-    }
-  };
-
-  // Complementary ergonomic inputs (non-visual task variables)
-  const [taskEvaluated, setTaskEvaluated] = useState<string>(
-    'Manipulación manual de cajas entre nivel inferior y estantería de estiba',
+  const [sourceMode, setSourceMode] = useState<'upload' | 'sample'>('upload');
+  const [selectedSampleId, setSelectedSampleId] = useState<CeneaSampleCaseId>('cenea_mmc_almacen');
+  const selectedSample = useMemo(
+    () =>
+      CENEA_SAMPLE_VIDEOS_CATALOG.find((c) => c.id === selectedSampleId) ||
+      CENEA_SAMPLE_VIDEOS_CATALOG[0],
+    [selectedSampleId],
   );
-  const [movementModeHint, setMovementModeHint] = useState<MovementModeHint>('auto');
-  const [loadWeightKg, setLoadWeightKg] = useState<number>(16);
-  const [workerHeightCm, setWorkerHeightCm] = useState<number>(172);
-  const [frequencyLiftsPerMin, setFrequencyLiftsPerMin] = useState<number>(4);
-  const [durationCategory, setDurationCategory] = useState<'le_1h' | '1_to_2h' | '2_to_8h'>('1_to_2h');
-  const [couplingQuality, setCouplingQuality] = useState<'bueno' | 'regular' | 'malo'>('regular');
-  const [autoEmitPdfOnFinish, setAutoEmitPdfOnFinish] = useState<boolean>(true);
-  const [sampleFrameCount, setSampleFrameCount] = useState<number>(16);
 
-  // System Instruction viewer / customizer
-  const [showPromptPanel, setShowPromptPanel] = useState<boolean>(false);
-  const [systemInstruction, setSystemInstruction] = useState<string>(DEFAULT_VIDEO_SYSTEM_INSTRUCTION);
+  // Vídeo subido y fotogramas extraídos
+  const [videoFileName, setVideoFileName] = useState<string>('');
+  const [videoObjectUrl, setVideoObjectUrl] = useState<string | null>(null);
+  const [extractedFrames, setExtractedFrames] = useState<ExtractedFramePreview[]>([]);
+  const [originFrameIdx, setOriginFrameIdx] = useState<number>(0);
+  const [destFrameIdx, setDestFrameIdx] = useState<number>(0);
+  const [activePostureRole, setActivePostureRole] = useState<'origin' | 'dest'>('origin');
 
-  // Processing & emitted report state
-  const [isProcessing, setIsProcessing] = useState<boolean>(false);
-  const [processingStage, setProcessingStage] = useState<string>('');
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [sampledFrames, setSampledFrames] = useState<SampledFrame[]>([]);
-  const [emittedBundle, setEmittedBundle] = useState<EmittedBiomechReportBundle | null>(null);
-  const [copiedJson, setCopiedJson] = useState<boolean>(false);
+  const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+  const [analysisProgressMsg, setAnalysisProgressMsg] = useState<string>('');
+  const [statusNotice, setStatusNotice] = useState<{
+    tone: 'info' | 'success' | 'warning' | 'error';
+    text: string;
+  } | null>(null);
 
-  // Corrección manual en vivo (slider + texto) para Origen y Destino sobre el informe emitido
-  const [editVOrig, setEditVOrig] = useState<number>(25);
-  const [editHOrig, setEditHOrig] = useState<number>(38);
-  const [editTrunkOrig, setEditTrunkOrig] = useState<number>(58);
-  const [editKneeOrig, setEditKneeOrig] = useState<number>(64);
-  const [editVDest, setEditVDest] = useState<number>(145);
-  const [editHDest, setEditHDest] = useState<number>(36);
-  const [editTrunkDest, setEditTrunkDest] = useState<number>(8);
-  const [editKneeDest, setEditKneeDest] = useState<number>(8);
-  const [editOrigFrameIdx, setEditOrigFrameIdx] = useState<number>(0);
-  const [editDestFrameIdx, setEditDestFrameIdx] = useState<number>(1);
+  // Anclaje Geométrico de Gravedad (0° vertical real)
+  const [showGravityAnchor, setShowGravityAnchor] = useState<boolean>(true);
+  const [plumbAnchor, setPlumbAnchor] = useState<PlumbLineAnchor>({
+    top: { x: 0.16, y: 0.12 },
+    bottom: { x: 0.16, y: 0.86 },
+  });
+  const [draggingPlumbPart, setDraggingPlumbPart] = useState<'top' | 'bottom' | null>(null);
+  const frameOverlayRef = useRef<HTMLDivElement | null>(null);
 
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const activeBlobUrlRef = useRef<string | null>(null);
-  const rawUploadedFileRef = useRef<File | null>(null);
-  const hasAttemptedAutoNormalizeRef = useRef<boolean>(false);
-  const knownDurationRef = useRef<number | null>(null);
-  const pendingAutoRunFileRef = useRef<File | null>(null);
+  const verticalCalibrationDeg = useMemo(() => {
+    const dx = plumbAnchor.bottom.x - plumbAnchor.top.x;
+    const dy = Math.max(0.08, plumbAnchor.bottom.y - plumbAnchor.top.y);
+    return Math.round(((Math.atan2(dx, dy) * 180) / Math.PI) * 10) / 10;
+  }, [plumbAnchor]);
+
+  // Parámetros invisibles
+  const [invisibleParams, setInvisibleParams] = useState<InvisibleErgonizaParameters>({
+    loadMassKg: 18,
+    sex: 'masculino',
+    ageYears: 34,
+    statureCm: 172,
+    bodyMassKg: 76,
+    complexion: 'media_p50',
+    frequencyPerMin: 4,
+    dutyCyclePercent: 20,
+    horizontalReachCm: 36,
+    gripCoupling: 'regular',
+    floorFrictionMu: 0.5,
+    isBimanualLoad: true,
+    userConfirmedInvisibleParams: true,
+  });
+
+  // Geometría Toma de Carga (Origen) y Destino (en cm)
+  const [vOriginCm, setVOriginCm] = useState<number>(26);
+  const [vDestCm, setVDestCm] = useState<number>(112);
+  const [hDestCm, setHDestCm] = useState<number>(34);
+
+  // Postura 1: Toma de Carga (Origen) y Postura 2: Destino — sincronizadas simultáneamente
+  const [rawOriginTwinJson, setRawOriginTwinJson] = useState<ErgonizaDigitalTwinJson>(() =>
+    buildRoleJsonFromSample(CENEA_SAMPLE_VIDEOS_CATALOG[0], 'origin', {
+      loadMassKg: 18,
+      userConfirmedInvisibleParams: true,
+    }),
+  );
+  const [rawDestTwinJson, setRawDestTwinJson] = useState<ErgonizaDigitalTwinJson>(() =>
+    buildRoleJsonFromSample(CENEA_SAMPLE_VIDEOS_CATALOG[0], 'dest', {
+      loadMassKg: 18,
+      userConfirmedInvisibleParams: true,
+    }),
+  );
+
+  const effectiveOriginTwinJson = useMemo<ErgonizaDigitalTwinJson>(
+    () =>
+      buildErgonizaDigitalTwinJson({
+        analisisExitoso: rawOriginTwinJson.analisis_exitoso,
+        fotogramaCriticoSegundo: rawOriginTwinJson.fotograma_critico_segundo,
+        condicionesApoyo: rawOriginTwinJson.condiciones_apoyo_detectadas,
+        planoReferencia: rawOriginTwinJson.sincronizacion_avatar_3d.plano_referencia,
+        articulaciones: rawOriginTwinJson.sincronizacion_avatar_3d.articulaciones_principales,
+        invisibleParams,
+        verticalCalibrationOffsetDeg: verticalCalibrationDeg,
+      }),
+    [rawOriginTwinJson, invisibleParams, verticalCalibrationDeg],
+  );
+
+  const effectiveDestTwinJson = useMemo<ErgonizaDigitalTwinJson>(
+    () =>
+      buildErgonizaDigitalTwinJson({
+        analisisExitoso: rawDestTwinJson.analisis_exitoso,
+        fotogramaCriticoSegundo: rawDestTwinJson.fotograma_critico_segundo,
+        condicionesApoyo: rawDestTwinJson.condiciones_apoyo_detectadas,
+        planoReferencia: rawDestTwinJson.sincronizacion_avatar_3d.plano_referencia,
+        articulaciones: rawDestTwinJson.sincronizacion_avatar_3d.articulaciones_principales,
+        invisibleParams: {
+          ...invisibleParams,
+          horizontalReachCm: hDestCm,
+        },
+        verticalCalibrationOffsetDeg: verticalCalibrationDeg,
+      }),
+    [rawDestTwinJson, invisibleParams, hDestCm, verticalCalibrationDeg],
+  );
+
+  const activeEffectiveTwinJson =
+    activePostureRole === 'origin' ? effectiveOriginTwinJson : effectiveDestTwinJson;
+
+  // Evaluación de Movimientos Repetitivos extraída del vídeo
+  const [repetitiveMetrics, setRepetitiveMetrics] = useState<RepetitiveVideoMetrics>({
+    cycleDurationSec: 8.5,
+    technicalActionsCountR: 6,
+    technicalActionsCountL: 5,
+    actionsPerMinR: 42.4,
+    actionsPerMinL: 35.3,
+    effortDurationSec: 3.4,
+    pctShoulderHigh: 28,
+    pctElbowWide: 42,
+    pctWristAwkward: 34,
+    recommendedOcraFreqScore: 3,
+    recommendedStereotypyScore: 1.5,
+    estimatedHOriginCm: 36,
+    estimatedVOriginCm: 26,
+    estimatedHDestCm: 34,
+    estimatedVDestCm: 112,
+  });
+  const [borgPeakScore, setBorgPeakScore] = useState<number>(4);
+  const [distalGripType, setDistalGripType] = useState<'power' | 'pinch_33' | 'pinch_50' | 'pinch_80'>('pinch_33');
+  const [netRepetitiveMinutes, setNetRepetitiveMinutes] = useState<number>(390);
+  const [unrecoveredHours, setUnrecoveredHours] = useState<0 | 2 | 3 | 4 | 6>(3);
+
+  // Selección de pestañas a enviar al Estudio e Informe PDF/Word
+  const [emitNiosh, setEmitNiosh] = useState<boolean>(true);
+  const [emitReba, setEmitReba] = useState<boolean>(true);
+  const [emitOcraChecklist, setEmitOcraChecklist] = useState<boolean>(true);
+  const [emitJsi, setEmitJsi] = useState<boolean>(true);
+  const [emitNam295, setEmitNam295] = useState<boolean>(false);
+
+  // Editor JSON y visor PDF
+  const [jsonEditorOpen, setJsonEditorOpen] = useState<boolean>(false);
+  const [jsonDraftText, setJsonDraftText] = useState<string>('');
+  const [copiedJsonBadge, setCopiedJsonBadge] = useState<boolean>(false);
+  const [showErgonizaPdfModal, setShowErgonizaPdfModal] = useState<boolean>(false);
+
+  // Dos lienzos 3D simultáneos: Toma de Carga (Origen) + Destino
+  const originAvatarCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const destAvatarCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const projectedOriginJointsRef = useRef<Record<JointKey, { x: number; y: number }> | null>(null);
+  const projectedDestJointsRef = useRef<Record<JointKey, { x: number; y: number }> | null>(null);
+
+  const [avatarReady, setAvatarReady] = useState<boolean>(false);
+  const [cameraPreset, setCameraPreset] = useState<CameraPreset>('sagittal_right');
+  const [orbit, setOrbit] = useState<CameraOrbitOverride>(DEFAULT_ORBIT_OVERRIDE);
+  const [show3DJointGizmos, setShow3DJointGizmos] = useState<boolean>(true);
+  const [show3DGoniometerOverlay, setShow3DGoniometerOverlay] = useState<boolean>(false);
+  const [selectedJoint3D, setSelectedJoint3D] = useState<JointKey | null>('l5s1');
+  const [hoveredJoint3D, setHoveredJoint3D] = useState<JointKey | null>(null);
+  const [activeProp3D, setActiveProp3D] = useState<ScenePropType>('box_load');
+  const [isPlayingCycle3D, setIsPlayingCycle3D] = useState<boolean>(false);
+  const [cycleProgress, setCycleProgress] = useState<number>(0.2);
+  const [hasEmittedTabs, setHasEmittedTabs] = useState<boolean>(false);
+  const [isEmittingReport, setIsEmittingReport] = useState<boolean>(false);
+
+  const drag3DRef = useRef<{
+    role: 'origin' | 'dest';
+    mode: 'orbit' | 'joint';
+    joint?: JointKey;
+    startX: number;
+    startY: number;
+    startOrbit: CameraOrbitOverride;
+    startArt: ErgonizaDigitalTwinJson['sincronizacion_avatar_3d']['articulaciones_principales'];
+  } | null>(null);
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
+    let active = true;
+    ensureAvatarGlbLoaded().then(() => {
+      if (active) setAvatarReady(true);
+    });
+    const unsub = subscribeAvatarGlbLoaded(() => {
+      if (active) setAvatarReady(true);
+    });
     return () => {
-      if (activeBlobUrlRef.current) {
-        URL.revokeObjectURL(activeBlobUrlRef.current);
-        activeBlobUrlRef.current = null;
-      }
+      active = false;
+      unsub();
     };
   }, []);
 
-  const replaceActiveBlobUrl = (file: File, knownDurSec: number | null = null, normalized = false) => {
-    if (activeBlobUrlRef.current) {
-      URL.revokeObjectURL(activeBlobUrlRef.current);
-      activeBlobUrlRef.current = null;
-    }
-    const nextUrl = URL.createObjectURL(file);
-    activeBlobUrlRef.current = nextUrl;
-
-    knownDurationRef.current = knownDurSec;
-    setVideoDurationSec(knownDurSec ?? 0);
-    setCurrentPlaySec(0);
-    setVideoFile(file);
-    setVideoUrl(nextUrl);
-    setVideoWasNormalized(normalized);
-    setErrorMsg(null);
-    setEmittedBundle(null);
-    setSampledFrames([]);
-  };
-
-  /**
-   * Transcodifica cualquier video (ej. 21 seg en HEVC/H.265 de celular, .mov QuickTime, 10-bit, WebM sin índice)
-   * mediante el servidor a MP4 H.264 universal con +faststart para garantizar reproducción 100% fluida.
-   */
-  const normalizeVideoViaServer = async (
-    sourceFile: File,
-    reasonMessage = 'Optimizando códec de video a H.264 universal para reproducción fluida...',
-  ): Promise<boolean> => {
-    if (isNormalizingVideo) return false;
-    setIsNormalizingVideo(true);
-    setNormalizingNotice(reasonMessage);
-    setErrorMsg(null);
-
-    try {
-            // --- CÁLCULO BIOMECÁNICO REAL ACTIVO - ERGOVAL ---
-      // Buscamos el elemento de video en la pantalla para extraer sus píxeles reales
-      const videoElementoDom = document.querySelector('video');
-      let postural_angles_deg = { trunk_flexion: 46.0, knee_flexion: 42.0, right_elbow: 76.0, left_elbow: 72.0 };
-      let niosh_inputs = { H_cm: 38.0, V_cm: 36.0, D_cm: 82.0, A_deg: 10.0 };
-      let critical_events = { origen_timestamp: '00:00.600', destino_timestamp: '00:02.800' };
-
-      if (videoElementoDom) {
-        // Ejecutamos el extractor de MediaPipe que calcula frame por frame en la GPU
-        const resultadoMoCapReal = await trackVideoFrames(videoElementoDom);
-        
-        if (resultadoMoCapReal && resultadoMoCapReal.posesPorFrame && resultadoMoCapReal.posesPorFrame.length > 0) {
-          const framesPose = resultadoMoCapReal.posesPorFrame;
-          
-          // Buscar momento de máxima flexión (Origen - Operario agachado)
-          let idxOrigen = 0; let maxFlex = 0;
-          for (let idx = 0; idx < framesPose.length; idx++) {
-            const flex = Math.abs(framesPose[idx]?.trunkFlexionDeg || 0);
-            if (flex > maxFlex) { maxFlex = flex; idxOrigen = idx; }
-          }
-
-          // Buscar momento de reincorporación (Destino - Operario parado)
-          let idxDestino = framesPose.length - 1; let minFlex = Infinity;
-          for (let idx = idxOrigen; idx < framesPose.length; idx++) {
-            const flex = Math.abs(framesPose[idx]?.trunkFlexionDeg || 0);
-            if (flex < minFlex) { minFlex = flex; idxDestino = idx; }
-          }
-
-          // Asignamos las variables calculadas matemáticamente desde el video original
-          postural_angles_deg = {
-            trunk_flexion: Math.abs(framesPose[idxOrigen]?.trunkFlexionDeg || 46.0),
-            knee_flexion: Math.abs(framesPose[idxOrigen]?.kneeRFlexionDeg || 42.0),
-            right_elbow: Math.abs(framesPose[idxOrigen]?.elbowRFlexionDeg || 76.0),
-            left_elbow: 72.0
-          };
-
-          critical_events = {
-            origen_timestamp: `00:0${Math.round((idxOrigen / 30) * 10) / 10}`,
-            destino_timestamp: `00:0${Math.round((idxDestino / 30) * 10) / 10}`
-          };
-
-          // Calcular alturas relativas simuladas basadas en la extensión de piernas/tronco
-          const v_origen_calculado = Math.round(36.0 + (42.0 - postural_angles_deg.knee_flexion));
-          const v_destino_calculado = Math.round(118.0 - postural_angles_deg.trunk_flexion);
-
-          niosh_inputs = {
-            H_cm: 34.0,
-            V_cm: v_origen_calculado > 0 ? v_origen_calculado : 36.0,
-            D_cm: Math.round(Math.abs(v_destino_calculado - v_origen_calculado)),
-            A_deg: 10.0
-          };
-        }
-      }
-      // -------------------------------------------------
-
-      const resp = await fetch('/api/biomech/normalize-video', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/octet-stream',
-          'X-File-Name': encodeURIComponent(sourceFile.name || 'video_tarea.mp4'),
-        },
-        body: sourceFile,
-      });
-
-      if (!resp.ok) {
-        let serverErr = `Error HTTP ${resp.status} al compatibilizar el video.`;
-        try {
-          const errJson = await resp.json();
-          if (typeof errJson?.error === 'string') serverErr = errJson.error;
-        } catch {
-          // Ignore JSON parse error
-        }
-        throw new Error(serverErr);
-      }
-
-      const durHeader = resp.headers.get('X-Video-Duration-Sec');
-      const parsedDur = durHeader ? parseFloat(durHeader) : NaN;
-      const mp4Blob = await resp.blob();
-      const cleanBaseName = sourceFile.name.replace(/\.[^.]+$/, '') || 'video_normalizado';
-      const normalizedFile = new File([mp4Blob], `${cleanBaseName}_h264.mp4`, {
-        type: 'video/mp4',
-      });
-
-      hasAttemptedAutoNormalizeRef.current = true;
-      replaceActiveBlobUrl(
-        normalizedFile,
-        Number.isFinite(parsedDur) && parsedDur > 0 ? parsedDur : null,
-        true,
-      );
-      return true;
-    } catch (err) {
-      setErrorMsg(
-        err instanceof Error
-          ? err.message
-          : 'No se pudo convertir automáticamente el códec del archivo de video.',
-      );
-      return false;
-    } finally {
-      setIsNormalizingVideo(false);
-      setNormalizingNotice('');
-    }
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    e.target.value = '';
-
-    pendingAutoRunFileRef.current = null;
-    rawUploadedFileRef.current = file;
-    hasAttemptedAutoNormalizeRef.current = false;
-
-    if (needsImmediateTranscodeByFilename(file)) {
-      void normalizeVideoViaServer(
-        file,
-        `Convirtiendo ${file.name} a formato MP4 H.264 universal para garantizar reproducción y muestreo...`,
-      );
-      return;
-    }
-
-    replaceActiveBlobUrl(file, null, false);
-  };
-
-  /**
-   * Genera un video 3D de prueba (Levantamiento suelo->estantería o Descenso estantería->suelo)
-   * y ejecuta el pipeline completo de extracción + emisión de informe.
-   */
-  const handleGenerateTestVideo = async (
-    autoRunAfterGenerate: boolean,
-    simDirection: 'levantamiento' | 'descenso' = 'levantamiento',
-  ) => {
-    if (isGeneratingTestVideo || isProcessing || isNormalizingVideo) return;
-    setErrorMsg(null);
-    setIsGeneratingTestVideo(true);
-
-    try {
-      await ensureAvatarGlbLoaded();
-      const width = 640;
-      const height = 480;
-      const offCanvas = document.createElement('canvas');
-      offCanvas.width = width;
-      offCanvas.height = height;
-
-      const stream = offCanvas.captureStream(20);
-      const candidates = [
-        'video/webm;codecs=vp9',
-        'video/webm;codecs=vp8',
-        'video/webm',
-        'video/mp4',
-      ];
-      const supportedMime =
-        candidates.find((m) => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(m)) || '';
-
-      const recorder = supportedMime
-        ? new MediaRecorder(stream, { mimeType: supportedMime, videoBitsPerSecond: 2_200_000 })
-        : new MediaRecorder(stream);
-
-      const chunks: BlobPart[] = [];
-      recorder.ondataavailable = (ev) => {
-        if (ev.data && ev.data.size > 0) chunks.push(ev.data);
-      };
-
-      const stoppedPromise = new Promise<Blob>((resolve, reject) => {
-        recorder.onstop = () => {
-          const finalMime = recorder.mimeType || supportedMime || 'video/webm';
-          resolve(new Blob(chunks, { type: finalMime }));
-        };
-        recorder.onerror = () => reject(new Error('No se pudo codificar el video 3D de prueba en este navegador.'));
-      });
-
-      recorder.start(120);
-
-      const totalDurationMs = 4800;
-      const fps = 20;
-      const totalSteps = Math.round((totalDurationMs / 1000) * fps);
-      const stepMs = Math.round(1000 / fps);
-
-      const demoSpec = {
-        ...getCeneaSampleCaseById('cenea_transformando_higienico'),
-        title:
-          simDirection === 'levantamiento'
-            ? 'Tarea EmpresaX · Levantamiento Humanizado con Traslado y Giro'
-            : 'Tarea EmpresaX · Descenso Controlado desde Estantería a Tarima',
-        sector: 'Almacén y Expedición',
-        movementDirection: simDirection,
-        loadWeightKg,
-        vOriginCm: simDirection === 'levantamiento' ? 28 : 114,
-        hOriginCm: simDirection === 'levantamiento' ? 30 : 34,
-        vDestCm: simDirection === 'levantamiento' ? 114 : 28,
-        hDestCm: simDirection === 'levantamiento' ? 34 : 30,
-        asymmetryOriginDeg: 0,
-        asymmetryDestDeg: 10,
-        trunkOriginDeg: simDirection === 'levantamiento' ? 16 : 6,
-        kneeOriginDeg: simDirection === 'levantamiento' ? 108 : 10,
-        trunkDestDeg: simDirection === 'levantamiento' ? 6 : 16,
-        kneeDestDeg: simDirection === 'levantamiento' ? 10 : 108,
-        liftStyleOrigin: 'hygienic_squat' as const,
-        liftStyleDest: 'hygienic_squat' as const,
-        prop: 'pallet_jack_rack' as const,
-      };
-
-      for (let i = 0; i <= totalSteps; i++) {
-        const progress = i / totalSteps;
-        const frame = buildCeneaSampleFrameSpec(demoSpec, progress, workerHeightCm);
-
-        renderInteractivePose3DToCanvas(
-          frame.panelSpec,
-          offCanvas,
-          width,
-          height,
-          frame.orbit,
-          1,
-          'anatomical_skin',
-          false,
-        );
-
-        await new Promise((r) => window.setTimeout(r, stepMs));
-      }
-
-      recorder.stop();
-      const recordedBlob = await stoppedPromise;
-      stream.getTracks().forEach((t) => t.stop());
-
-      setMovementModeHint(simDirection);
-      setTaskEvaluated(
-        simDirection === 'levantamiento'
-          ? 'Aproximación, toma bimanual en tarima (V=28 cm), caminata con giro parcial y estiba en rack (V=114 cm)'
-          : 'Aproximación a estantería (V=114 cm), retiro bimanual, traslado con giro parcial y depósito en tarima (V=28 cm)',
-      );
-
-      const ext = recordedBlob.type.includes('mp4') ? 'mp4' : 'webm';
-      const generatedFile = new File(
-        [recordedBlob],
-        `${simDirection}_tarea_humanizada_3d.${ext}`,
-        { type: recordedBlob.type || 'video/webm' },
-      );
-
-      rawUploadedFileRef.current = generatedFile;
-      hasAttemptedAutoNormalizeRef.current = true;
-      pendingAutoRunFileRef.current = autoRunAfterGenerate ? generatedFile : null;
-      replaceActiveBlobUrl(generatedFile, 4.8, false);
-    } catch (err) {
-      setErrorMsg(
-        err instanceof Error
-          ? err.message
-          : 'No fue posible generar el video de prueba automáticamente.',
-      );
-    } finally {
-      setIsGeneratingTestVideo(false);
-    }
-  };
-
-  /**
-   * Genera un video 3D de muestra basado en cualquiera de los 8 casos prácticos ergonómicos
-   * de la playlist de referencia para evaluar similitud postural y biomecánica.
-   */
-  const handleGenerateCeneaSampleVideo = async (autoRunAfterGenerate: boolean) => {
-    if (isGeneratingTestVideo || isProcessing || isNormalizingVideo) return;
-    setErrorMsg(null);
-    setIsGeneratingTestVideo(true);
-
-    const sampleSpec = getCeneaSampleCaseById(selectedCeneaCaseId);
-
-    try {
-      await ensureAvatarGlbLoaded();
-      const width = effectiveExpanded ? 864 : 640;
-      const height = effectiveExpanded ? 540 : 480;
-      const offCanvas = document.createElement('canvas');
-      offCanvas.width = width;
-      offCanvas.height = height;
-
-      const stream = offCanvas.captureStream(20);
-      const candidates = [
-        'video/webm;codecs=vp9',
-        'video/webm;codecs=vp8',
-        'video/webm',
-        'video/mp4',
-      ];
-      const supportedMime =
-        candidates.find((m) => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(m)) || '';
-
-      const recorder = supportedMime
-        ? new MediaRecorder(stream, {
-            mimeType: supportedMime,
-            videoBitsPerSecond: effectiveExpanded ? 3_200_000 : 2_400_000,
-          })
-        : new MediaRecorder(stream);
-
-      const chunks: BlobPart[] = [];
-      recorder.ondataavailable = (ev) => {
-        if (ev.data && ev.data.size > 0) chunks.push(ev.data);
-      };
-
-      const stoppedPromise = new Promise<Blob>((resolve, reject) => {
-        recorder.onstop = () => {
-          const finalMime = recorder.mimeType || supportedMime || 'video/webm';
-          resolve(new Blob(chunks, { type: finalMime }));
-        };
-        recorder.onerror = () =>
-          reject(new Error('No se pudo codificar el video 3D del caso práctico seleccionado.'));
-      });
-
-      recorder.start(120);
-
-      const totalDurationMs = 4800;
-      const fps = 20;
-      const totalSteps = Math.round((totalDurationMs / 1000) * fps);
-      const stepMs = Math.round(1000 / fps);
-
-      for (let i = 0; i <= totalSteps; i++) {
-        const progress = i / totalSteps;
-        const frame = buildCeneaSampleFrameSpec(sampleSpec, progress, workerHeightCm);
-
-        renderInteractivePose3DToCanvas(
-          frame.panelSpec,
-          offCanvas,
-          width,
-          height,
-          frame.orbit,
-          1,
-          'anatomical_skin',
-          false,
-        );
-
-        await new Promise((r) => window.setTimeout(r, stepMs));
-      }
-
-      recorder.stop();
-      const recordedBlob = await stoppedPromise;
-      stream.getTracks().forEach((t) => t.stop());
-
-      setMovementModeHint(sampleSpec.movementDirection);
-      setTaskEvaluated(`${sampleSpec.title} — ${sampleSpec.taskSummary}`);
-      setLoadWeightKg(sampleSpec.loadWeightKg);
-      setFrequencyLiftsPerMin(sampleSpec.frequencyPerMin);
-      setDurationCategory(sampleSpec.durationCategory);
-      setCouplingQuality(sampleSpec.couplingQuality);
-
-      const ext = recordedBlob.type.includes('mp4') ? 'mp4' : 'webm';
-      const generatedFile = new File(
-        [recordedBlob],
-        `muestra_${sampleSpec.id}_${width}x${height}.${ext}`,
-        { type: recordedBlob.type || 'video/webm' },
-      );
-
-      rawUploadedFileRef.current = generatedFile;
-      hasAttemptedAutoNormalizeRef.current = true;
-      pendingAutoRunFileRef.current = autoRunAfterGenerate ? generatedFile : null;
-      replaceActiveBlobUrl(generatedFile, 4.8, false);
-    } catch (err) {
-      setErrorMsg(
-        err instanceof Error
-          ? err.message
-          : 'No fue posible generar el video de muestra del caso práctico.',
-      );
-    } finally {
-      setIsGeneratingTestVideo(false);
-    }
-  };
-
-  /**
-   * Construye las pestañas NIOSH + REBA, las figuras 3D sin solapamiento y el semáforo de alertas
-   * (usado tanto al finalizar la extracción IA como al pulsar "Invertir Origen ↔ Destino").
-   */
-  const buildAndEmitStudyBundle = async (params: {
-    extracted: ExtractedVideoBiomechJson;
-    sampledCount: number;
-    processingMs: number;
-    rawOriginCleanUrl: string;
-    rawDestCleanUrl: string;
-    activeFileName: string;
-    invertOriginDest: boolean;
-    triggerPdfDownload: boolean;
-  }) => {
-    const {
-      extracted,
-      sampledCount,
-      processingMs,
-      rawOriginCleanUrl,
-      rawDestCleanUrl,
-      activeFileName,
-      invertOriginDest,
-      triggerPdfDownload,
-    } = params;
-
-    const resolved = getResolvedMovementHeights(extracted);
-    const vOrig = invertOriginDest ? resolved.vDestCm : resolved.vOrigCm;
-    const vDest = invertOriginDest ? resolved.vOrigCm : resolved.vDestCm;
-    const hOrig = invertOriginDest ? resolved.hDestCm : resolved.hOrigCm;
-    const hDest = invertOriginDest ? resolved.hOrigCm : resolved.hDestCm;
-    const asymOrig = invertOriginDest
-      ? extracted.niosh_inputs.A_deg
-      : Math.round(extracted.niosh_inputs.A_deg * 0.5 * 10) / 10;
-    const asymDest = invertOriginDest
-      ? Math.round(extracted.niosh_inputs.A_deg * 0.5 * 10) / 10
-      : extracted.niosh_inputs.A_deg;
-
-    const builtOrigin3D = build3DPanelFromExtraction(
-      extracted,
-      'origin',
-      loadWeightKg,
-      workerHeightCm,
-      vOrig,
-      vDest,
-      hOrig,
-      hDest,
-      invertOriginDest,
-    );
-    const builtDest3D = build3DPanelFromExtraction(
-      extracted,
-      'destination',
-      loadWeightKg,
-      workerHeightCm,
-      vOrig,
-      vDest,
-      hOrig,
-      hDest,
-      invertOriginDest,
-    );
-    const shownOrigAngles = builtOrigin3D.solvedAngles;
-    const shownDestAngles = builtDest3D.solvedAngles;
-
-    const shownOrigTs = invertOriginDest
-      ? extracted.critical_events.destino_timestamp
-      : extracted.critical_events.origen_timestamp;
-    const shownDestTs = invertOriginDest
-      ? extracted.critical_events.origen_timestamp
-      : extracted.critical_events.destino_timestamp;
-
-    const cleanForShownOrig = invertOriginDest ? rawDestCleanUrl : rawOriginCleanUrl;
-    const cleanForShownDest = invertOriginDest ? rawOriginCleanUrl : rawDestCleanUrl;
-
-    const shownOrigKeyframe = await stampBadgeOnImageDataUrl(
-      cleanForShownOrig,
-      `ORIGEN ${shownOrigTs} · V=${vOrig}cm · Tronco ${shownOrigAngles.trunk_flexion}°`,
-      840,
-      'image/png',
-    );
-    const shownDestKeyframe = await stampBadgeOnImageDataUrl(
-      cleanForShownDest,
-      `DESTINO ${shownDestTs} · V=${vDest}cm · Tronco ${shownDestAngles.trunk_flexion}°`,
-      840,
-      'image/png',
-    );
-
-    const baseOrigStamped = invertOriginDest ? shownDestKeyframe : shownOrigKeyframe;
-    const baseDestStamped = invertOriginDest ? shownOrigKeyframe : shownDestKeyframe;
-
-    // Renderizar reconstrucciones 3D limpias con el avatar anatómico PBR (.glb) copiando la altura V_cm real de cada foto
-    await ensureAvatarGlbLoaded();
-    const cOrigin3D = document.createElement('canvas');
-    renderInteractivePose3DToCanvas(
-      builtOrigin3D.panel,
-      cOrigin3D,
-      540,
-      450,
-      DEFAULT_ORBIT_OVERRIDE,
-      2,
-      'anatomical_skin',
-      false,
-    );
-    const origin3DUrl = cOrigin3D.toDataURL('image/png');
-
-    const cDest3D = document.createElement('canvas');
-    renderInteractivePose3DToCanvas(
-      builtDest3D.panel,
-      cDest3D,
-      540,
-      450,
-      DEFAULT_ORBIT_OVERRIDE,
-      2,
-      'anatomical_skin',
-      false,
-    );
-    const dest3DUrl = cDest3D.toDataURL('image/png');
-
-    const nioshData: NioshData = {
-      loadWeightKg,
-      evaluateDestination: true,
-      hOriginCm: hOrig,
-      hDestCm: hDest,
-      vOriginCm: vOrig,
-      vDestCm: vDest,
-      asymmetryOriginDeg: asymOrig,
-      asymmetryDestDeg: asymDest,
-      frequencyLiftsPerMin,
-      durationCategory,
-      couplingQuality,
+  useEffect(() => {
+    return () => {
+      if (videoObjectUrl) URL.revokeObjectURL(videoObjectUrl);
     };
-
-    const trajInfo = describeNioshTrajectory(vOrig, vDest);
-
-    const baseNioshTab = createNewStudyTab(1, MethodId.NIOSH, taskEvaluated);
-    baseNioshTab.id = 'tab-video-ia-niosh';
-    baseNioshTab.tabLabel = 'Video IA: Ecuación NIOSH';
-    baseNioshTab.instrumentsUsed =
-      'Extractor de Visión por Computador 3D + Calibración antropométrica + Ecuación NIOSH (1993)';
-    baseNioshTab.payloads[MethodId.NIOSH] = nioshData;
-
-    const nioshPhotos: StudyPhoto[] = [
-      {
-        id: `ph-orig-${Date.now()}`,
-        name: `origen_${shownOrigTs.replace(/[:.]/g, '_')}.png`,
-        dataUrl: shownOrigKeyframe,
-        caption: `Fotograma real en Origen (${shownOrigTs}) - V = ${vOrig} cm, H = ${hOrig} cm | Postura medida: tronco ${shownOrigAngles.trunk_flexion}°, rodillas ${shownOrigAngles.knee_flexion}°, hombros ${shownOrigAngles.shoulder_flexion}°, codos ${shownOrigAngles.right_elbow}°/${shownOrigAngles.left_elbow}°.`,
-        annotations: [],
-      },
-      {
-        id: `ph-3d-orig-${Date.now() + 1}`,
-        name: 'reconstruccion_3d_origen.png',
-        dataUrl: origin3DUrl,
-        caption: `Modelización 3D en Origen (${shownOrigTs}) - V = ${vOrig} cm, H = ${hOrig} cm | Tronco ${shownOrigAngles.trunk_flexion}°, rodillas ${shownOrigAngles.knee_flexion}°, hombros ${shownOrigAngles.shoulder_flexion}°.`,
-        annotations: [],
-      },
-      {
-        id: `ph-dest-${Date.now() + 2}`,
-        name: `destino_${shownDestTs.replace(/[:.]/g, '_')}.png`,
-        dataUrl: shownDestKeyframe,
-        caption: `Fotograma real en Destino (${shownDestTs}) - V = ${vDest} cm, H = ${hDest} cm, D = ${Math.round(Math.abs(vDest - vOrig) * 10) / 10} cm | Postura medida: tronco ${shownDestAngles.trunk_flexion}°, rodillas ${shownDestAngles.knee_flexion}°, hombros ${shownDestAngles.shoulder_flexion}°, codos ${shownDestAngles.right_elbow}°/${shownDestAngles.left_elbow}°.`,
-        annotations: [],
-      },
-      {
-        id: `ph-3d-dest-${Date.now() + 3}`,
-        name: 'reconstruccion_3d_destino.png',
-        dataUrl: dest3DUrl,
-        caption: `Modelización 3D en Destino (${shownDestTs}) - V = ${vDest} cm, H = ${hDest} cm, A = ${extracted.niosh_inputs.A_deg}° | Tronco ${shownDestAngles.trunk_flexion}°, rodillas ${shownDestAngles.knee_flexion}°, hombros ${shownDestAngles.shoulder_flexion}°.`,
-        annotations: [],
-      },
-    ];
-    baseNioshTab.photos = nioshPhotos;
-
-    const nioshResult = evaluateStudyTab(baseNioshTab);
-    baseNioshTab.implementationDeadline = nioshResult.recommendedDeadline;
-    baseNioshTab.evaluatorObservations =
-      `Extracción biomecánica automatizada desde archivo de video (${activeFileName}): ` +
-      `fotograma inicial en ${shownOrigTs} (V = ${vOrig} cm, H = ${hOrig} cm, tronco = ${shownOrigAngles.trunk_flexion}°, rodillas = ${shownOrigAngles.knee_flexion}°) y ` +
-      `fotograma final en ${shownDestTs} (V = ${vDest} cm, H = ${hDest} cm, tronco = ${shownDestAngles.trunk_flexion}°, rodillas = ${shownDestAngles.knee_flexion}°). ` +
-      `${trajInfo.technicalExplanation} ` +
-      `Resultado determinista: ${nioshResult.primaryScoreText} (${nioshResult.riskLabel}).`;
-    baseNioshTab.correctiveMeasures = nioshResult.suggestedMeasures
-      .map((m, idx) => `${idx + 1}. ${m}`)
-      .join('\n');
-
-    // Construir pestaña REBA determinista
-    const vMax = Math.max(vOrig, vDest);
-    const vMin = Math.min(vOrig, vDest);
-    const hWorst = Math.max(hOrig, hDest);
-    const rebaMapped = mapExtractedToRebaData(
-      extracted,
-      loadWeightKg,
-      couplingQuality,
-      vMax,
-      vMin,
-      hWorst,
-    );
-
-    const baseRebaTab = createNewStudyTab(
-      2,
-      MethodId.REBA,
-      `${taskEvaluated} - ${trajInfo.shortTitle}`,
-    );
-    baseRebaTab.id = 'tab-video-ia-reba';
-    baseRebaTab.tabLabel = 'Video IA: Cuerpo Entero REBA';
-    baseRebaTab.instrumentsUsed =
-      'Extractor Goniométrico Espacial 3D desde Video + Método REBA (Hignett y McAtamney)';
-    baseRebaTab.payloads[MethodId.REBA] = rebaMapped;
-    baseRebaTab.photos = [
-      {
-        id: `ph-reba-vid-orig-${Date.now() + 4}`,
-        name: 'fotograma_video_reba_origen.png',
-        dataUrl: shownOrigKeyframe,
-        caption: `Evidencia en Video - Postura Origen (${shownOrigTs}): tronco ${shownOrigAngles.trunk_flexion}°, rodillas ${shownOrigAngles.knee_flexion}°, hombros ${shownOrigAngles.shoulder_flexion}°, codos ${shownOrigAngles.right_elbow}°/${shownOrigAngles.left_elbow}°.`,
-        annotations: [],
-      },
-      {
-        id: `ph-reba-3d-${Date.now() + 5}`,
-        name: 'postura_3d_reba_origen.png',
-        dataUrl: origin3DUrl,
-        caption: `Goniometría 3D en Origen (${shownOrigTs}): tronco ${shownOrigAngles.trunk_flexion}°, rodillas ${shownOrigAngles.knee_flexion}°, hombros ${shownOrigAngles.shoulder_flexion}°, codos ${shownOrigAngles.right_elbow}°/${shownOrigAngles.left_elbow}°.`,
-        annotations: [],
-      },
-      {
-        id: `ph-reba-vid-dest-${Date.now() + 6}`,
-        name: 'fotograma_video_reba_destino.png',
-        dataUrl: shownDestKeyframe,
-        caption: `Evidencia en Video - Postura Destino (${shownDestTs}): tronco ${shownDestAngles.trunk_flexion}°, rodillas ${shownDestAngles.knee_flexion}°, hombros ${shownDestAngles.shoulder_flexion}°, codos ${shownDestAngles.right_elbow}°/${shownDestAngles.left_elbow}°.`,
-        annotations: [],
-      },
-      {
-        id: `ph-reba-dest-${Date.now() + 7}`,
-        name: 'postura_3d_reba_destino.png',
-        dataUrl: dest3DUrl,
-        caption: `Goniometría 3D en Destino (${shownDestTs}): tronco ${shownDestAngles.trunk_flexion}°, rodillas ${shownDestAngles.knee_flexion}°, hombros ${shownDestAngles.shoulder_flexion}° (V = ${vDest} cm).`,
-        annotations: [],
-      },
-    ];
-
-    const rebaResult = evaluateStudyTab(baseRebaTab);
-    baseRebaTab.implementationDeadline = rebaResult.recommendedDeadline;
-    baseRebaTab.evaluatorObservations =
-      `Ángulos articulares extraídos por fase: Origen (${shownOrigTs}) -> tronco ${shownOrigAngles.trunk_flexion}°, rodillas ${shownOrigAngles.knee_flexion}°, hombros ${shownOrigAngles.shoulder_flexion}°, codos ${shownOrigAngles.right_elbow}°/${shownOrigAngles.left_elbow}°; ` +
-      `Destino (${shownDestTs}) -> tronco ${shownDestAngles.trunk_flexion}°, rodillas ${shownDestAngles.knee_flexion}°, hombros ${shownDestAngles.shoulder_flexion}°, codos ${shownDestAngles.right_elbow}°/${shownDestAngles.left_elbow}°. ` +
-      `Exigencia máxima evaluada en REBA: tronco ${extracted.postural_angles_deg.trunk_flexion}°, rodillas ${extracted.postural_angles_deg.knee_flexion}°. ` +
-      `${trajInfo.shortTitle}. Resultado REBA: ${rebaResult.primaryScoreText} (${rebaResult.riskLabel} - ${rebaResult.actionLevelText}).`;
-    baseRebaTab.correctiveMeasures = rebaResult.suggestedMeasures
-      .map((m, idx) => `${idx + 1}. ${m}`)
-      .join('\n');
-
-    const trafficLight = buildVideoBiomechTrafficLight({
-      nioshData,
-      nioshResult,
-      rebaResult,
-      trunkFlexionDeg: extracted.postural_angles_deg.trunk_flexion,
-      kneeFlexionDeg: extracted.postural_angles_deg.knee_flexion,
-      rightElbowDeg: extracted.postural_angles_deg.right_elbow,
-      leftElbowDeg: extracted.postural_angles_deg.left_elbow,
-    });
-
-    await onEmitTabsAndReport({
-      nioshTab: baseNioshTab,
-      rebaTab: baseRebaTab,
-      autoDownloadPdf: triggerPdfDownload,
-    });
-
-    setEmittedBundle({
-      extracted,
-      sampledCount,
-      processingMs,
-      rawOriginCleanUrl,
-      rawDestCleanUrl,
-      originKeyframeUrl: baseOrigStamped,
-      destKeyframeUrl: baseDestStamped,
-      origin3DUrl,
-      dest3DUrl,
-      nioshData,
-      nioshTab: baseNioshTab,
-      rebaTab: baseRebaTab,
-      nioshResult,
-      rebaResult,
-      trafficLight,
-      pdfAutoEmitted: triggerPdfDownload,
-      invertedCycle: invertOriginDest,
-    });
-  };
+  }, [videoObjectUrl]);
 
   useEffect(() => {
-    if (!emittedBundle) return;
-    const inv = emittedBundle.invertedCycle;
-    const ex = emittedBundle.extracted;
-    setEditVOrig(emittedBundle.nioshData.vOriginCm);
-    setEditHOrig(emittedBundle.nioshData.hOriginCm);
-    setEditVDest(emittedBundle.nioshData.vDestCm);
-    setEditHDest(emittedBundle.nioshData.hDestCm);
-    const origA = inv ? ex.destino_angles_deg : ex.origen_angles_deg;
-    const destA = inv ? ex.origen_angles_deg : ex.destino_angles_deg;
-    setEditTrunkOrig(Math.round(origA?.trunk_flexion ?? 16));
-    setEditKneeOrig(Math.round(origA?.knee_flexion ?? 108));
-    setEditTrunkDest(Math.round(destA?.trunk_flexion ?? 6));
-    setEditKneeDest(Math.round(destA?.knee_flexion ?? 6));
-    setEditOrigFrameIdx(
-      inv
-        ? (ex.critical_events.destino_frame_index ?? 0)
-        : (ex.critical_events.origen_frame_index ?? 0),
-    );
-    setEditDestFrameIdx(
-      inv
-        ? (ex.critical_events.origen_frame_index ?? Math.max(0, sampledFrames.length - 1))
-        : (ex.critical_events.destino_frame_index ?? Math.max(0, sampledFrames.length - 1)),
-    );
-  }, [emittedBundle, sampledFrames.length]);
+    if (!isPlayingCycle3D) return;
+    let rafId = 0;
+    let lastTime = performance.now();
+    const tick = (now: number) => {
+      const dt = (now - lastTime) / 1000;
+      lastTime = now;
+      setCycleProgress((prev) => {
+        const next = prev + dt * 0.14;
+        return next > 1 ? 0 : next;
+      });
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [isPlayingCycle3D]);
 
-  const handleApplyManualVideoAvatarCorrection = async (downloadPdfAfter = false) => {
-    if (!emittedBundle || isProcessing) return;
-    setIsProcessing(true);
-    setProcessingStage('Recalculando posturas 3D del avatar (Origen y Destino) e informe...');
+  const effectiveLoadForCalc = Math.max(0.5, invisibleParams.loadMassKg ?? 15);
+
+  // Especificación 3D para Postura 1: Toma de Carga (Origen)
+  const originAvatarSpec = useMemo<Panel3DSpec>(() => {
+    if (isPlayingCycle3D && sourceMode === 'sample') {
+      return buildCeneaSampleFrameSpec(selectedSample, cycleProgress, invisibleParams.statureCm).panelSpec;
+    }
+    const { pose } = syncAvatarPoseFromErgonizaJson(effectiveOriginTwinJson, {
+      isBimanual: invisibleParams.isBimanualLoad,
+      loadKg: effectiveLoadForCalc,
+      prop: activeProp3D,
+    });
+    const art = effectiveOriginTwinJson.sincronizacion_avatar_3d.articulaciones_principales;
+    return {
+      subTitle: `1. Toma de Carga (Origen · t=${effectiveOriginTwinJson.fotograma_critico_segundo.toFixed(2)}s)`,
+      scoreBadge: `H=${invisibleParams.horizontalReachCm} cm · V=${vOriginCm} cm`,
+      focusZone: 'full_body',
+      cameraPreset,
+      pose,
+      angleArcs: [
+        {
+          joint: 'l5s1',
+          refType: 'vertical_up',
+          toJoint: 'c7',
+          label: `Tronco ${art.tronco.flexion_extension_grados}°`,
+        },
+        {
+          joint: 'elbowR',
+          refType: 'segment',
+          parentJoint: 'shoulderR',
+          toJoint: 'wristR',
+          label: `Codo ${art.codo_derecho.flexion_extension_grados}°`,
+        },
+      ],
+    };
+  }, [
+    isPlayingCycle3D,
+    sourceMode,
+    selectedSample,
+    cycleProgress,
+    invisibleParams.statureCm,
+    invisibleParams.isBimanualLoad,
+    invisibleParams.horizontalReachCm,
+    effectiveOriginTwinJson,
+    effectiveLoadForCalc,
+    activeProp3D,
+    vOriginCm,
+    cameraPreset,
+  ]);
+
+  // Especificación 3D para Postura 2: Destino de Carga
+  const destAvatarSpec = useMemo<Panel3DSpec>(() => {
+    const { pose } = syncAvatarPoseFromErgonizaJson(effectiveDestTwinJson, {
+      isBimanual: invisibleParams.isBimanualLoad,
+      loadKg: effectiveLoadForCalc,
+      prop: activeProp3D,
+    });
+    const art = effectiveDestTwinJson.sincronizacion_avatar_3d.articulaciones_principales;
+    return {
+      subTitle: `2. Destino de Carga (t=${effectiveDestTwinJson.fotograma_critico_segundo.toFixed(2)}s)`,
+      scoreBadge: `H=${hDestCm} cm · V=${vDestCm} cm`,
+      focusZone: 'full_body',
+      cameraPreset,
+      pose,
+      angleArcs: [
+        {
+          joint: 'l5s1',
+          refType: 'vertical_up',
+          toJoint: 'c7',
+          label: `Tronco ${art.tronco.flexion_extension_grados}°`,
+        },
+        {
+          joint: 'shoulderR',
+          refType: 'trunk_axis',
+          toJoint: 'elbowR',
+          label: `Hombro ${art.hombro_derecho.flexion_anteroposterior_grados}°`,
+        },
+      ],
+    };
+  }, [
+    effectiveDestTwinJson,
+    invisibleParams.isBimanualLoad,
+    effectiveLoadForCalc,
+    activeProp3D,
+    hDestCm,
+    vDestCm,
+    cameraPreset,
+  ]);
+
+  // Renderizado simultáneo de ambos Avatares 3D (Toma de Carga y Destino)
+  useEffect(() => {
+    if (originAvatarCanvasRef.current) {
+      if (show3DJointGizmos && !isPlayingCycle3D && activePostureRole === 'origin') {
+        projectedOriginJointsRef.current = renderInteractiveFreeAvatarToCanvas(
+          originAvatarSpec,
+          originAvatarCanvasRef.current,
+          500,
+          430,
+          orbit,
+          2,
+          { showGizmos: true, selectedJoint: selectedJoint3D, hoveredJoint: hoveredJoint3D },
+        );
+      } else {
+        renderInteractivePose3DToCanvas(
+          originAvatarSpec,
+          originAvatarCanvasRef.current,
+          500,
+          430,
+          orbit,
+          2,
+        );
+        projectedOriginJointsRef.current = null;
+      }
+    }
+
+    if (destAvatarCanvasRef.current) {
+      if (show3DJointGizmos && !isPlayingCycle3D && activePostureRole === 'dest') {
+        projectedDestJointsRef.current = renderInteractiveFreeAvatarToCanvas(
+          destAvatarSpec,
+          destAvatarCanvasRef.current,
+          500,
+          430,
+          orbit,
+          2,
+          { showGizmos: true, selectedJoint: selectedJoint3D, hoveredJoint: hoveredJoint3D },
+        );
+      } else {
+        renderInteractivePose3DToCanvas(
+          destAvatarSpec,
+          destAvatarCanvasRef.current,
+          500,
+          430,
+          orbit,
+          2,
+        );
+        projectedDestJointsRef.current = null;
+      }
+    }
+  }, [
+    originAvatarSpec,
+    destAvatarSpec,
+    orbit,
+    avatarReady,
+    show3DJointGizmos,
+    selectedJoint3D,
+    hoveredJoint3D,
+    isPlayingCycle3D,
+    activePostureRole,
+  ]);
+
+  const missingInvisibleList = useMemo(
+    () => detectMissingInvisibleParameters(invisibleParams),
+    [invisibleParams],
+  );
+
+  // Compresión L4/L5 en Toma y en Destino (adoptamos la más exigente para el resumen superior)
+  const originBiomechReport = useMemo(
+    () =>
+      computeErgonizaStaticBiomechanics(effectiveOriginTwinJson, {
+        ...invisibleParams,
+        loadMassKg: effectiveLoadForCalc,
+      }),
+    [effectiveOriginTwinJson, invisibleParams, effectiveLoadForCalc],
+  );
+
+  const destBiomechReport = useMemo(
+    () =>
+      computeErgonizaStaticBiomechanics(effectiveDestTwinJson, {
+        ...invisibleParams,
+        horizontalReachCm: hDestCm,
+        loadMassKg: effectiveLoadForCalc,
+      }),
+    [effectiveDestTwinJson, invisibleParams, hDestCm, effectiveLoadForCalc],
+  );
+
+  const ergonizaBiomechReport =
+    destBiomechReport.l4l5CompressionN > originBiomechReport.l4l5CompressionN
+      ? destBiomechReport
+      : originBiomechReport;
+
+  const nioshDataPreview = useMemo<NioshData>(
+    () => ({
+      loadWeightKg: effectiveLoadForCalc,
+      evaluateDestination: true,
+      hOriginCm: invisibleParams.horizontalReachCm,
+      hDestCm,
+      vOriginCm,
+      vDestCm,
+      asymmetryOriginDeg: Math.round(
+        Math.abs(
+          effectiveOriginTwinJson.sincronizacion_avatar_3d.articulaciones_principales.tronco
+            .rotacion_axial_grados,
+        ),
+      ),
+      asymmetryDestDeg: Math.round(
+        Math.abs(
+          effectiveDestTwinJson.sincronizacion_avatar_3d.articulaciones_principales.tronco
+            .rotacion_axial_grados,
+        ),
+      ),
+      frequencyLiftsPerMin: invisibleParams.frequencyPerMin,
+      durationCategory:
+        invisibleParams.dutyCyclePercent <= 15
+          ? 'le_1h'
+          : invisibleParams.dutyCyclePercent <= 35
+            ? '1_to_2h'
+            : '2_to_8h',
+      couplingQuality: invisibleParams.gripCoupling,
+    }),
+    [
+      effectiveLoadForCalc,
+      invisibleParams.horizontalReachCm,
+      invisibleParams.frequencyPerMin,
+      invisibleParams.dutyCyclePercent,
+      invisibleParams.gripCoupling,
+      hDestCm,
+      vOriginCm,
+      vDestCm,
+      effectiveOriginTwinJson,
+      effectiveDestTwinJson,
+    ],
+  );
+
+  const nioshEval = useMemo(() => evaluateNiosh(nioshDataPreview), [nioshDataPreview]);
+
+  // REBA toma la postura más comprometida entre Toma y Destino
+  const rebaOriginPayload = useMemo(
+    () => buildRebaPayloadFromTwin(effectiveOriginTwinJson, effectiveLoadForCalc, invisibleParams.gripCoupling),
+    [effectiveOriginTwinJson, effectiveLoadForCalc, invisibleParams.gripCoupling],
+  );
+  const rebaDestPayload = useMemo(
+    () => buildRebaPayloadFromTwin(effectiveDestTwinJson, effectiveLoadForCalc, invisibleParams.gripCoupling),
+    [effectiveDestTwinJson, effectiveLoadForCalc, invisibleParams.gripCoupling],
+  );
+  const rebaEvalOrigin = useMemo(() => evaluateReba(rebaOriginPayload), [rebaOriginPayload]);
+  const rebaEvalDest = useMemo(() => evaluateReba(rebaDestPayload), [rebaDestPayload]);
+  const rebaOriginScore = parseInt(rebaEvalOrigin.primaryScoreText, 10) || 0;
+  const rebaDestScore = parseInt(rebaEvalDest.primaryScoreText, 10) || 0;
+  const rebaDataPreview = rebaDestScore > rebaOriginScore ? rebaDestPayload : rebaOriginPayload;
+  const rebaEval = rebaDestScore > rebaOriginScore ? rebaEvalDest : rebaEvalOrigin;
+
+  // Payloads automáticos para Movimientos Repetitivos (OCRA Check List, JSI y NAM Res. 295/03)
+  const ocraChecklistPreview = useMemo<OcraChecklistData>(() => {
+    const freqScore = (apm: number) =>
+      apm > 65 ? 10 : apm > 55 ? 8 : apm > 45 ? 6 : apm > 35 ? 3 : apm > 22 ? 1 : 0;
+    const forceScore =
+      borgPeakScore >= 7 ? 12 : borgPeakScore >= 5 ? 6 : borgPeakScore >= 3 ? 4 : borgPeakScore >= 2 ? 2 : 0;
+    const shScore =
+      repetitiveMetrics.pctShoulderHigh >= 50
+        ? 12
+        : repetitiveMetrics.pctShoulderHigh >= 30
+          ? 6
+          : repetitiveMetrics.pctShoulderHigh >= 10
+            ? 2
+            : 0;
+    const elScore =
+      repetitiveMetrics.pctElbowWide >= 80
+        ? 8
+        : repetitiveMetrics.pctElbowWide >= 50
+          ? 4
+          : repetitiveMetrics.pctElbowWide >= 30
+            ? 2
+            : 0;
+    const wrScore =
+      repetitiveMetrics.pctWristAwkward >= 80
+        ? 8
+        : repetitiveMetrics.pctWristAwkward >= 50
+          ? 4
+          : repetitiveMetrics.pctWristAwkward >= 30
+            ? 2
+            : 0;
+    const gripScore =
+      distalGripType === 'pinch_80'
+        ? 8
+        : distalGripType === 'pinch_50'
+          ? 4
+          : distalGripType === 'pinch_33'
+            ? 2
+            : 0;
+
+    return {
+      mode: 'clasico_bilateral',
+      actionsPerCycle: Math.max(1, repetitiveMetrics.technicalActionsCountR),
+      cycleDurationSec: Math.max(1, repetitiveMetrics.cycleDurationSec),
+      netRepetitiveMinutes,
+      coefRecovery: unrecoveredHours >= 4 ? 0.6 : unrecoveredHours >= 2 ? 0.8 : 1.0,
+      coefFrequency: repetitiveMetrics.actionsPerMinR > 40 ? 0.6 : 0.8,
+      coefForce: borgPeakScore >= 5 ? 0.35 : borgPeakScore >= 3 ? 0.65 : 0.85,
+      coefPosture: shScore >= 6 || wrScore >= 4 ? 0.7 : 0.85,
+      coefComplementary: 1.0,
+      coefStereotypy: repetitiveMetrics.cycleDurationSec < 8 ? 0.7 : 0.85,
+      coefDuration: netRepetitiveMinutes >= 360 ? 0.7 : 0.8,
+      shiftMinutes: 480,
+      officialBreaksMinutes: 30,
+      lunchBreakMinutes: 30,
+      nonRepetitiveMinutes: Math.max(0, 420 - netRepetitiveMinutes),
+      recoveryFactorScore: unrecoveredHours,
+      right: {
+        frequencyFactor: freqScore(repetitiveMetrics.actionsPerMinR),
+        forceFactor: forceScore,
+        shoulderScore: shScore,
+        elbowScore: elScore,
+        wristScore: wrScore,
+        handGripScore: gripScore,
+        stereotypyScore: repetitiveMetrics.recommendedStereotypyScore,
+        complementaryPhysicalScore: 0,
+        complementaryOrganizationalScore: 1,
+      },
+      left: {
+        frequencyFactor: freqScore(repetitiveMetrics.actionsPerMinL),
+        forceFactor: Math.max(0, forceScore - 2),
+        shoulderScore: Math.max(0, shScore === 12 ? 6 : shScore === 6 ? 2 : 0),
+        elbowScore: elScore,
+        wristScore: wrScore,
+        handGripScore: gripScore,
+        stereotypyScore: repetitiveMetrics.recommendedStereotypyScore,
+        complementaryPhysicalScore: 0,
+        complementaryOrganizationalScore: 1,
+      },
+    };
+  }, [repetitiveMetrics, borgPeakScore, distalGripType, netRepetitiveMinutes, unrecoveredHours]);
+
+  const jsiPreview = useMemo<JsiData>(() => {
+    const ie: 1 | 2 | 3 | 4 | 5 =
+      borgPeakScore >= 7 ? 5 : borgPeakScore >= 5 ? 4 : borgPeakScore >= 3 ? 3 : borgPeakScore >= 2 ? 2 : 1;
+    const pm: 1 | 2 | 3 | 4 | 5 =
+      repetitiveMetrics.pctWristAwkward >= 65
+        ? 5
+        : repetitiveMetrics.pctWristAwkward >= 45
+          ? 4
+          : repetitiveMetrics.pctWristAwkward >= 25
+            ? 3
+            : 2;
+    return {
+      ieIntensity: ie,
+      effortDurationSec: Math.max(0.5, repetitiveMetrics.effortDurationSec),
+      cycleDurationSec: Math.max(1, repetitiveMetrics.cycleDurationSec),
+      deDurationScore: 3,
+      epmEffortsScore: 3,
+      pmWristPosture: pm,
+      htHoursPerDay: netRepetitiveMinutes >= 240 ? 4 : 3,
+      npSpeedWork: repetitiveMetrics.actionsPerMinR >= 45 ? 4 : 3,
+      autoComputeCycleScores: true,
+    };
+  }, [borgPeakScore, repetitiveMetrics, netRepetitiveMinutes]);
+
+  const namPreview = useMemo<Nam295Data>(() => {
+    const obsSec = Math.max(10, Math.round(repetitiveMetrics.cycleDurationSec * 4));
+    const scaleFactor = obsSec / Math.max(1, repetitiveMetrics.cycleDurationSec);
+    return {
+      right: {
+        effortsCount: Math.max(1, Math.round(repetitiveMetrics.technicalActionsCountR * scaleFactor)),
+        observationPeriodSec: obsSec,
+        effortTimeSec: Math.round(repetitiveMetrics.effortDurationSec * scaleFactor * 10) / 10,
+        borgPeakForce: borgPeakScore,
+      },
+      left: {
+        effortsCount: Math.max(1, Math.round(repetitiveMetrics.technicalActionsCountL * scaleFactor)),
+        observationPeriodSec: obsSec,
+        effortTimeSec: Math.round(repetitiveMetrics.effortDurationSec * 0.85 * scaleFactor * 10) / 10,
+        borgPeakForce: Math.max(1, borgPeakScore - 1),
+      },
+      prolongedAwkwardWrist: repetitiveMetrics.pctWristAwkward >= 35,
+      contactStress: false,
+    };
+  }, [repetitiveMetrics, borgPeakScore]);
+
+  const ocraEvalSummary = useMemo(() => {
+    const t = createNewStudyTab(1, MethodId.OCRA_CHECKLIST);
+    t.payloads[MethodId.OCRA_CHECKLIST] = ocraChecklistPreview;
+    return evaluateStudyTab(t);
+  }, [ocraChecklistPreview]);
+
+  const jsiEvalSummary = useMemo(() => {
+    const t = createNewStudyTab(1, MethodId.JSI);
+    t.payloads[MethodId.JSI] = jsiPreview;
+    return evaluateStudyTab(t);
+  }, [jsiPreview]);
+
+  const namEvalSummary = useMemo(() => {
+    const t = createNewStudyTab(1, MethodId.NAM_295);
+    t.payloads[MethodId.NAM_295] = namPreview;
+    return evaluateStudyTab(t);
+  }, [namPreview]);
+
+  const handleSelectSampleCase = (sampleId: CeneaSampleCaseId) => {
+    const spec =
+      CENEA_SAMPLE_VIDEOS_CATALOG.find((s) => s.id === sampleId) ||
+      CENEA_SAMPLE_VIDEOS_CATALOG[0];
+    setSourceMode('sample');
+    setSelectedSampleId(spec.id);
+    setActiveProp3D(spec.prop);
+    setCameraPreset(spec.cameraPreset);
+    setOrbit(spec.orbit);
+    setVOriginCm(spec.vOriginCm);
+    setVDestCm(spec.vDestCm);
+    setHDestCm(spec.hDestCm);
+    setInvisibleParams((prev) => ({
+      ...prev,
+      loadMassKg: spec.loadWeightKg,
+      frequencyPerMin: spec.frequencyPerMin,
+      horizontalReachCm: spec.hOriginCm,
+      gripCoupling: spec.couplingQuality,
+      userConfirmedInvisibleParams: true,
+    }));
+    setRawOriginTwinJson(
+      buildRoleJsonFromSample(spec, 'origin', {
+        loadMassKg: spec.loadWeightKg,
+        userConfirmedInvisibleParams: true,
+      }),
+    );
+    setRawDestTwinJson(
+      buildRoleJsonFromSample(spec, 'dest', {
+        loadMassKg: spec.loadWeightKg,
+        userConfirmedInvisibleParams: true,
+      }),
+    );
+    setStatusNotice({
+      tone: 'info',
+      text: `Caso cargado: "${spec.title}". Se visualizan simultáneamente la Postura 1 (Toma de Carga) y la Postura 2 (Destino).`,
+    });
+  };
+
+  // Procesamiento del vídeo subido: extrae Toma de Carga + Destino + Métricas de Movimientos Repetitivos
+  const processUploadedVideoFile = async (file: File) => {
+    setIsAnalyzing(true);
+    setSourceMode('upload');
+    setIsPlayingCycle3D(false);
+    setHasEmittedTabs(false);
+    setVideoFileName(file.name);
+    setAnalysisProgressMsg('1/3 · Decodificando vídeo y extrayendo fotogramas de Toma de Carga y Destino...');
+
+    if (videoObjectUrl) URL.revokeObjectURL(videoObjectUrl);
+    let workingUrl = URL.createObjectURL(file);
+
     try {
-      const clampVal = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-      const vO = clampVal(Math.round(editVOrig), 5, 190);
-      const hO = clampVal(Math.round(editHOrig), 15, 80);
-      const vD = clampVal(Math.round(editVDest), 5, 190);
-      const hD = clampVal(Math.round(editHDest), 15, 80);
-      const tO = clampVal(Math.round(editTrunkOrig), -15, 100);
-      const kO = clampVal(Math.round(editKneeOrig), 0, 136);
-      const tD = clampVal(Math.round(editTrunkDest), -15, 100);
-      const kD = clampVal(Math.round(editKneeDest), 0, 136);
+      const videoEl = document.createElement('video');
+      videoEl.src = workingUrl;
+      videoEl.muted = true;
+      videoEl.playsInline = true;
+      videoEl.preload = 'auto';
 
-      const solvedO = solveAvatarLiftPoseForTarget({
-        vCm: vO,
-        hCm: hO,
-        workerHeightCm,
-        trunkFlexHintDeg: tO,
-        kneeFlexHintDeg: kO,
-        loadKg: loadWeightKg,
-        liftStyle: kO >= 70 && tO <= 26 ? 'hygienic_squat' : 'observed',
+      let loadedOk = false;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const timer = window.setTimeout(() => reject(new Error('timeout')), 9000);
+          videoEl.onloadedmetadata = () => {
+            window.clearTimeout(timer);
+            resolve();
+          };
+          videoEl.onerror = () => {
+            window.clearTimeout(timer);
+            reject(new Error('codec'));
+          };
+        });
+        loadedOk = true;
+      } catch {
+        loadedOk = false;
+      }
+
+      if (!loadedOk) {
+        setAnalysisProgressMsg('1/3 · Normalizando formato de cámara (.MOV / HEVC) a MP4 H.264...');
+        const b64 = await fileToBase64(file);
+        const normResp = await fetch('/api/biomech/normalize-video', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fileName: file.name, videoBase64: b64 }),
+        });
+        if (!normResp.ok) {
+          throw new Error('Formato de vídeo no compatible. Utilice MP4 (H.264) o WebM.');
+        }
+        const normJson = await normResp.json();
+        const binStr = atob(String(normJson.mp4Base64 || ''));
+        const bytes = new Uint8Array(binStr.length);
+        for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+        URL.revokeObjectURL(workingUrl);
+        workingUrl = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
+        videoEl.src = workingUrl;
+        await new Promise<void>((resolve, reject) => {
+          const timer = window.setTimeout(() => reject(new Error('Tiempo agotado al leer vídeo.')), 9000);
+          videoEl.onloadedmetadata = () => {
+            window.clearTimeout(timer);
+            resolve();
+          };
+          videoEl.onerror = () => {
+            window.clearTimeout(timer);
+            reject(new Error('No se pudo reproducir el archivo de vídeo.'));
+          };
+        });
+      }
+
+      setVideoObjectUrl(workingUrl);
+      const dur = Number.isFinite(videoEl.duration) && videoEl.duration > 0.1 ? videoEl.duration : 4.0;
+
+      const frameCount = 12;
+      const offCanvas = document.createElement('canvas');
+      const targetW = 640;
+      const aspect =
+        videoEl.videoWidth > 0 && videoEl.videoHeight > 0
+          ? videoEl.videoHeight / videoEl.videoWidth
+          : 0.5625;
+      const targetH = Math.max(240, Math.round(targetW * aspect));
+      offCanvas.width = targetW;
+      offCanvas.height = targetH;
+      const ctx = offCanvas.getContext('2d');
+
+      const frames: ExtractedFramePreview[] = [];
+      for (let i = 0; i < frameCount; i++) {
+        const tSec =
+          frameCount <= 1 ? dur * 0.5 : 0.04 * dur + (i / (frameCount - 1)) * (dur * 0.92);
+        await new Promise<void>((resSeek) => {
+          const tOut = window.setTimeout(resSeek, 400);
+          videoEl.onseeked = () => {
+            window.clearTimeout(tOut);
+            resSeek();
+          };
+          videoEl.currentTime = Math.min(Math.max(0, dur - 0.04), tSec);
+        });
+
+        if (ctx) {
+          ctx.drawImage(videoEl, 0, 0, targetW, targetH);
+          const dataUrl = offCanvas.toDataURL('image/jpeg', 0.82);
+          frames.push({
+            index: i,
+            timeSec: Math.round(tSec * 100) / 100,
+            timestamp: formatTimeSecToTimestamp(tSec),
+            dataUrl,
+            mimeType: 'image/jpeg',
+            dataBase64: dataUrl.split(',')[1] || '',
+          });
+        }
+      }
+      setExtractedFrames(frames);
+
+      // Paso 2A: Escaneo cinemático 3D local (extrae Toma, Destino y métricas de Movimientos Repetitivos)
+      setAnalysisProgressMsg(
+        '2/3 · Extrayendo posturas 3D de Toma de Carga, Destino y frecuencia de acciones repetitivas...',
+      );
+      const localTracking = await trackVideoFrames(videoEl, {
+        maxSamples: 20,
+        verticalCalibrationDeg: 0,
+        invisibleParams: { loadMassKg: invisibleParams.loadMassKg, userConfirmedInvisibleParams: true },
       });
-      const solvedD = solveAvatarLiftPoseForTarget({
-        vCm: vD,
-        hCm: hD,
-        workerHeightCm,
-        trunkFlexHintDeg: tD,
-        kneeFlexHintDeg: kD,
-        loadKg: loadWeightKg,
-        liftStyle: kD >= 70 && tD <= 26 ? 'hygienic_squat' : 'observed',
+
+      // Paso 2B: Calibración multimodal servidor Gemini 3
+      setAnalysisProgressMsg('3/3 · Calibrando cotas H/V de Toma y Destino y sincronizando Avatares 3D...');
+      let serverData: Record<string, any> | null = null;
+      try {
+        const resp = await fetch('/api/biomech/extract-video', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            frames: frames.map((f) => ({
+              index: f.index,
+              timestamp: f.timestamp,
+              timeSec: f.timeSec,
+              mimeType: f.mimeType,
+              dataBase64: f.dataBase64,
+            })),
+            workerHeightCm: invisibleParams.statureCm,
+            videoDurationSec: dur,
+            movementModeHint: 'auto',
+          }),
+        });
+        if (resp.ok) {
+          serverData = await resp.json();
+        }
+      } catch {
+        serverData = null;
+      }
+
+      // Selección de fotograma de Toma de Carga (Origen) y de Destino (siempre distintos cuando hay >=2 frames)
+      let origIdx = Number(serverData?.critical_events?.origen_frame_index ?? -1);
+      let dstIdx = Number(serverData?.critical_events?.destino_frame_index ?? -1);
+
+      if (origIdx < 0 || origIdx >= frames.length) {
+        if (localTracking) {
+          origIdx = frames.reduce(
+            (best, f, idx) =>
+              Math.abs(f.timeSec - localTracking.originKeyframe.timeSec) <
+              Math.abs(frames[best].timeSec - localTracking.originKeyframe.timeSec)
+                ? idx
+                : best,
+            0,
+          );
+        } else {
+          origIdx = 1;
+        }
+      }
+
+      if (dstIdx < 0 || dstIdx >= frames.length || dstIdx === origIdx) {
+        if (localTracking) {
+          dstIdx = frames.reduce(
+            (best, f, idx) =>
+              idx !== origIdx &&
+              Math.abs(f.timeSec - localTracking.destKeyframe.timeSec) <
+                Math.abs(frames[best].timeSec - localTracking.destKeyframe.timeSec)
+                ? idx
+                : best,
+            frames.length - 1,
+          );
+        } else {
+          dstIdx = Math.max(0, frames.length - 2);
+        }
+        if (dstIdx === origIdx && frames.length > 1) {
+          dstIdx = origIdx < frames.length / 2 ? frames.length - 1 : 0;
+        }
+      }
+
+      setOriginFrameIdx(origIdx);
+      setDestFrameIdx(dstIdx);
+
+      const detectedVOrigin = Math.round(
+        Number(
+          serverData?.movement_analysis?.v_origen_cm ??
+            localTracking?.repetitiveMetrics.estimatedVOriginCm ??
+            32,
+        ),
+      );
+      const detectedVDest = Math.round(
+        Number(
+          serverData?.movement_analysis?.v_destino_cm ??
+            localTracking?.repetitiveMetrics.estimatedVDestCm ??
+            106,
+        ),
+      );
+      const detectedHOrigin = Math.round(
+        Number(
+          serverData?.niosh_inputs?.H_cm ??
+            localTracking?.repetitiveMetrics.estimatedHOriginCm ??
+            38,
+        ),
+      );
+      const detectedHDest = Math.round(
+        Number(
+          serverData?.movement_analysis?.h_destino_cm ??
+            localTracking?.repetitiveMetrics.estimatedHDestCm ??
+            35,
+        ),
+      );
+
+      setVOriginCm(detectedVOrigin);
+      setVDestCm(detectedVDest);
+      setHDestCm(detectedHDest);
+      setInvisibleParams((prev) => ({
+        ...prev,
+        horizontalReachCm: detectedHOrigin,
+      }));
+
+      if (localTracking?.repetitiveMetrics) {
+        setRepetitiveMetrics(localTracking.repetitiveMetrics);
+      }
+
+      if (localTracking) {
+        setRawOriginTwinJson({
+          ...localTracking.originDigitalTwin,
+          fotograma_critico_segundo: frames[origIdx]?.timeSec ?? localTracking.originKeyframe.timeSec,
+        });
+        setRawDestTwinJson({
+          ...localTracking.destDigitalTwin,
+          fotograma_critico_segundo: frames[dstIdx]?.timeSec ?? localTracking.destKeyframe.timeSec,
+        });
+      } else if (serverData?.ergoniza_digital_twin) {
+        const srvTwin = serverData.ergoniza_digital_twin as ErgonizaDigitalTwinJson;
+        setRawOriginTwinJson({
+          ...srvTwin,
+          fotograma_critico_segundo: frames[origIdx]?.timeSec ?? 0.8,
+        });
+        setRawDestTwinJson(
+          buildErgonizaDigitalTwinJson({
+            analisisExitoso: true,
+            fotogramaCriticoSegundo: frames[dstIdx]?.timeSec ?? Math.max(1.5, dur * 0.78),
+            condicionesApoyo: 'Bipedestación bilateral en posicionamiento de destino',
+            planoReferencia: srvTwin.sincronizacion_avatar_3d.plano_referencia,
+            articulaciones: {
+              ...srvTwin.sincronizacion_avatar_3d.articulaciones_principales,
+              tronco: {
+                ...srvTwin.sincronizacion_avatar_3d.articulaciones_principales.tronco,
+                flexion_extension_grados: detectedVDest > 110 ? 6 : 16,
+              },
+              hombro_derecho: {
+                ...srvTwin.sincronizacion_avatar_3d.articulaciones_principales.hombro_derecho,
+                flexion_anteroposterior_grados: detectedVDest > 115 ? 88 : 56,
+              },
+              rodilla_derecha: {
+                flexion_extension_grados: detectedVDest < 50 ? 58 : 10,
+              },
+            },
+            invisibleParams,
+          }),
+        );
+      }
+
+      setActiveProp3D('box_load');
+      setOrbit(DEFAULT_ORBIT_OVERRIDE);
+
+      setStatusNotice({
+        tone: 'success',
+        text: `Vídeo procesado: Postura 1 (Toma t=${(frames[origIdx]?.timeSec ?? 0).toFixed(2)} s) y Postura 2 (Destino t=${(frames[dstIdx]?.timeSec ?? 0).toFixed(2)} s) + métricas de Movimientos Repetitivos listas para enviar al informe.`,
       });
+    } catch (err: unknown) {
+      setStatusNotice({
+        tone: 'error',
+        text: err instanceof Error ? err.message : 'No se pudo procesar el archivo de vídeo.',
+      });
+    } finally {
+      setIsAnalyzing(false);
+      setAnalysisProgressMsg('');
+    }
+  };
 
-      const nextOrigFrame = sampledFrames[editOrigFrameIdx];
-      const nextDestFrame = sampledFrames[editDestFrameIdx];
+  // Arrastre de la plomada 0°
+  const handlePlumbPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (!draggingPlumbPart || !frameOverlayRef.current) return;
+    const rect = frameOverlayRef.current.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const nx = Math.max(0.03, Math.min(0.97, (e.clientX - rect.left) / rect.width));
+    const ny = Math.max(0.03, Math.min(0.97, (e.clientY - rect.top) / rect.height));
+    setPlumbAnchor((prev) =>
+      draggingPlumbPart === 'top'
+        ? { ...prev, top: { x: nx, y: Math.min(ny, prev.bottom.y - 0.08) } }
+        : { ...prev, bottom: { x: nx, y: Math.max(ny, prev.top.y + 0.08) } },
+    );
+  };
 
-      const updatedExtracted: ExtractedVideoBiomechJson = {
-        ...emittedBundle.extracted,
-        critical_events: {
-          ...emittedBundle.extracted.critical_events,
-          origen_frame_index: editOrigFrameIdx,
-          destino_frame_index: editDestFrameIdx,
-          origen_timestamp:
-            nextOrigFrame?.timestamp || emittedBundle.extracted.critical_events.origen_timestamp,
-          destino_timestamp:
-            nextDestFrame?.timestamp || emittedBundle.extracted.critical_events.destino_timestamp,
-        },
-        movement_analysis: {
-          direction:
-            vD - vO >= 10
-              ? 'levantamiento_suelo_a_estanteria'
-              : vO - vD >= 10
-                ? 'descenso_altura_a_bajo'
-                : 'traslado_mismo_nivel',
-          v_origen_cm: vO,
-          v_destino_cm: vD,
-          h_origen_cm: hO,
-          h_destino_cm: hD,
-          trajectory_note: describeNioshTrajectory(vO, vD).technicalExplanation,
-        },
-        niosh_inputs: {
-          ...emittedBundle.extracted.niosh_inputs,
-          H_cm: Math.max(hO, hD),
-          V_cm: vO,
-          D_cm: Math.max(5, Math.abs(vD - vO)),
-        },
-        origen_angles_deg: {
-          trunk_flexion: solvedO.trunkFlexionDeg,
-          knee_flexion: solvedO.kneeFlexionDeg,
-          shoulder_flexion: solvedO.shoulderFlexionDeg,
-          right_elbow: solvedO.elbowFlexionDeg,
-          left_elbow: solvedO.elbowFlexionDeg,
-        },
-        destino_angles_deg: {
-          trunk_flexion: solvedD.trunkFlexionDeg,
-          knee_flexion: solvedD.kneeFlexionDeg,
-          shoulder_flexion: solvedD.shoulderFlexionDeg,
-          right_elbow: solvedD.elbowFlexionDeg,
-          left_elbow: solvedD.elbowFlexionDeg,
-        },
-        postural_angles_deg: {
-          trunk_flexion: Math.max(solvedO.trunkFlexionDeg, solvedD.trunkFlexionDeg),
-          knee_flexion: Math.max(solvedO.kneeFlexionDeg, solvedD.kneeFlexionDeg),
-          right_elbow: Math.max(solvedO.elbowFlexionDeg, solvedD.elbowFlexionDeg),
-          left_elbow: Math.max(solvedO.elbowFlexionDeg, solvedD.elbowFlexionDeg),
-        },
+  const findHitJointOnAvatar = useCallback(
+    (role: 'origin' | 'dest', clientX: number, clientY: number): JointKey | null => {
+      const canvas = role === 'origin' ? originAvatarCanvasRef.current : destAvatarCanvasRef.current;
+      const pts = role === 'origin' ? projectedOriginJointsRef.current : projectedDestJointsRef.current;
+      if (!canvas || !pts || !show3DJointGizmos || isPlayingCycle3D || activePostureRole !== role) {
+        return null;
+      }
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
+      const lx = ((clientX - rect.left) / rect.width) * 500;
+      const ly = ((clientY - rect.top) / rect.height) * 430;
+
+      const interactiveList: JointKey[] = [
+        'l5s1',
+        'c7',
+        'shoulderR',
+        'elbowR',
+        'wristR',
+        'hipR',
+        'kneeR',
+      ];
+      let best: JointKey | null = null;
+      let bestDist = 22;
+      for (const jk of interactiveList) {
+        const p = pts[jk];
+        if (!p) continue;
+        const d = Math.hypot(lx - p.x, ly - p.y);
+        if (d < bestDist) {
+          bestDist = d;
+          best = jk;
+        }
+      }
+      return best;
+    },
+    [show3DJointGizmos, isPlayingCycle3D, activePostureRole],
+  );
+
+  const handleAvatarPointerDown = (role: 'origin' | 'dest', e: React.PointerEvent<HTMLCanvasElement>) => {
+    setActivePostureRole(role);
+    const hitJoint = findHitJointOnAvatar(role, e.clientX, e.clientY);
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const targetJson = role === 'origin' ? rawOriginTwinJson : rawDestTwinJson;
+    if (hitJoint) {
+      setSelectedJoint3D(hitJoint);
+      drag3DRef.current = {
+        role,
+        mode: 'joint',
+        joint: hitJoint,
+        startX: e.clientX,
+        startY: e.clientY,
+        startOrbit: { ...orbit },
+        startArt: JSON.parse(
+          JSON.stringify(targetJson.sincronizacion_avatar_3d.articulaciones_principales),
+        ),
       };
-
-      await buildAndEmitStudyBundle({
-        extracted: updatedExtracted,
-        sampledCount: emittedBundle.sampledCount,
-        processingMs: emittedBundle.processingMs,
-        rawOriginCleanUrl: nextOrigFrame?.cleanDataUrl || emittedBundle.rawOriginCleanUrl,
-        rawDestCleanUrl: nextDestFrame?.cleanDataUrl || emittedBundle.rawDestCleanUrl,
-        activeFileName: videoFile?.name || 'secuencia registrada',
-        invertOriginDest: false,
-        triggerPdfDownload: downloadPdfAfter,
-      });
-    } finally {
-      setIsProcessing(false);
-      setProcessingStage('');
+    } else {
+      drag3DRef.current = {
+        role,
+        mode: 'orbit',
+        startX: e.clientX,
+        startY: e.clientY,
+        startOrbit: { ...orbit },
+        startArt: targetJson.sincronizacion_avatar_3d.articulaciones_principales,
+      };
     }
   };
 
-  const handleToggleInvertOriginDest = async () => {
-    if (!emittedBundle || isProcessing) return;
-    setIsProcessing(true);
-    setProcessingStage('Invirtiendo cotas de Origen <-> Destino y recalculando dictamen y semáforo...');
-    try {
-      await buildAndEmitStudyBundle({
-        extracted: emittedBundle.extracted,
-        sampledCount: emittedBundle.sampledCount,
-        processingMs: emittedBundle.processingMs,
-        rawOriginCleanUrl: emittedBundle.rawOriginCleanUrl,
-        rawDestCleanUrl: emittedBundle.rawDestCleanUrl,
-        activeFileName: videoFile?.name || 'secuencia registrada',
-        invertOriginDest: !emittedBundle.invertedCycle,
-        triggerPdfDownload: false,
-      });
-    } finally {
-      setIsProcessing(false);
-      setProcessingStage('');
+  const handleAvatarPointerMove = (role: 'origin' | 'dest', e: React.PointerEvent<HTMLCanvasElement>) => {
+    const st = drag3DRef.current;
+    if (!st) {
+      setHoveredJoint3D(findHitJointOnAvatar(role, e.clientX, e.clientY));
+      return;
     }
-  };
+    const dx = e.clientX - st.startX;
+    const dy = e.clientY - st.startY;
 
-  const runVideoExtractionPipeline = async (overrideFile?: File) => {
-    let video = videoRef.current;
-    if (!video) {
-      setErrorMsg('Seleccione o genere primero un archivo de video de manipulación de carga.');
+    if (st.mode === 'orbit') {
+      setOrbit({
+        azimuthDeg: Math.max(-180, Math.min(180, Math.round(st.startOrbit.azimuthDeg + dx * 0.6))),
+        elevationDeg: Math.max(-55, Math.min(60, Math.round(st.startOrbit.elevationDeg - dy * 0.45))),
+        zoom: st.startOrbit.zoom,
+      });
       return;
     }
 
-    const sourceBlobFile = overrideFile || videoFile || rawUploadedFileRef.current;
-    const activeFileName = sourceBlobFile?.name || 'secuencia registrada';
-    setErrorMsg(null);
-    setIsProcessing(true);
-    const t0 = performance.now();
-
-    try {
-      if (video.readyState < 2) {
-        await new Promise<void>((resolve) => {
-          const done = () => resolve();
-          const t = window.setTimeout(done, 1800);
-          video!.addEventListener(
-            'loadeddata',
-            () => {
-              window.clearTimeout(t);
-              done();
-            },
-            { once: true },
-          );
+    if (st.mode === 'joint' && st.joint) {
+      const setter = st.role === 'origin' ? setRawOriginTwinJson : setRawDestTwinJson;
+      setter((prev) => {
+        const nextArt = sanitizeErgonizaAngles({
+          ...st.startArt,
+          tronco: { ...st.startArt.tronco },
+          hombro_derecho: { ...st.startArt.hombro_derecho },
+          codo_derecho: { ...st.startArt.codo_derecho },
+          cadera_derecha: { ...st.startArt.cadera_derecha },
+          rodilla_derecha: { ...st.startArt.rodilla_derecha },
         });
-      }
 
-      if ((video.videoWidth === 0 || video.error) && rawUploadedFileRef.current && !videoWasNormalized) {
-        setProcessingStage('Compatibilizando pista de video (HEVC/QuickTime -> H.264) para extraer fotogramas...');
-        const ok = await normalizeVideoViaServer(
-          rawUploadedFileRef.current,
-          'Convirtiendo códec de video a H.264 universal antes del análisis...',
-        );
-        if (ok) {
-          await new Promise((r) => window.setTimeout(r, 450));
-          video = videoRef.current;
-          if (video && video.readyState < 2) {
-            await new Promise<void>((resolve) => {
-              const t = window.setTimeout(resolve, 2000);
-              video!.addEventListener(
-                'loadeddata',
-                () => {
-                  window.clearTimeout(t);
-                  resolve();
-                },
-                { once: true },
-              );
-            });
-          }
+        if (st.joint === 'l5s1' || st.joint === 'c7') {
+          nextArt.tronco.flexion_extension_grados = st.startArt.tronco.flexion_extension_grados + dy * 0.45;
+          nextArt.tronco.rotacion_axial_grados = st.startArt.tronco.rotacion_axial_grados + dx * 0.35;
+        } else if (st.joint === 'shoulderR') {
+          nextArt.hombro_derecho.flexion_anteroposterior_grados =
+            st.startArt.hombro_derecho.flexion_anteroposterior_grados - dy * 0.55;
+          nextArt.hombro_derecho.abduccion_aduccion_grados =
+            st.startArt.hombro_derecho.abduccion_aduccion_grados + dx * 0.45;
+        } else if (st.joint === 'elbowR' || st.joint === 'wristR') {
+          nextArt.codo_derecho.flexion_extension_grados =
+            st.startArt.codo_derecho.flexion_extension_grados - dy * 0.6;
+        } else if (st.joint === 'hipR') {
+          nextArt.cadera_derecha.flexion_extension_grados =
+            st.startArt.cadera_derecha.flexion_extension_grados + dy * 0.5;
+        } else if (st.joint === 'kneeR') {
+          nextArt.rodilla_derecha.flexion_extension_grados =
+            st.startArt.rodilla_derecha.flexion_extension_grados + dy * 0.55;
         }
-      }
 
-      if (!video) {
-        throw new Error('El reproductor de video no se encuentra disponible.');
-      }
-
-      video.pause();
-      const rawDur =
-        Number.isFinite(video.duration) && video.duration > 0
-          ? video.duration
-          : knownDurationRef.current ?? 3.4;
-      let safeDuration = Math.max(0.5, Math.min(300, rawDur));
-      setVideoDurationSec(safeDuration);
-
-      // Paso 1: Extracción determinista de fotogramas reales vía FFmpeg en servidor (con respaldo en navegador)
-      const count = Math.max(8, Math.min(24, sampleFrameCount));
-      let collected: SampledFrame[] = [];
-
-      if (sourceBlobFile) {
-        setProcessingStage(
-          `Paso 1/4 · Decodificando ${count} fotogramas reales de alta nitidez desde ${activeFileName}...`,
-        );
-        try {
-          const sampleResp = await fetch('/api/biomech/sample-frames', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/octet-stream',
-              'X-File-Name': encodeURIComponent(activeFileName),
-              'X-Frame-Count': String(count),
-              'X-Fallback-Duration-Sec': String(safeDuration),
-            },
-            body: sourceBlobFile,
-          });
-          if (sampleResp.ok) {
-            const sampleData = (await sampleResp.json()) as {
-              durationSec?: number;
-              frames?: Array<{
-                index: number;
-                timeSec: number;
-                timestamp: string;
-                mimeType: string;
-                dataBase64: string;
-              }>;
-            };
-            if (typeof sampleData.durationSec === 'number' && sampleData.durationSec > 0) {
-              safeDuration = sampleData.durationSec;
-              knownDurationRef.current = safeDuration;
-              setVideoDurationSec(safeDuration);
-            }
-            if (Array.isArray(sampleData.frames) && sampleData.frames.length > 0) {
-              collected = await Promise.all(
-                sampleData.frames.map(async (f, idx) => {
-                  const cleanUrl = `data:${f.mimeType};base64,${f.dataBase64}`;
-                  const previewUrl = await stampBadgeOnImageDataUrl(
-                    cleanUrl,
-                    `TS: ${f.timestamp}`,
-                    420,
-                    'image/jpeg',
-                  );
-                  return {
-                    index: idx,
-                    timestamp: f.timestamp,
-                    timeSec: f.timeSec,
-                    mimeType: f.mimeType,
-                    dataBase64: f.dataBase64,
-                    cleanDataUrl: cleanUrl,
-                    previewUrl,
-                  };
-                }),
-              );
-            }
-          }
-        } catch {
-          // Respaldo transparente a muestreo en elemento <video> si falla la red local
-        }
-      }
-
-      if (collected.length === 0) {
-        for (let i = 0; i < count; i++) {
-          const ratio = count === 1 ? 0.5 : 0.03 + (i / (count - 1)) * 0.94;
-          const targetSec = Number((safeDuration * ratio).toFixed(3));
-          const tsLabel = formatSecondsToTimestamp(targetSec);
-          setProcessingStage(
-            `Paso 1/4 · Muestreando fotograma ${i + 1} de ${count} (${tsLabel} de ${safeDuration.toFixed(1)} s)...`,
-          );
-          await seekVideoElement(video, targetSec);
-          const cleanUrl = captureVideoFrameDataUrl(video, tsLabel, 840, 'image/jpeg', false);
-          const previewUrl = captureVideoFrameDataUrl(video, tsLabel, 480, 'image/jpeg', true);
-          const base64 = cleanUrl.split(',')[1] || '';
-          if (base64) {
-            collected.push({
-              index: collected.length,
-              timestamp: tsLabel,
-              timeSec: targetSec,
-              mimeType: 'image/jpeg',
-              dataBase64: base64,
-              cleanDataUrl: cleanUrl,
-              previewUrl,
-            });
-          }
-        }
-      }
-
-      if (collected.length === 0) {
-        throw new Error('No se pudieron extraer fotogramas válidos del archivo de video.');
-      }
-      setSampledFrames(collected);
-
-      // Paso 2: Selección IA de fotogramas útiles (Origen vs Destino) y medición de ángulos por postura
-      // Submuestrear hasta 12 fotogramas compactos (~448px JPEG) conservando su índice exacto en `collected`
-      // para evitar payloads pesados que corten la conexión o generen timeouts en el Paso 2.
-      setProcessingStage(
-        'Paso 2/4 · Analizando secuencia biomecánica (Origen / Destino) y calibrando ángulos articulares...',
-      );
-
-      const maxAiFrames = 12;
-      const aiIndices: number[] = [];
-      if (collected.length <= maxAiFrames) {
-        for (let i = 0; i < collected.length; i++) aiIndices.push(i);
-      } else {
-        for (let i = 0; i < maxAiFrames; i++) {
-          const mappedIdx = Math.min(
-            collected.length - 1,
-            Math.round((i * (collected.length - 1)) / (maxAiFrames - 1)),
-          );
-          aiIndices.push(mappedIdx);
-        }
-      }
-
-      const compactAiFrames = await Promise.all(
-        aiIndices.map(async (origIdx, slotIdx) => {
-          const f = collected[origIdx];
-          const compactB64 = await compactFrameForAiPayload(f.cleanDataUrl, f.dataBase64, 448, 0.74);
-          return {
-            origIdx,
-            payload: {
-              index: slotIdx,
-              timeSec: f.timeSec,
-              timestamp: f.timestamp,
-              mimeType: 'image/jpeg',
-              dataBase64: compactB64,
-            },
-          };
-        }),
-      );
-
-      const postExtractRequest = async (
-        frameItems: typeof compactAiFrames,
-        timeoutMs: number,
-      ): Promise<{ extracted: ExtractedVideoBiomechJson; indexMap: number[] }> => {
-        const ctrl = new AbortController();
-        const timer = window.setTimeout(() => ctrl.abort(), timeoutMs);
-        try {
-          const resp = await fetch('/api/biomech/extract-video', {
-        body: JSON.stringify({
-              frames: frameItems.map((item, idx) => ({ ...item.payload, index: idx })),
-              workerHeightCm,
-              videoDurationSec: safeDuration,
-              movementModeHint,
-              customSystemInstruction: systemInstruction,
-              // --- INYECCIÓN DE DATOS REALES MEDIAPIPE ---
-              postural_angles_deg: (window as any).lastCalculatedAngles || { trunk_flexion: 46.0, knee_flexion: 42.0, right_elbow: 76.0, left_elbow: 72.0 },
-              niosh_inputs: (window as any).lastNioshInputs || { H_cm: 38.0, V_cm: 36.0, D_cm: 82.0, A_deg: 10.0 },
-              critical_events: (window as any).lastCriticalEvents || { origen_timestamp: '00:00.600', destino_timestamp: '00:02.800' },
-            }),
-          });
-          const rawText = await resp.text();
-          let parsedBody: Record<string, unknown> | null = null;
-          try {
-            parsedBody = JSON.parse(rawText) as Record<string, unknown>;
-          } catch {
-            throw new Error(
-              `Respuesta inválida en Paso 2 (HTTP ${resp.status}). Intente nuevamente.`,
-            );
-          }
-          if (!resp.ok) {
-            throw new Error(
-              typeof parsedBody?.error === 'string'
-                ? parsedBody.error
-                : `Error del servidor en Paso 2 (HTTP ${resp.status})`,
-            );
-          }
-          return {
-            extracted: parsedBody as unknown as ExtractedVideoBiomechJson,
-            indexMap: frameItems.map((it) => it.origIdx),
-          };
-        } finally {
-          window.clearTimeout(timer);
-        }
-      };
-
-      let step2Result: { extracted: ExtractedVideoBiomechJson; indexMap: number[] };
-      try {
-        step2Result = await postExtractRequest(compactAiFrames, 38000);
-      } catch (firstStep2Err) {
-        setProcessingStage(
-          'Paso 2/4 · Reintentando extracción biomecánica con secuencia optimizada de alta velocidad...',
-        );
-        const lighterFrames =
-          compactAiFrames.length <= 8
-            ? compactAiFrames
-            : Array.from({ length: 8 }, (_, k) =>
-                compactAiFrames[
-                  Math.min(
-                    compactAiFrames.length - 1,
-                    Math.round((k * (compactAiFrames.length - 1)) / 7),
-                  )
-                ],
-              );
-        try {
-          step2Result = await postExtractRequest(lighterFrames, 35000);
-        } catch {
-          throw firstStep2Err;
-        }
-      }
-
-      const extracted = step2Result.extracted;
-      const aiIndexMap = step2Result.indexMap;
-      if (
-        typeof extracted.critical_events?.origen_frame_index === 'number' &&
-        aiIndexMap[extracted.critical_events.origen_frame_index] !== undefined
-      ) {
-        extracted.critical_events.origen_frame_index =
-          aiIndexMap[extracted.critical_events.origen_frame_index];
-      }
-      if (
-        typeof extracted.critical_events?.destino_frame_index === 'number' &&
-        aiIndexMap[extracted.critical_events.destino_frame_index] !== undefined
-      ) {
-        extracted.critical_events.destino_frame_index =
-          aiIndexMap[extracted.critical_events.destino_frame_index];
-      }
-      if (
-        typeof extracted.critical_events?.critico_frame_index === 'number' &&
-        aiIndexMap[extracted.critical_events.critico_frame_index] !== undefined
-      ) {
-        extracted.critical_events.critico_frame_index =
-          aiIndexMap[extracted.critical_events.critico_frame_index];
-      }
-
-      // Paso 3: Vincular exactamente los fotogramas verificados de Origen y Destino (garantizando imágenes distintas)
-      const findClosestSampleIdx = (ts: string, fallbackRatio: number): number => {
-        const targetSec = parseTimestampToSeconds(ts, safeDuration);
-        let bestIdx = Math.min(
-          collected.length - 1,
-          Math.max(0, Math.round((collected.length - 1) * fallbackRatio)),
-        );
-        let bestDiff = Infinity;
-        collected.forEach((f, idx) => {
-          const d = Math.abs(f.timeSec - targetSec);
-          if (d < bestDiff) {
-            bestDiff = d;
-            bestIdx = idx;
-          }
-        });
-        return bestIdx;
-      };
-
-      let origIdx =
-        typeof extracted.critical_events.origen_frame_index === 'number' &&
-        extracted.critical_events.origen_frame_index >= 0 &&
-        extracted.critical_events.origen_frame_index < collected.length
-          ? extracted.critical_events.origen_frame_index
-          : findClosestSampleIdx(extracted.critical_events.origen_timestamp, 0.14);
-
-      let destIdx =
-        typeof extracted.critical_events.destino_frame_index === 'number' &&
-        extracted.critical_events.destino_frame_index >= 0 &&
-        extracted.critical_events.destino_frame_index < collected.length
-          ? extracted.critical_events.destino_frame_index
-          : findClosestSampleIdx(extracted.critical_events.destino_timestamp, 0.88);
-
-      if (collected.length >= 2 && origIdx === destIdx) {
-        origIdx = Math.max(0, Math.round((collected.length - 1) * 0.14));
-        destIdx = Math.min(collected.length - 1, Math.max(origIdx + 1, Math.round((collected.length - 1) * 0.88)));
-      }
-
-      // Si dos fotogramas elegidos fueran idénticos byte a byte (pausa estática), buscar el fotograma distinto más representativo
-      if (
-        collected.length >= 2 &&
-        collected[origIdx].dataBase64 === collected[destIdx].dataBase64
-      ) {
-        for (let k = collected.length - 1; k >= 0; k--) {
-          if (collected[k].dataBase64 !== collected[origIdx].dataBase64) {
-            destIdx = k;
-            break;
-          }
-        }
-      }
-
-      extracted.critical_events.origen_frame_index = origIdx;
-      extracted.critical_events.destino_frame_index = destIdx;
-      extracted.critical_events.origen_timestamp = collected[origIdx].timestamp;
-      extracted.critical_events.destino_timestamp = collected[destIdx].timestamp;
-
-      setProcessingStage(
-        `Paso 3/4 · Vinculando fotograma Origen (#${origIdx + 1} · ${collected[origIdx].timestamp}) y Destino (#${destIdx + 1} · ${collected[destIdx].timestamp}) con reconstrucciones 3D...`,
-      );
-
-      const rawOriginCleanUrl = collected[origIdx].cleanDataUrl;
-      const rawDestCleanUrl = collected[destIdx].cleanDataUrl;
-
-      // Paso 4: Integrar pestañas, calcular semáforo de alertas y emitir Informe PDF
-      setProcessingStage(
-        autoEmitPdfOnFinish
-          ? 'Paso 4/4 · Evaluando Semáforo de Riesgo y emitiendo Informe Técnico PDF...'
-          : 'Paso 4/4 · Integrando pestañas y presentando Semáforo e Informe Técnico en pantalla...',
-      );
-
-      const elapsed = Math.round(performance.now() - t0);
-      await buildAndEmitStudyBundle({
-        extracted,
-        sampledCount: collected.length,
-        processingMs: elapsed,
-        rawOriginCleanUrl,
-        rawDestCleanUrl,
-        activeFileName,
-        invertOriginDest: false,
-        triggerPdfDownload: autoEmitPdfOnFinish,
+        return {
+          ...prev,
+          sincronizacion_avatar_3d: {
+            ...prev.sincronizacion_avatar_3d,
+            articulaciones_principales: sanitizeErgonizaAngles(nextArt),
+          },
+        };
       });
-    } catch (err) {
-      setErrorMsg(
-        err instanceof Error
-          ? err.message
-          : 'Ocurrió un error al procesar el archivo de video.',
-      );
-    } finally {
-      setIsProcessing(false);
-      setProcessingStage('');
     }
   };
 
-  const handleCopyJson = async () => {
-    if (!emittedBundle) return;
+  const handleAvatarPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    drag3DRef.current = null;
     try {
-      await navigator.clipboard.writeText(JSON.stringify(emittedBundle.extracted, null, 2));
-      setCopiedJson(true);
-      window.setTimeout(() => setCopiedJson(false), 2000);
+      e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {
-      // Ignore clipboard permission restrictions
+      // Ignore
     }
   };
 
-  const handleJumpVideoToTimestamp = (ts: string) => {
-    const video = videoRef.current;
-    if (!video) return;
-    const sec = parseTimestampToSeconds(ts, videoDurationSec || video.duration || 5);
-    void seekVideoElement(video, sec);
+  const formattedStrictJsonString = useMemo(
+    () => JSON.stringify(activeEffectiveTwinJson, null, 2),
+    [activeEffectiveTwinJson],
+  );
+
+  const handleCopyStrictJson = async () => {
+    try {
+      await navigator.clipboard.writeText(formattedStrictJsonString);
+      setCopiedJsonBadge(true);
+      window.setTimeout(() => setCopiedJsonBadge(false), 2200);
+    } catch {
+      setStatusNotice({
+        tone: 'info',
+        text: 'Seleccione el bloque JSON para copiarlo manualmente.',
+      });
+    }
   };
+
+  const handleDownloadStrictJson = () => {
+    const blob = new Blob([formattedStrictJsonString], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `gemelo_digital_${activePostureRole}_${Math.round(activeEffectiveTwinJson.fotograma_critico_segundo * 10)}ds.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleApplyEditedJson = () => {
+    try {
+      const parsed = JSON.parse(jsonDraftText) as Partial<ErgonizaDigitalTwinJson>;
+      if (!parsed.sincronizacion_avatar_3d?.articulaciones_principales) {
+        throw new Error('El JSON debe contener "sincronizacion_avatar_3d.articulaciones_principales".');
+      }
+      const setter = activePostureRole === 'origin' ? setRawOriginTwinJson : setRawDestTwinJson;
+      setter({
+        analisis_exitoso: parsed.analisis_exitoso !== false,
+        fotograma_critico_segundo: Number(parsed.fotograma_critico_segundo ?? 0),
+        condiciones_apoyo_detectadas:
+          parsed.condiciones_apoyo_detectadas || 'Bipedestación bilateral',
+        sincronizacion_avatar_3d: {
+          plano_referencia: parsed.sincronizacion_avatar_3d.plano_referencia || 'Sagital',
+          articulaciones_principales: sanitizeErgonizaAngles(
+            parsed.sincronizacion_avatar_3d.articulaciones_principales,
+          ),
+        },
+        datos_faltantes_requeridos: Array.isArray(parsed.datos_faltantes_requeridos)
+          ? parsed.datos_faltantes_requeridos
+          : activeEffectiveTwinJson.datos_faltantes_requeridos,
+      });
+      setJsonEditorOpen(false);
+      setStatusNotice({
+        tone: 'success',
+        text: `JSON aplicado a la postura de ${activePostureRole === 'origin' ? 'Toma de Carga' : 'Destino'}.`,
+      });
+    } catch (err: unknown) {
+      setStatusNotice({
+        tone: 'error',
+        text: err instanceof Error ? err.message : 'JSON inválido.',
+      });
+    }
+  };
+
+  // Emitir todas las pestañas seleccionadas (NIOSH, REBA, OCRA Check List, JSI, NAM 295) CON FOTOS REALES + AVATAR 3D EXACTO
+  const handleEmitCompleteEvaluation = async (autoDownloadPdf: boolean) => {
+    if (invisibleParams.loadMassKg === null || !invisibleParams.userConfirmedInvisibleParams) {
+      setInvisibleParams((p) => ({
+        ...p,
+        loadMassKg: p.loadMassKg ?? 15,
+        userConfirmedInvisibleParams: true,
+      }));
+    }
+
+    setIsEmittingReport(true);
+    try {
+      await ensureAvatarGlbLoaded();
+
+      const origArt = effectiveOriginTwinJson.sincronizacion_avatar_3d.articulaciones_principales;
+      const destArt = effectiveDestTwinJson.sincronizacion_avatar_3d.articulaciones_principales;
+
+      const origAvatarJpeg = await renderSinglePanelAvatarJpeg(
+        originAvatarSpec,
+        `RÉPLICA AVATAR 3D · 1. TOMA DE CARGA (ORIGEN · H=${invisibleParams.horizontalReachCm} cm · V=${vOriginCm} cm)`,
+        `Tronco ${origArt.tronco.flexion_extension_grados}° | Hombro ${origArt.hombro_derecho.flexion_anteroposterior_grados}° | Codo ${origArt.codo_derecho.flexion_extension_grados}° | Cadera ${origArt.cadera_derecha.flexion_extension_grados}° | Rodilla ${origArt.rodilla_derecha.flexion_extension_grados}°`,
+      );
+
+      const destAvatarJpeg = await renderSinglePanelAvatarJpeg(
+        destAvatarSpec,
+        `RÉPLICA AVATAR 3D · 2. DESTINO DE CARGA (H=${hDestCm} cm · V=${vDestCm} cm)`,
+        `Tronco ${destArt.tronco.flexion_extension_grados}° | Hombro ${destArt.hombro_derecho.flexion_anteroposterior_grados}° | Codo ${destArt.codo_derecho.flexion_extension_grados}° | Cadera ${destArt.cadera_derecha.flexion_extension_grados}° | Rodilla ${destArt.rodilla_derecha.flexion_extension_grados}°`,
+      );
+
+      const photos: StudyPhoto[] = [];
+      const origRealFrame = sourceMode === 'upload' ? extractedFrames[originFrameIdx] : null;
+      const destRealFrame = sourceMode === 'upload' ? extractedFrames[destFrameIdx] : null;
+
+      if (origRealFrame) {
+        const opOrigJpeg = await renderAnnotatedOperatorFrameJpeg(
+          origRealFrame.dataUrl,
+          `OPERARIO REAL · 1. TOMA DE CARGA (t = ${origRealFrame.timeSec.toFixed(2)} s)`,
+          [
+            `H=${invisibleParams.horizontalReachCm} cm`,
+            `V=${vOriginCm} cm`,
+            `Tronco ${origArt.tronco.flexion_extension_grados}°`,
+            `Rodilla ${origArt.rodilla_derecha.flexion_extension_grados}°`,
+          ],
+        );
+        photos.push({
+          id: `vid-real-orig-${Date.now()}`,
+          name: `Operario Real — Toma de Carga (${origRealFrame.timestamp})`,
+          dataUrl: opOrigJpeg,
+          annotatedDataUrl: opOrigJpeg,
+          caption: `Fotograma real del operario en Toma de Carga (t = ${origRealFrame.timeSec.toFixed(2)} s · H=${invisibleParams.horizontalReachCm} cm, V=${vOriginCm} cm)`,
+          annotations: makeAngleAnnotationsFromTwin(effectiveOriginTwinJson),
+        });
+      }
+
+      photos.push({
+        id: `vid-avatar-orig-${Date.now() + 1}`,
+        name: 'Réplica Avatar 3D — 1. Toma de Carga (Origen)',
+        dataUrl: origAvatarJpeg,
+        annotatedDataUrl: origAvatarJpeg,
+        caption: `Réplica Avatar 3D en Toma de Carga · Compresión L4/L5 = ${originBiomechReport.l4l5CompressionN} N`,
+        annotations: makeAngleAnnotationsFromTwin(effectiveOriginTwinJson),
+      });
+
+      if (destRealFrame) {
+        const opDestJpeg = await renderAnnotatedOperatorFrameJpeg(
+          destRealFrame.dataUrl,
+          `OPERARIO REAL · 2. DESTINO DE CARGA (t = ${destRealFrame.timeSec.toFixed(2)} s)`,
+          [
+            `H=${hDestCm} cm`,
+            `V=${vDestCm} cm`,
+            `Tronco ${destArt.tronco.flexion_extension_grados}°`,
+            `Hombro ${destArt.hombro_derecho.flexion_anteroposterior_grados}°`,
+          ],
+        );
+        photos.push({
+          id: `vid-real-dest-${Date.now() + 2}`,
+          name: `Operario Real — Destino de Carga (${destRealFrame.timestamp})`,
+          dataUrl: opDestJpeg,
+          annotatedDataUrl: opDestJpeg,
+          caption: `Fotograma real del operario en Destino de Carga (t = ${destRealFrame.timeSec.toFixed(2)} s · H=${hDestCm} cm, V=${vDestCm} cm)`,
+          annotations: makeAngleAnnotationsFromTwin(effectiveDestTwinJson),
+        });
+      }
+
+      photos.push({
+        id: `vid-avatar-dest-${Date.now() + 3}`,
+        name: 'Réplica Avatar 3D — 2. Destino de Carga',
+        dataUrl: destAvatarJpeg,
+        annotatedDataUrl: destAvatarJpeg,
+        caption: `Réplica Avatar 3D en Destino de Carga · Compresión L4/L5 = ${destBiomechReport.l4l5CompressionN} N`,
+        annotations: makeAngleAnnotationsFromTwin(effectiveDestTwinJson),
+      });
+
+      const taskTitle =
+        sourceMode === 'upload' && videoFileName
+          ? `Vídeo (${videoFileName}) · Toma V=${vOriginCm}cm → Destino V=${vDestCm}cm`
+          : selectedSample.title;
+
+      const obsText =
+        `${ergonizaBiomechReport.technicalSummary}\n` +
+        `• Postura 1 — Toma de Carga (Origen): H=${invisibleParams.horizontalReachCm} cm, V=${vOriginCm} cm, Tronco ${origArt.tronco.flexion_extension_grados}°, Hombro ${origArt.hombro_derecho.flexion_anteroposterior_grados}°, Codo ${origArt.codo_derecho.flexion_extension_grados}°, Rodilla ${origArt.rodilla_derecha.flexion_extension_grados}° (L4/L5 = ${originBiomechReport.l4l5CompressionN} N).\n` +
+        `• Postura 2 — Destino de Carga: H=${hDestCm} cm, V=${vDestCm} cm, Tronco ${destArt.tronco.flexion_extension_grados}°, Hombro ${destArt.hombro_derecho.flexion_anteroposterior_grados}°, Codo ${destArt.codo_derecho.flexion_extension_grados}°, Rodilla ${destArt.rodilla_derecha.flexion_extension_grados}° (L4/L5 = ${destBiomechReport.l4l5CompressionN} N).\n` +
+        `• Ciclo repetitivo medido: T=${repetitiveMetrics.cycleDurationSec} s · ${repetitiveMetrics.actionsPerMinR} acc/min (Der) / ${repetitiveMetrics.actionsPerMinL} acc/min (Izq) · Borg=${borgPeakScore}.`;
+
+      const nioshTab = createNewStudyTab(1, MethodId.NIOSH, taskTitle);
+      nioshTab.id = 'tab-video-ia-niosh';
+      nioshTab.tabLabel = 'Vídeo IA · NIOSH (Toma y Destino)';
+      nioshTab.payloads[MethodId.NIOSH] = { ...nioshDataPreview };
+      nioshTab.photos = photos;
+      nioshTab.instrumentsUsed =
+        'Motor Computacional de Visión 3D + Gemelo Digital Dual (Toma de Carga y Destino)';
+      nioshTab.evaluatorObservations = obsText;
+
+      const rebaTab = createNewStudyTab(2, MethodId.REBA, `${taskTitle} (Postura Crítica)`);
+      rebaTab.id = 'tab-video-ia-reba';
+      rebaTab.tabLabel = 'Vídeo IA · REBA 3D';
+      rebaTab.payloads[MethodId.REBA] = { ...rebaDataPreview };
+      rebaTab.photos = photos;
+      rebaTab.instrumentsUsed =
+        'Gemelo Digital Biomecánico 3D con anclaje gravitatorio vertical (0°)';
+      rebaTab.evaluatorObservations = obsText;
+
+      const emittedTabs: StudyTab[] = [];
+      if (emitNiosh) emittedTabs.push(nioshTab);
+      if (emitReba) emittedTabs.push(rebaTab);
+
+      if (emitOcraChecklist) {
+        const ocraTab = createNewStudyTab(3, MethodId.OCRA_CHECKLIST, `${taskTitle} (Movimientos Repetitivos)`);
+        ocraTab.id = 'tab-video-ia-ocra';
+        ocraTab.tabLabel = 'Vídeo IA · Check List OCRA';
+        ocraTab.payloads[MethodId.OCRA_CHECKLIST] = { ...ocraChecklistPreview };
+        ocraTab.photos = photos;
+        ocraTab.instrumentsUsed =
+          'Conteo cinemático de acciones técnicas por vídeo + Gemelo Digital 3D';
+        ocraTab.evaluatorObservations = obsText;
+        emittedTabs.push(ocraTab);
+      }
+
+      if (emitJsi) {
+        const jsiTab = createNewStudyTab(4, MethodId.JSI, `${taskTitle} (Esfuerzo Distal JSI)`);
+        jsiTab.id = 'tab-video-ia-jsi';
+        jsiTab.tabLabel = 'Vídeo IA · JSI';
+        jsiTab.payloads[MethodId.JSI] = { ...jsiPreview };
+        jsiTab.photos = photos;
+        jsiTab.instrumentsUsed = 'Cronometraje digital de ciclo y esfuerzo desde vídeo + Avatar 3D';
+        jsiTab.evaluatorObservations = obsText;
+        emittedTabs.push(jsiTab);
+      }
+
+      if (emitNam295) {
+        const namTab = createNewStudyTab(5, MethodId.NAM_295, `${taskTitle} (Actividad Manual NAM)`);
+        namTab.id = 'tab-video-ia-nam';
+        namTab.tabLabel = 'Vídeo IA · NAM Res. 295/03';
+        namTab.payloads[MethodId.NAM_295] = { ...namPreview };
+        namTab.photos = photos;
+        namTab.instrumentsUsed = 'Análisis de vídeo por ciclo + Escala de Borg (Res. MTESS 295/03)';
+        namTab.evaluatorObservations = obsText;
+        emittedTabs.push(namTab);
+      }
+
+      const finalTabs = emittedTabs.length > 0 ? emittedTabs : [nioshTab, rebaTab];
+
+      await onEmitTabsAndReport({
+        nioshTab,
+        rebaTab,
+        emittedTabs: finalTabs,
+        autoDownloadPdf,
+      });
+
+      setHasEmittedTabs(true);
+      setStatusNotice({
+        tone: 'success',
+        text: autoDownloadPdf
+          ? `Se emitieron ${finalTabs.length} pestañas con fotos reales + Avatar 3D (Toma y Destino) y se descargó el Informe PDF.`
+          : `Se integraron ${finalTabs.length} pestañas en el Estudio con fotos reales y réplicas Avatar 3D de Toma de Carga y Destino.`,
+      });
+    } finally {
+      setIsEmittingReport(false);
+    }
+  };
+
+  const originFrame = extractedFrames[originFrameIdx] || null;
+  const destFrame = extractedFrames[destFrameIdx] || null;
+  const origArt = effectiveOriginTwinJson.sincronizacion_avatar_3d.articulaciones_principales;
+  const destArt = effectiveDestTwinJson.sincronizacion_avatar_3d.articulaciones_principales;
 
   return (
-    <div className="space-y-6">
-      {/* CABECERA DEL MÓDULO DE VISIÓN BIOMECÁNICA Y EMISIÓN AUTOMÁTICA DE INFORME */}
-      <section className="bg-white border border-slate-300 rounded-lg p-5 space-y-4">
-        <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4 border-b border-slate-200 pb-4">
-          <div className="space-y-1.5">
-            <div className="flex flex-wrap items-center gap-2 text-xs text-sky-800 font-semibold">
-              <span>Visión por Computador 3D</span>
-              <span className="text-slate-300">·</span>
-              <span>Levantamiento vs. Descenso (Origen ↔ Destino)</span>
-              <span className="text-slate-300">·</span>
-              <span>Semáforo de Alertas e Informe Automático</span>
-            </div>
-            <h1 className="text-lg sm:text-xl font-bold text-slate-900 tracking-tight">
-              Extractor de Variables Biomecánicas desde Video y Emisión Automática de Informe
-            </h1>
-            <p className="text-xs sm:text-sm text-slate-600 max-w-4xl leading-relaxed">
-              Analiza filmaciones laborales (incluyendo compatibilización automática a H.264 para videos móviles en HEVC / QuickTime), distingue si la tarea consiste en{' '}
-              <strong>levantar desde el suelo hacia una estantería</strong>,{' '}
-              <strong>bajar una carga desde una altura mayor a una menor</strong> o un{' '}
-              <strong>ciclo reversible donde el origen también actúa como destino</strong>, y emite el informe con{' '}
-              <strong>Alerta de Atención Inmediata y Tabla Semáforo</strong>.
-            </p>
+    <div className="space-y-4">
+      {/* Cabecera Técnica */}
+      <div className="bg-slate-900 text-white rounded-md border border-slate-800 px-4 py-3.5 flex flex-wrap items-center justify-between gap-3">
+        <div className="space-y-0.5 min-w-0">
+          <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-emerald-300">
+            <Video className="w-3.5 h-3.5 shrink-0" />
+            <span>Motor de Vídeo IA · Doble Postura (Toma de Carga y Destino) + Movimientos Repetitivos</span>
           </div>
-
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={handleToggleExpand}
-              className={`inline-flex items-center gap-1.5 px-3 py-2 min-h-[40px] rounded-md border text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
-                effectiveExpanded
-                  ? 'border-sky-800 bg-sky-700 text-white hover:bg-sky-800'
-                  : 'border-sky-300 bg-sky-50 hover:bg-sky-100 text-sky-950'
-              }`}
-              title="Ampliar o reducir el tamaño del reproductor y generador de Video IA"
-            >
-              {effectiveExpanded ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
-              {effectiveExpanded ? 'Tamaño Estándar' : 'Ampliar Generador Video IA'}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setShowPromptPanel((prev) => !prev)}
-              className="inline-flex items-center gap-1.5 px-3 py-2 min-h-[40px] rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-800 whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              {showPromptPanel ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-              System Instruction JSON
-            </button>
-
-            <button
-              type="button"
-              onClick={onBackToEvaluator}
-              className="inline-flex items-center gap-1.5 px-3 py-2 min-h-[40px] rounded-md border border-slate-300 bg-slate-100 hover:bg-slate-200 text-xs font-medium text-slate-800 whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <ArrowLeft className="w-3.5 h-3.5" />
-              Volver a Pestañas de Estudio
-            </button>
-          </div>
+          <h1 className="text-base sm:text-lg font-bold tracking-tight text-white">
+            Sincronización Simultánea de Toma de Carga, Destino y Ciclos Repetitivos ({general.workstationName || 'Puesto Evaluado'})
+          </h1>
         </div>
 
-        {/* PANEL DESPLEGABLE CON EL SYSTEM INSTRUCTION EXACTO */}
-        {showPromptPanel && (
-          <div className="bg-slate-50 border border-slate-200 rounded-md p-4 space-y-2.5">
-            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-              <span className="font-semibold text-slate-900">
-                Instrucción del Sistema Activa en Servidor (<code className="font-mono">POST /api/biomech/extract-video</code>)
-              </span>
-              <button
-                type="button"
-                onClick={() => setSystemInstruction(DEFAULT_VIDEO_SYSTEM_INSTRUCTION)}
-                className="inline-flex items-center gap-1 text-sky-700 hover:text-sky-900 font-semibold whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                Restaurar instrucción original
-              </button>
-            </div>
-            <textarea
-              rows={11}
-              value={systemInstruction}
-              onChange={(e) => setSystemInstruction(e.target.value)}
-              className="w-full rounded-md border border-slate-300 bg-white p-3 font-mono text-xs text-slate-800 focus:border-sky-600 focus:outline-none"
-            />
-          </div>
-        )}
-
-        {/* GRILLA DE CARGA DE VIDEO + PARÁMETROS OPERATIVOS */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-          {/* Columna Izquierda: Reproductor de Video Universal + Menú Desplegable de Casos Prácticos */}
-          <div className={`${effectiveExpanded ? 'lg:col-span-8' : 'lg:col-span-7'} space-y-3`}>
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-xs font-bold text-slate-900">
-                1. Archivo de Video de la Tarea (Soporte MP4, MOV, HEVC/H.265, WebM)
-              </span>
-              <div className="flex flex-wrap items-center gap-2">
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="video/mp4,video/webm,video/quicktime,video/*,.mov,.mp4,.webm,.mkv,.avi,.m4v,.3gp"
-                  onChange={handleFileChange}
-                  className="hidden"
-                />
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isProcessing || isGeneratingTestVideo || isNormalizingVideo}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[38px] rounded-md border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-50 text-xs font-semibold text-slate-800 whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  <Upload className="w-3.5 h-3.5 text-sky-700" />
-                  Subir Video (.mp4 / .mov / .webm)
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => void handleGenerateTestVideo(true, 'levantamiento')}
-                  disabled={isProcessing || isGeneratingTestVideo || isNormalizingVideo}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[38px] rounded-md bg-sky-700 hover:bg-sky-800 disabled:opacity-50 text-xs font-semibold text-white whitespace-nowrap shrink-0 cursor-pointer"
-                  title="Simula levantamiento desde suelo hacia estantería, extrae variables y emite el informe"
-                >
-                  <Film className="w-3.5 h-3.5" />
-                  {isGeneratingTestVideo ? 'Grabando 3D...' : 'Prueba: Suelo → Estantería'}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => void handleGenerateTestVideo(true, 'descenso')}
-                  disabled={isProcessing || isGeneratingTestVideo || isNormalizingVideo}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 min-h-[38px] rounded-md border border-sky-700 bg-sky-50 hover:bg-sky-100 disabled:opacity-50 text-xs font-semibold text-sky-900 whitespace-nowrap shrink-0 cursor-pointer"
-                  title="Simula descenso de carga desde estantería superior hacia nivel inferior y emite el informe"
-                >
-                  <ArrowDownUp className="w-3.5 h-3.5 text-sky-700" />
-                  Prueba: Estantería → Suelo
-                </button>
-              </div>
-            </div>
-
-            {/* MENÚ DESPLEGABLE DE MUESTRAS BASADAS EN CASOS PRÁCTICOS INDUSTRIALES */}
-            {(() => {
-              const activeCase = getCeneaSampleCaseById(selectedCeneaCaseId);
-              return (
-                <div className="rounded-lg border border-slate-300 bg-slate-50 p-3 space-y-2">
-                  <div className="grid grid-cols-1 xl:grid-cols-12 gap-2.5 items-end">
-                    <div className="xl:col-span-7 space-y-1">
-                      <label className="block text-xs font-semibold text-slate-800">
-                        Muestras 3D de Casos Prácticos Industriales (Menú Desplegable · 8 Casos Reales)
-                      </label>
-                      <select
-                        value={selectedCeneaCaseId}
-                        onChange={(e) => setSelectedCeneaCaseId(e.target.value as CeneaSampleCaseId)}
-                        disabled={isProcessing || isGeneratingTestVideo || isNormalizingVideo}
-                        className="w-full min-h-[40px] rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-900 focus:border-sky-600 focus:outline-none"
-                      >
-                        {CENEA_SAMPLE_VIDEOS_CATALOG.map((item) => (
-                          <option key={item.id} value={item.id}>
-                            {item.shortLabel}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="xl:col-span-5 flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void handleGenerateCeneaSampleVideo(false)}
-                        disabled={isProcessing || isGeneratingTestVideo || isNormalizingVideo}
-                        className="inline-flex items-center gap-1.5 px-3 py-2 min-h-[40px] rounded-md border border-slate-300 bg-white hover:bg-slate-100 disabled:opacity-50 text-xs font-semibold text-slate-900 whitespace-nowrap shrink-0 cursor-pointer"
-                        title="Genera únicamente el video 3D para comparar visualmente con el caso de muestra"
-                      >
-                        <Play className="w-3.5 h-3.5 text-sky-700" />
-                        {isGeneratingTestVideo ? 'Renderizando...' : 'Generar Muestra 3D'}
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => void handleGenerateCeneaSampleVideo(true)}
-                        disabled={isProcessing || isGeneratingTestVideo || isNormalizingVideo}
-                        className="inline-flex items-center gap-1.5 px-3 py-2 min-h-[40px] rounded-md bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-xs font-semibold text-white whitespace-nowrap shrink-0 cursor-pointer"
-                        title="Genera el video 3D del caso práctico y ejecuta la extracción biomecánica + informe"
-                      >
-                        <Sparkles className="w-3.5 h-3.5" />
-                        Generar + Emitir Informe
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600 pt-0.5">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="font-semibold text-slate-800">{activeCase.sector}</span>
-                      <span aria-hidden="true">·</span>
-                      <span>{activeCase.normativeFocus}</span>
-                      <span aria-hidden="true">·</span>
-                      <span className="font-mono tabular-nums">
-                        {activeCase.loadWeightKg} kg · V={activeCase.vOriginCm}→{activeCase.vDestCm} cm · H={activeCase.hOriginCm} cm
-                      </span>
-                    </div>
-                    <a
-                      href={`https://www.youtube.com/watch?v=${activeCase.youtubeVideoId}&list=PLGWF77edtuwIarroBXtYXFQqPuXc-gwoe`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-sky-700 hover:text-sky-900 underline font-medium whitespace-nowrap"
-                    >
-                      Ver referencia original YouTube ({activeCase.youtubeVideoId})
-                    </a>
-                  </div>
-                </div>
-              );
-            })()}
-
-            <div
-              className={`rounded-lg border border-slate-300 bg-slate-950 overflow-hidden ${
-                effectiveExpanded ? 'min-h-[470px]' : 'min-h-[310px]'
-              } flex flex-col justify-between transition-all`}
+        <div className="flex flex-wrap items-center gap-2">
+          {onOpenTwinVideoStudio && (
+            <button
+              type="button"
+              onClick={onOpenTwinVideoStudio}
+              className="min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-teal-600 hover:bg-teal-700 text-xs font-semibold text-white cursor-pointer"
+              title="Abrir la pestaña dedicada para generar y descargar el Vídeo Mellizo del Avatar 3D"
             >
-              {isNormalizingVideo ? (
-                <div className="flex-1 flex flex-col items-center justify-center text-center p-8 space-y-3 text-slate-200">
-                  <RefreshCw className="w-8 h-8 text-sky-400 animate-spin" />
-                  <p className="text-sm font-semibold text-white">
-                    Compatibilizando archivo de video para reproducción universal...
-                  </p>
-                  <p className="text-xs text-slate-400 max-w-md">{normalizingNotice}</p>
-                </div>
-              ) : videoUrl ? (
-                <>
-                  <div className="flex-1 flex items-center justify-center bg-slate-950 p-2">
-                    <video
-                      key={videoUrl}
-                      ref={videoRef}
-                      src={videoUrl}
-                      controls
-                      playsInline
-                      preload="auto"
-                      onLoadedMetadata={(e) => {
-                        const vEl = e.currentTarget;
-                        const dur = vEl.duration;
-                        if (Number.isFinite(dur) && dur > 0) {
-                          setVideoDurationSec(dur);
-                        } else if (!hasAttemptedAutoNormalizeRef.current && rawUploadedFileRef.current) {
-                          void normalizeVideoViaServer(
-                            rawUploadedFileRef.current,
-                            'Indexando duración exacta y pista H.264 del archivo de video...',
-                          );
-                          return;
-                        }
+              <Film className="w-3.5 h-3.5" />
+              Descargar Vídeo Avatar Mellizo
+            </button>
+          )}
 
-                        // Si el contenedor MP4 tiene pista de video HEVC/H.265 no soportada por el navegador, videoWidth es 0
-                        if (
-                          vEl.videoWidth === 0 &&
-                          !hasAttemptedAutoNormalizeRef.current &&
-                          rawUploadedFileRef.current
-                        ) {
-                          void normalizeVideoViaServer(
-                            rawUploadedFileRef.current,
-                            'Códec HEVC / H.265 detectado: recodificando automáticamente a H.264 universal para reproducir en el navegador...',
-                          );
-                        }
-                      }}
-                      onError={() => {
-                        if (!hasAttemptedAutoNormalizeRef.current && rawUploadedFileRef.current) {
-                          void normalizeVideoViaServer(
-                            rawUploadedFileRef.current,
-                            'Formato o códec de cámara no nativo: convirtiendo automáticamente a MP4 H.264 universal...',
-                          );
-                        } else {
-                          setErrorMsg(
-                            'No se pudo decodificar este flujo de video. Pulse "Compatibilizar H.264" o verifique que el archivo no esté dañado.',
-                          );
-                        }
-                      }}
-                      onLoadedData={() => {
-                        if (pendingAutoRunFileRef.current) {
-                          const f = pendingAutoRunFileRef.current;
-                          pendingAutoRunFileRef.current = null;
-                          void runVideoExtractionPipeline(f);
-                        }
-                      }}
-                      onTimeUpdate={(e) => setCurrentPlaySec(e.currentTarget.currentTime)}
-                      className={`${
-                        effectiveExpanded ? 'max-h-[580px]' : 'max-h-[360px]'
-                      } w-full object-contain rounded-xs`}
-                    />
-                  </div>
-                  <div className="bg-slate-900 border-t border-slate-800 px-3.5 py-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-300 font-mono tabular-nums">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="truncate max-w-[260px]">{videoFile?.name || 'video_cargado.mp4'}</span>
-                      {videoWasNormalized && (
-                        <span className="text-[11px] font-sans font-semibold text-emerald-300">
-                          · H.264 Optimizado
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2.5">
-                      <span>
-                        {formatSecondsToTimestamp(currentPlaySec)} / {formatSecondsToTimestamp(videoDurationSec)}
-                      </span>
-                      {rawUploadedFileRef.current && !videoWasNormalized && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (rawUploadedFileRef.current) {
-                              void normalizeVideoViaServer(
-                                rawUploadedFileRef.current,
-                                'Recodificando manualmente a MP4 H.264 universal...',
-                              );
-                            }
-                          }}
-                          disabled={isProcessing || isNormalizingVideo}
-                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-slate-700 bg-slate-800 hover:bg-slate-700 text-[11px] font-sans font-medium text-sky-300 cursor-pointer"
-                          title="Si el video no se reproduce o se ve en negro (ej. HEVC de celular), conviértalo en 1 clic a H.264"
-                        >
-                          <RefreshCw className="w-3 h-3" />
-                          Compatibilizar H.264
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <div className="flex-1 flex flex-col items-center justify-center text-center p-8 space-y-3 text-slate-300">
-                  <Video className="w-10 h-10 text-sky-400" />
-                  <div className="space-y-1 max-w-md">
-                    <p className="text-sm font-semibold text-white">
-                      Seleccione un caso práctico del menú desplegable o suba su filmación
-                    </p>
-                    <p className="text-xs text-slate-400 leading-relaxed">
-                      Suba una filmación real (<code className="font-mono text-slate-200">.mp4</code>,{' '}
-                      <code className="font-mono text-slate-200">.mov</code> o HEVC) o elija cualquiera de las{' '}
-                      <strong className="text-slate-200">8 muestras industriales</strong> en el menú superior para generar su simulación 3D y evaluar qué tanto se asemeja al caso real.
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => fileInputRef.current?.click()}
-                      disabled={isGeneratingTestVideo}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-2 min-h-[40px] rounded-md bg-white hover:bg-slate-100 text-slate-900 text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      <Upload className="w-3.5 h-3.5 text-sky-700" />
-                      Seleccionar Archivo de Video
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleGenerateCeneaSampleVideo(false)}
-                      disabled={isGeneratingTestVideo}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-2 min-h-[40px] rounded-md border border-slate-700 bg-slate-900 hover:bg-slate-800 text-slate-200 text-xs font-medium whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      <Play className="w-3.5 h-3.5 text-sky-400" />
-                      Generar Muestra Seleccionada en 3D
-                    </button>
-                  </div>
-                </div>
+          <button
+            type="button"
+            onClick={() => setShowErgonizaPdfModal(true)}
+            className="min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-sky-200 cursor-pointer"
+          >
+            <BookOpen className="w-3.5 h-3.5" />
+            Bases Biomecánicas (PDF)
+          </button>
+
+          {onToggleExpandedView && (
+            <button
+              type="button"
+              onClick={onToggleExpandedView}
+              className="min-h-[38px] hidden lg:inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 cursor-pointer"
+            >
+              {isExpandedView ? <Minimize2 className="w-3.5 h-3.5" /> : <Expand className="w-3.5 h-3.5" />}
+              {isExpandedView ? 'Vista Compacta' : 'Expandir Lienzo'}
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={onBackToEvaluator}
+            className="min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-slate-600 bg-white text-slate-900 hover:bg-slate-100 text-xs font-semibold cursor-pointer"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            Volver al Evaluador
+          </button>
+        </div>
+      </div>
+
+      {statusNotice && (
+        <div
+          className={`px-4 py-2.5 rounded-md border text-xs font-medium flex items-center justify-between gap-3 ${
+            statusNotice.tone === 'error'
+              ? 'bg-rose-50 border-rose-300 text-rose-950'
+              : statusNotice.tone === 'warning'
+                ? 'bg-amber-50 border-amber-300 text-amber-950'
+                : statusNotice.tone === 'success'
+                  ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
+                  : 'bg-sky-50 border-sky-200 text-sky-950'
+          }`}
+        >
+          <span>{statusNotice.text}</span>
+          <button
+            type="button"
+            onClick={() => setStatusNotice(null)}
+            className="p-1 text-current opacity-75 hover:opacity-100 cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* PASO 1 + PASO 2: DOBLE POSTURA REAL (TOMA DE CARGA Y DESTINO) + DOBLE GEMELO DIGITAL 3D */}
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+        {/* COLUMNA IZQUIERDA (5 cols): Carga de Vídeo y Fotogramas Reales de Toma de Carga y Destino */}
+        <section className="xl:col-span-5 bg-white border border-slate-300 rounded-md p-4 space-y-3.5 flex flex-col">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2.5">
+            <div>
+              <span className="font-mono text-xs font-bold text-sky-800">
+                1. Vídeo y Posturas de Toma y Destino
+              </span>
+              <h2 className="text-sm font-bold text-slate-900">
+                Fotogramas Reales de Toma de Carga (Origen) y Destino
+              </h2>
+            </div>
+
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="video/mp4,video/webm,video/quicktime,video/*"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) void processUploadedVideoFile(file);
+                e.currentTarget.value = '';
+              }}
+            />
+
+            <button
+              type="button"
+              disabled={isAnalyzing}
+              onClick={() => fileInputRef.current?.click()}
+              className="min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              {isAnalyzing ? 'Procesando vídeo...' : 'Subir Vídeo (MP4 / MOV)'}
+            </button>
+          </div>
+
+          <div className="bg-slate-50 border border-slate-200 rounded p-2.5 space-y-1.5">
+            <label className="block text-[11px] font-semibold text-slate-700">
+              O seleccione una secuencia industrial de referencia:
+            </label>
+            <div className="flex items-center gap-2">
+              <select
+                value={selectedSampleId}
+                onChange={(e) => handleSelectSampleCase(e.target.value as CeneaSampleCaseId)}
+                className="flex-1 min-h-[38px] rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900"
+              >
+                {CENEA_SAMPLE_VIDEOS_CATALOG.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.shortLabel}
+                  </option>
+                ))}
+              </select>
+              {sourceMode === 'sample' && (
+                <button
+                  type="button"
+                  onClick={() => setIsPlayingCycle3D((p) => !p)}
+                  className={`min-h-[38px] inline-flex items-center gap-1 px-3 py-1.5 rounded border text-xs font-semibold cursor-pointer ${
+                    isPlayingCycle3D
+                      ? 'bg-amber-600 text-white border-amber-700'
+                      : 'bg-slate-900 text-white border-slate-900 hover:bg-slate-800'
+                  }`}
+                >
+                  {isPlayingCycle3D ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                  {isPlayingCycle3D ? 'Pausar' : 'Ciclo 3D'}
+                </button>
               )}
             </div>
           </div>
 
-          {/* Columna Derecha: Datos Operativos, Sentido Origen<->Destino y Botón Maestro */}
-          <div className={`${effectiveExpanded ? 'lg:col-span-4' : 'lg:col-span-5'} bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-3 text-xs`}>
-            <div className="font-bold text-slate-900 border-b border-slate-200 pb-2">
-              2. Datos Operativos y Sentido de la Carga (Origen ↔ Destino)
+          {isAnalyzing && (
+            <div className="p-3 rounded border border-sky-200 bg-sky-50 text-xs text-sky-950 flex items-center gap-2.5">
+              <RefreshCw className="w-4 h-4 text-sky-700 animate-spin shrink-0" />
+              <span className="font-medium">{analysisProgressMsg}</span>
+            </div>
+          )}
+
+          {sourceMode === 'upload' && extractedFrames.length > 0 ? (
+            <div className="space-y-3">
+              {/* Ambos fotogramas reales lado a lado: 1. Toma de Carga y 2. Destino */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div
+                  ref={frameOverlayRef}
+                  onClick={() => setActivePostureRole('origin')}
+                  className={`rounded border p-2 space-y-1.5 cursor-pointer ${
+                    activePostureRole === 'origin'
+                      ? 'border-sky-600 bg-sky-50/40'
+                      : 'border-slate-300 bg-white'
+                  }`}
+                >
+                  <div className="flex items-center justify-between text-[11px] font-mono">
+                    <strong className="text-sky-900">1. Toma de Carga (Origen)</strong>
+                    <span className="tabular-nums text-slate-600">
+                      t = {(originFrame?.timeSec ?? 0).toFixed(2)} s
+                    </span>
+                  </div>
+                  <div className="relative rounded overflow-hidden bg-slate-950 h-44 flex items-center justify-center">
+                    {originFrame && (
+                      <img
+                        src={originFrame.dataUrl}
+                        alt="Fotograma real Toma de Carga"
+                        className="max-h-full max-w-full object-contain"
+                        draggable={false}
+                      />
+                    )}
+                    {showGravityAnchor && (
+                      <svg
+                        viewBox="0 0 1000 600"
+                        preserveAspectRatio="none"
+                        onPointerMove={handlePlumbPointerMove}
+                        onPointerUp={() => setDraggingPlumbPart(null)}
+                        className="absolute inset-0 w-full h-full touch-none"
+                      >
+                        <line
+                          x1={plumbAnchor.top.x * 1000}
+                          y1={plumbAnchor.top.y * 600}
+                          x2={plumbAnchor.bottom.x * 1000}
+                          y2={plumbAnchor.bottom.y * 600}
+                          stroke="#10b981"
+                          strokeWidth="4"
+                        />
+                        <circle
+                          cx={plumbAnchor.top.x * 1000}
+                          cy={plumbAnchor.top.y * 600}
+                          r="14"
+                          fill="#0f172a"
+                          stroke="#10b981"
+                          strokeWidth="4"
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                            setDraggingPlumbPart('top');
+                            e.currentTarget.ownerSVGElement?.setPointerCapture(e.pointerId);
+                          }}
+                          className="cursor-grab"
+                        />
+                        <circle
+                          cx={plumbAnchor.bottom.x * 1000}
+                          cy={plumbAnchor.bottom.y * 600}
+                          r="14"
+                          fill="#10b981"
+                          stroke="#ffffff"
+                          strokeWidth="4"
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                            setDraggingPlumbPart('bottom');
+                            e.currentTarget.ownerSVGElement?.setPointerCapture(e.pointerId);
+                          }}
+                          className="cursor-grab"
+                        />
+                      </svg>
+                    )}
+                  </div>
+                  <div className="text-[11px] font-mono text-slate-700 tabular-nums">
+                    H={invisibleParams.horizontalReachCm} cm · V={vOriginCm} cm · Tronco{' '}
+                    {origArt.tronco.flexion_extension_grados}°
+                  </div>
+                </div>
+
+                <div
+                  onClick={() => setActivePostureRole('dest')}
+                  className={`rounded border p-2 space-y-1.5 cursor-pointer ${
+                    activePostureRole === 'dest'
+                      ? 'border-emerald-600 bg-emerald-50/40'
+                      : 'border-slate-300 bg-white'
+                  }`}
+                >
+                  <div className="flex items-center justify-between text-[11px] font-mono">
+                    <strong className="text-emerald-900">2. Destino de Carga</strong>
+                    <span className="tabular-nums text-slate-600">
+                      t = {(destFrame?.timeSec ?? 0).toFixed(2)} s
+                    </span>
+                  </div>
+                  <div className="rounded overflow-hidden bg-slate-950 h-44 flex items-center justify-center">
+                    {destFrame && (
+                      <img
+                        src={destFrame.dataUrl}
+                        alt="Fotograma real Destino"
+                        className="max-h-full max-w-full object-contain"
+                        draggable={false}
+                      />
+                    )}
+                  </div>
+                  <div className="text-[11px] font-mono text-slate-700 tabular-nums">
+                    H={hDestCm} cm · V={vDestCm} cm · Tronco{' '}
+                    {destArt.tronco.flexion_extension_grados}°
+                  </div>
+                </div>
+              </div>
+
+              {/* Selector de qué postura cambiar al hacer clic en la tira de fotogramas */}
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs bg-slate-100 rounded px-2.5 py-1.5 border border-slate-200">
+                <span>
+                  Clic en fotograma asigna:{' '}
+                  <strong>
+                    {activePostureRole === 'origin' ? '1. Toma de Carga' : '2. Destino'}
+                  </strong>
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setActivePostureRole('origin')}
+                    className={`px-2 py-0.5 rounded text-[11px] font-semibold cursor-pointer ${
+                      activePostureRole === 'origin'
+                        ? 'bg-sky-700 text-white'
+                        : 'bg-white border border-slate-300 text-slate-700'
+                    }`}
+                  >
+                    Elegir Toma (O)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActivePostureRole('dest')}
+                    className={`px-2 py-0.5 rounded text-[11px] font-semibold cursor-pointer ${
+                      activePostureRole === 'dest'
+                        ? 'bg-emerald-700 text-white'
+                        : 'bg-white border border-slate-300 text-slate-700'
+                    }`}
+                  >
+                    Elegir Destino (D)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowGravityAnchor((v) => !v)}
+                    className="px-2 py-0.5 rounded bg-white border border-slate-300 text-[11px] font-mono text-slate-700 cursor-pointer"
+                  >
+                    0° ({verticalCalibrationDeg >= 0 ? '+' : ''}
+                    {verticalCalibrationDeg.toFixed(1)}°)
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-6 gap-1.5">
+                {extractedFrames.map((f, idx) => {
+                  const isOrig = idx === originFrameIdx;
+                  const isDest = idx === destFrameIdx;
+                  return (
+                    <button
+                      key={f.index}
+                      type="button"
+                      onClick={() => {
+                        if (activePostureRole === 'origin') {
+                          setOriginFrameIdx(idx);
+                          setRawOriginTwinJson((p) => ({
+                            ...p,
+                            fotograma_critico_segundo: f.timeSec,
+                          }));
+                        } else {
+                          setDestFrameIdx(idx);
+                          setRawDestTwinJson((p) => ({
+                            ...p,
+                            fotograma_critico_segundo: f.timeSec,
+                          }));
+                        }
+                      }}
+                      className={`relative rounded overflow-hidden border text-left cursor-pointer ${
+                        isOrig
+                          ? 'border-sky-600 ring-2 ring-sky-500/40'
+                          : isDest
+                            ? 'border-emerald-600 ring-2 ring-emerald-500/40'
+                            : 'border-slate-300 opacity-80 hover:opacity-100'
+                      }`}
+                    >
+                      <img src={f.dataUrl} alt={f.timestamp} className="w-full h-11 object-cover block" />
+                      <span className="block bg-slate-900/90 text-white font-mono text-[9.5px] px-1 py-0.5 tabular-nums truncate">
+                        {f.timeSec.toFixed(1)}s{isOrig ? ' [TOMA]' : isDest ? ' [DEST]' : ''}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <div className="flex-1 rounded border border-dashed border-slate-300 bg-slate-50 p-4 flex flex-col justify-between gap-3">
+              <div className="space-y-1.5">
+                <div className="font-mono text-xs font-semibold text-slate-800">
+                  SECUENCIA INDUSTRIAL ACTIVA · TOMA DE CARGA Y DESTINO
+                </div>
+                <p className="text-xs text-slate-700 leading-relaxed">
+                  {selectedSample.taskSummary}
+                </p>
+                <p className="text-xs text-slate-600">
+                  Suba su vídeo MP4/MOV arriba para extraer automáticamente las <strong>2 fotografías reales del operario (Toma de Carga y Destino)</strong> junto con las <strong>2 réplicas exactas del Avatar 3D</strong> para el informe.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-xs bg-white border border-slate-200 rounded p-2.5 font-mono tabular-nums">
+                <div>
+                  <span className="block text-[10px] text-slate-500 font-sans">1. Toma de Carga (Origen)</span>
+                  <strong className="text-sky-900">
+                    H={invisibleParams.horizontalReachCm} cm · V={vOriginCm} cm · Tronco {origArt.tronco.flexion_extension_grados}°
+                  </strong>
+                </div>
+                <div>
+                  <span className="block text-[10px] text-slate-500 font-sans">2. Destino de Carga</span>
+                  <strong className="text-emerald-900">
+                    H={hDestCm} cm · V={vDestCm} cm · Tronco {destArt.tronco.flexion_extension_grados}°
+                  </strong>
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
+
+        {/* COLUMNA DERECHA (7 cols): DOBLE AVATAR 3D SINCRONIZADO (1. TOMA DE CARGA + 2. DESTINO) */}
+        <section className="xl:col-span-7 bg-white border border-slate-300 rounded-md p-4 space-y-3 flex flex-col">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2.5">
+            <div>
+              <span className="font-mono text-xs font-bold text-emerald-800">
+                2. Gemelo Digital 3D — Visualización Simultánea de Toma de Carga y Destino
+              </span>
+              <h2 className="text-sm font-bold text-slate-900">
+                Haga clic en cualquiera de las dos posturas 3D para refinar sus nodos con el ratón
+              </h2>
             </div>
 
-            <label className="block space-y-1">
-              <span className="font-medium text-slate-700">Subtarea Evaluada (Empresa: {general.companyName})</span>
-              <input
-                type="text"
-                value={taskEvaluated}
-                onChange={(e) => setTaskEvaluated(e.target.value)}
-                className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-sky-600 focus:outline-none"
-              />
-            </label>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {(
+                [
+                  { id: 'sagittal_right', label: 'Sagital' },
+                  { id: 'frontal', label: 'Frontal' },
+                  { id: 'isometric', label: '3/4' },
+                ] as Array<{ id: CameraPreset; label: string }>
+              ).map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  onClick={() => {
+                    setCameraPreset(preset.id);
+                    setOrbit(DEFAULT_ORBIT_OVERRIDE);
+                  }}
+                  className={`min-h-[34px] px-2.5 py-1 rounded border text-xs font-semibold cursor-pointer ${
+                    cameraPreset === preset.id
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                  }`}
+                >
+                  {preset.label}
+                </button>
+              ))}
 
-            <label className="block space-y-1">
-              <span className="font-medium text-slate-700">
-                Sentido Cinemático / Relación Origen – Destino
-              </span>
-              <select
-                value={movementModeHint}
-                onChange={(e) => setMovementModeHint(e.target.value as MovementModeHint)}
-                className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900"
+              <button
+                type="button"
+                onClick={() => setShow3DJointGizmos((v) => !v)}
+                className={`min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1 rounded border text-xs font-semibold cursor-pointer ${
+                  show3DJointGizmos
+                    ? 'bg-violet-700 text-white border-violet-800'
+                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                }`}
               >
-                <option value="auto">
-                  Detección Automática IA (distingue levantar suelo→estantería vs. bajar altura→suelo)
-                </option>
-                <option value="levantamiento">
-                  Levantamiento Ascendente (desde suelo / tarima baja hacia estantería / mesa)
-                </option>
-                <option value="descenso">
-                  Descenso / Bajada de Carga (desde estantería / altura mayor hacia altura menor)
-                </option>
-                <option value="bidireccional">
-                  Ciclo Reversible (Origen ↔ Destino intercambiables: estiba y desestiba)
-                </option>
-              </select>
-            </label>
+                <Move3d className="w-3.5 h-3.5" />
+                Nodos Libres
+              </button>
 
-            <div className="grid grid-cols-2 gap-3">
-              <label className="block space-y-1">
-                <span className="font-medium text-slate-700">Masa Real de la Carga (kg)</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={100}
-                  step={0.5}
-                  value={loadWeightKg}
-                  onChange={(e) => setLoadWeightKg(Math.max(1, Number(e.target.value) || 1))}
-                  className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 font-mono tabular-nums text-xs text-slate-900"
-                />
-              </label>
+              <button
+                type="button"
+                onClick={() => setShow3DGoniometerOverlay((v) => !v)}
+                className={`min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1 rounded border text-xs font-semibold cursor-pointer ${
+                  show3DGoniometerOverlay
+                    ? 'bg-sky-700 text-white border-sky-800'
+                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                }`}
+              >
+                <Crosshair className="w-3.5 h-3.5" />
+                Goniómetro 3D
+              </button>
 
-              <label className="block space-y-1">
-                <span className="font-medium text-slate-700">Estatura Operario (cm)</span>
-                <input
-                  type="number"
-                  min={140}
-                  max={210}
-                  step={1}
-                  value={workerHeightCm}
-                  onChange={(e) => setWorkerHeightCm(Math.max(140, Math.min(210, Number(e.target.value) || 172)))}
-                  className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 font-mono tabular-nums text-xs text-slate-900"
+              <button
+                type="button"
+                onClick={() => setOrbit(DEFAULT_ORBIT_OVERRIDE)}
+                className="min-h-[34px] p-1.5 rounded border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 cursor-pointer"
+                title="Restablecer cámara"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+
+          {/* Dos visores 3D simultáneos: Postura 1 (Toma de Carga) y Postura 2 (Destino) */}
+          <div className="relative grid grid-cols-1 md:grid-cols-2 gap-3 flex-1">
+            {/* Avatar 1: Toma de Carga */}
+            <div
+              onClick={() => setActivePostureRole('origin')}
+              className={`rounded border p-2 flex flex-col gap-2 ${
+                activePostureRole === 'origin'
+                  ? 'border-sky-600 bg-sky-50/25'
+                  : 'border-slate-300 bg-slate-50/60'
+              }`}
+            >
+              <div className="flex items-center justify-between text-xs px-1">
+                <strong className="text-sky-900">Postura 1 · Toma de Carga (Origen)</strong>
+                <span className="font-mono text-[11px] tabular-nums text-slate-700">
+                  L4/L5: {originBiomechReport.l4l5CompressionN} N
+                </span>
+              </div>
+              <div className="flex-1 min-h-[300px] rounded border border-slate-200 bg-white overflow-hidden flex items-center justify-center">
+                <canvas
+                  ref={originAvatarCanvasRef}
+                  onPointerDown={(e) => handleAvatarPointerDown('origin', e)}
+                  onPointerMove={(e) => handleAvatarPointerMove('origin', e)}
+                  onPointerUp={handleAvatarPointerUp}
+                  onPointerCancel={handleAvatarPointerUp}
+                  className="w-full h-full max-h-[360px] object-contain touch-none cursor-grab active:cursor-grabbing"
                 />
-              </label>
+              </div>
+              <div className="grid grid-cols-4 gap-1 text-[11px] font-mono tabular-nums text-center bg-white border border-slate-200 rounded py-1 px-1.5">
+                <span>Tr {origArt.tronco.flexion_extension_grados}°</span>
+                <span>Ho {origArt.hombro_derecho.flexion_anteroposterior_grados}°</span>
+                <span>Co {origArt.codo_derecho.flexion_extension_grados}°</span>
+                <span>Ro {origArt.rodilla_derecha.flexion_extension_grados}°</span>
+              </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <label className="block space-y-1">
-                <span className="font-medium text-slate-700">Frecuencia (maniobras/min)</span>
-                <input
-                  type="number"
-                  min={0.2}
-                  max={15}
-                  step={0.2}
-                  value={frequencyLiftsPerMin}
-                  onChange={(e) => setFrequencyLiftsPerMin(Math.max(0.2, Number(e.target.value) || 1))}
-                  className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 font-mono tabular-nums text-xs text-slate-900"
+            {/* Avatar 2: Destino */}
+            <div
+              onClick={() => setActivePostureRole('dest')}
+              className={`rounded border p-2 flex flex-col gap-2 ${
+                activePostureRole === 'dest'
+                  ? 'border-emerald-600 bg-emerald-50/25'
+                  : 'border-slate-300 bg-slate-50/60'
+              }`}
+            >
+              <div className="flex items-center justify-between text-xs px-1">
+                <strong className="text-emerald-900">Postura 2 · Destino de Carga</strong>
+                <span className="font-mono text-[11px] tabular-nums text-slate-700">
+                  L4/L5: {destBiomechReport.l4l5CompressionN} N
+                </span>
+              </div>
+              <div className="flex-1 min-h-[300px] rounded border border-slate-200 bg-white overflow-hidden flex items-center justify-center">
+                <canvas
+                  ref={destAvatarCanvasRef}
+                  onPointerDown={(e) => handleAvatarPointerDown('dest', e)}
+                  onPointerMove={(e) => handleAvatarPointerMove('dest', e)}
+                  onPointerUp={handleAvatarPointerUp}
+                  onPointerCancel={handleAvatarPointerUp}
+                  className="w-full h-full max-h-[360px] object-contain touch-none cursor-grab active:cursor-grabbing"
                 />
-              </label>
-
-              <label className="block space-y-1">
-                <span className="font-medium text-slate-700">Fotogramas a Muestrear</span>
-                <select
-                  value={sampleFrameCount}
-                  onChange={(e) => setSampleFrameCount(Number(e.target.value))}
-                  className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 font-mono tabular-nums text-xs text-slate-900"
-                >
-                  <option value={12}>12 fotogramas (Rápido)</option>
-                  <option value={16}>16 fotogramas (Óptimo para ~20 s)</option>
-                  <option value={22}>22 fotogramas (Alta densidad)</option>
-                </select>
-              </label>
+              </div>
+              <div className="grid grid-cols-4 gap-1 text-[11px] font-mono tabular-nums text-center bg-white border border-slate-200 rounded py-1 px-1.5">
+                <span>Tr {destArt.tronco.flexion_extension_grados}°</span>
+                <span>Ho {destArt.hombro_derecho.flexion_anteroposterior_grados}°</span>
+                <span>Co {destArt.codo_derecho.flexion_extension_grados}°</span>
+                <span>Ro {destArt.rodilla_derecha.flexion_extension_grados}°</span>
+              </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <label className="block space-y-1">
-                <span className="font-medium text-slate-700">Duración de Exposición</span>
-                <select
-                  value={durationCategory}
-                  onChange={(e) => setDurationCategory(e.target.value as 'le_1h' | '1_to_2h' | '2_to_8h')}
-                  className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900"
-                >
-                  <option value="le_1h">Corta (≤ 1 h)</option>
-                  <option value="1_to_2h">Moderada (1 a 2 h)</option>
-                  <option value="2_to_8h">Larga (2 a 8 h)</option>
-                </select>
-              </label>
-
-              <label className="block space-y-1">
-                <span className="font-medium text-slate-700">Tipo de Agarre (CM)</span>
-                <select
-                  value={couplingQuality}
-                  onChange={(e) => setCouplingQuality(e.target.value as 'bueno' | 'regular' | 'malo')}
-                  className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900"
-                >
-                  <option value="bueno">Bueno (Asas anatómicas · 1,00)</option>
-                  <option value="regular">Regular (Flexión dedos 90° · 0,95)</option>
-                  <option value="malo">Malo (Sin asas / voluminoso · 0,90)</option>
-                </select>
-              </label>
-            </div>
-
-            <label className="flex items-start gap-2 pt-0.5 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={autoEmitPdfOnFinish}
-                onChange={(e) => setAutoEmitPdfOnFinish(e.target.checked)}
-                className="mt-0.5 rounded border-slate-400 text-sky-700"
+            {show3DGoniometerOverlay && (
+              <InteractivePhotoGoniometer
+                transparentOverlay
+                onApplyAngle={(deg) => {
+                  if (!selectedJoint3D) return;
+                  const setter =
+                    activePostureRole === 'origin' ? setRawOriginTwinJson : setRawDestTwinJson;
+                  setter((prev) => {
+                    const nextArt = JSON.parse(
+                      JSON.stringify(
+                        prev.sincronizacion_avatar_3d.articulaciones_principales,
+                      ),
+                    );
+                    if (selectedJoint3D === 'l5s1' || selectedJoint3D === 'c7') {
+                      nextArt.tronco.flexion_extension_grados = deg;
+                    } else if (selectedJoint3D === 'shoulderR') {
+                      nextArt.hombro_derecho.flexion_anteroposterior_grados = deg;
+                    } else if (selectedJoint3D === 'elbowR' || selectedJoint3D === 'wristR') {
+                      nextArt.codo_derecho.flexion_extension_grados = deg;
+                    } else if (selectedJoint3D === 'hipR') {
+                      nextArt.cadera_derecha.flexion_extension_grados = deg;
+                    } else if (selectedJoint3D === 'kneeR') {
+                      nextArt.rodilla_derecha.flexion_extension_grados = deg;
+                    }
+                    return {
+                      ...prev,
+                      sincronizacion_avatar_3d: {
+                        ...prev.sincronizacion_avatar_3d,
+                        articulaciones_principales: sanitizeErgonizaAngles(nextArt),
+                      },
+                    };
+                  });
+                }}
               />
-              <span className="text-slate-800 font-medium leading-snug">
-                Emitir y descargar automáticamente el <strong>Informe Técnico PDF</strong> (con Semáforo y Alertas) al finalizar
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600">
+            <span>
+              Editando actualmente:{' '}
+              <strong>
+                {activePostureRole === 'origin' ? 'Postura 1 (Toma de Carga)' : 'Postura 2 (Destino)'}
+              </strong>
+              . Ambas posturas se exportan juntas al informe.
+            </span>
+            <div className="flex items-center gap-2">
+              <label className="font-semibold text-slate-700">Objeto en escena:</label>
+              <select
+                value={activeProp3D}
+                onChange={(e) => setActiveProp3D(e.target.value as ScenePropType)}
+                className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900"
+              >
+                <option value="none">Sin objeto</option>
+                <option value="box_load">Caja en manos</option>
+                <option value="pallet_jack_rack">Tarima + Estantería</option>
+                <option value="work_desk_support">Mesa de apoyo bajo codo</option>
+                <option value="chair">Silla de trabajo</option>
+                <option value="bin_to_cart">Contenedor Bin + Carro</option>
+              </select>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      {/* PASO 3: CARGA DE DATOS CON IMAGEN GUÍA ACOTADA (H cm, V Origen cm, V Destino cm, D cm) + SALIDA JSON */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        <section className="lg:col-span-7 bg-white border border-slate-300 rounded-md p-4 space-y-3.5">
+          <div className="flex items-start justify-between gap-2 border-b border-slate-200 pb-2.5">
+            <div>
+              <span className="font-mono text-xs font-bold text-amber-800">
+                3. Carga de Datos con Imagen Guía (H cm, V Origen cm, V Destino cm y Peso kg)
               </span>
-            </label>
+              <h2 className="text-sm font-bold text-slate-900">
+                Guía Gráfica Directa sobre Imagen para Interpretar Qué Medir en Centímetros
+              </h2>
+            </div>
+            <span className="text-xs font-mono text-slate-600 tabular-nums">
+              {missingInvisibleList.length === 0 ? 'Datos completos' : `${missingInvisibleList.length} por revisar`}
+            </span>
+          </div>
+
+          {/* Imagen Guía Acotada indicando H (cm), Vo (cm), Vd (cm) y D (cm) directamente sobre el esquema */}
+          <NioshGeometryGuide
+            hCm={
+              activePostureRole === 'origin'
+                ? invisibleParams.horizontalReachCm
+                : hDestCm
+            }
+            vOriginCm={vOriginCm}
+            vDestCm={vDestCm}
+            asymmetryDeg={Math.round(
+              Math.abs(
+                activeEffectiveTwinJson.sincronizacion_avatar_3d.articulaciones_principales.tronco
+                  .rotacion_axial_grados,
+              ),
+            )}
+            loadKg={effectiveLoadForCalc}
+          />
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+            <div>
+              <label className="block font-semibold text-slate-800 mb-1">Peso Carga L (kg) *</label>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={0.5}
+                value={invisibleParams.loadMassKg === null ? '' : invisibleParams.loadMassKg}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  setInvisibleParams((p) => ({
+                    ...p,
+                    loadMassKg: raw === '' ? null : Math.max(0, Number(raw)),
+                  }));
+                }}
+                className="w-full min-h-[38px] rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono tabular-nums text-slate-900"
+              />
+            </div>
+
+            <div>
+              <label className="block font-semibold text-red-800 mb-1">H Toma Origen (cm)</label>
+              <input
+                type="number"
+                min={20}
+                max={85}
+                value={invisibleParams.horizontalReachCm}
+                onChange={(e) =>
+                  setInvisibleParams((p) => ({
+                    ...p,
+                    horizontalReachCm: Math.max(20, Math.min(85, Number(e.target.value) || 25)),
+                  }))
+                }
+                className="w-full min-h-[38px] rounded border border-red-300 bg-red-50/30 px-2.5 py-1.5 font-mono tabular-nums text-slate-900"
+              />
+            </div>
+
+            <div>
+              <label className="block font-semibold text-sky-900 mb-1">V Toma Origen (cm)</label>
+              <input
+                type="number"
+                min={0}
+                max={190}
+                value={vOriginCm}
+                onChange={(e) => setVOriginCm(Math.max(0, Math.min(190, Number(e.target.value) || 0)))}
+                className="w-full min-h-[38px] rounded border border-sky-300 bg-sky-50/30 px-2.5 py-1.5 font-mono tabular-nums text-slate-900"
+              />
+            </div>
+
+            <div>
+              <label className="block font-semibold text-emerald-900 mb-1">V Destino (cm)</label>
+              <input
+                type="number"
+                min={0}
+                max={190}
+                value={vDestCm}
+                onChange={(e) => setVDestCm(Math.max(0, Math.min(190, Number(e.target.value) || 0)))}
+                className="w-full min-h-[38px] rounded border border-emerald-300 bg-emerald-50/30 px-2.5 py-1.5 font-mono tabular-nums text-slate-900"
+              />
+            </div>
+
+            <div>
+              <label className="block font-semibold text-emerald-900 mb-1">H Destino (cm)</label>
+              <input
+                type="number"
+                min={20}
+                max={85}
+                value={hDestCm}
+                onChange={(e) => setHDestCm(Math.max(20, Math.min(85, Number(e.target.value) || 25)))}
+                className="w-full min-h-[38px] rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono tabular-nums text-slate-900"
+              />
+            </div>
+
+            <div>
+              <label className="block font-semibold text-slate-800 mb-1">Frecuencia (lev/min)</label>
+              <input
+                type="number"
+                min={0.1}
+                max={18}
+                step={0.5}
+                value={invisibleParams.frequencyPerMin}
+                onChange={(e) =>
+                  setInvisibleParams((p) => ({
+                    ...p,
+                    frequencyPerMin: Math.max(0.1, Math.min(18, Number(e.target.value) || 1)),
+                  }))
+                }
+                className="w-full min-h-[38px] rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono tabular-nums text-slate-900"
+              />
+            </div>
+
+            <div>
+              <label className="block font-semibold text-slate-800 mb-1">Estatura Operario (cm)</label>
+              <input
+                type="number"
+                min={142}
+                max={208}
+                value={invisibleParams.statureCm}
+                onChange={(e) =>
+                  setInvisibleParams((p) => ({
+                    ...p,
+                    statureCm: Math.max(142, Math.min(208, Number(e.target.value) || 172)),
+                  }))
+                }
+                className="w-full min-h-[38px] rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono tabular-nums text-slate-900"
+              />
+            </div>
+
+            <div>
+              <label className="block font-semibold text-slate-800 mb-1">Agarre Mano-Carga</label>
+              <select
+                value={invisibleParams.gripCoupling}
+                onChange={(e) =>
+                  setInvisibleParams((p) => ({
+                    ...p,
+                    gripCoupling: e.target.value as 'bueno' | 'regular' | 'malo',
+                  }))
+                }
+                className="w-full min-h-[38px] rounded border border-slate-300 bg-white px-2.5 py-1.5 text-slate-900"
+              >
+                <option value="bueno">Bueno (Asas óptimas)</option>
+                <option value="regular">Regular</option>
+                <option value="malo">Malo (Sin asas)</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block font-semibold text-slate-800 mb-1">Sexo Biológico</label>
+              <select
+                value={invisibleParams.sex}
+                onChange={(e) =>
+                  setInvisibleParams((p) => ({ ...p, sex: e.target.value as BiologicalSex }))
+                }
+                className="w-full min-h-[38px] rounded border border-slate-300 bg-white px-2.5 py-1.5 text-slate-900"
+              >
+                <option value="masculino">Masculino</option>
+                <option value="femenino">Femenino</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block font-semibold text-slate-800 mb-1">Peso Operario (kg)</label>
+              <input
+                type="number"
+                min={42}
+                max={145}
+                value={invisibleParams.bodyMassKg}
+                onChange={(e) =>
+                  setInvisibleParams((p) => ({
+                    ...p,
+                    bodyMassKg: Math.max(42, Math.min(145, Number(e.target.value) || 75)),
+                  }))
+                }
+                className="w-full min-h-[38px] rounded border border-slate-300 bg-white px-2.5 py-1.5 font-mono tabular-nums text-slate-900"
+              />
+            </div>
+
+            <div>
+              <label className="block font-semibold text-slate-800 mb-1">Complexión</label>
+              <select
+                value={invisibleParams.complexion}
+                onChange={(e) =>
+                  setInvisibleParams((p) => ({
+                    ...p,
+                    complexion: e.target.value as OperatorComplexion,
+                  }))
+                }
+                className="w-full min-h-[38px] rounded border border-slate-300 bg-white px-2.5 py-1.5 text-slate-900"
+              >
+                <option value="delgada_p5">Delgada / P5</option>
+                <option value="media_p50">Media / P50</option>
+                <option value="robusta_p95">Robusta / P95</option>
+              </select>
+            </div>
+
+            <div className="flex items-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setInvisibleParams((p) => ({
+                    ...p,
+                    loadMassKg: p.loadMassKg ?? 15,
+                    userConfirmedInvisibleParams: true,
+                  }));
+                  setStatusNotice({
+                    tone: 'success',
+                    text: 'Cotas H/V y masa confirmadas para Toma de Carga y Destino.',
+                  });
+                }}
+                className="w-full min-h-[38px] inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold cursor-pointer"
+              >
+                <Check className="w-3.5 h-3.5" />
+                Validar Datos
+              </button>
+            </div>
+          </div>
+        </section>
+
+        {/* PASO 4: SALIDA JSON ESTRICTA DE LA POSTURA ACTIVA */}
+        <section className="lg:col-span-5 bg-slate-950 text-slate-100 border border-slate-800 rounded-md p-4 space-y-3 flex flex-col">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
+            <div>
+              <span className="font-mono text-xs font-bold text-emerald-400">
+                4. Salida JSON Estricto ({activePostureRole === 'origin' ? 'Toma de Carga' : 'Destino'})
+              </span>
+              <h2 className="text-sm font-bold text-white">
+                Sincronización Exacta del Avatar 3D
+              </h2>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setJsonDraftText(formattedStrictJsonString);
+                  setJsonEditorOpen((o) => !o);
+                }}
+                className="min-h-[32px] inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-700 bg-slate-900 hover:bg-slate-800 text-xs font-semibold text-slate-200 cursor-pointer"
+              >
+                <Sliders className="w-3.5 h-3.5" />
+                {jsonEditorOpen ? 'Ver' : 'Editar'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => void handleCopyStrictJson()}
+                className="min-h-[32px] inline-flex items-center gap-1 px-2 py-1 rounded border border-emerald-600/60 bg-emerald-950 hover:bg-emerald-900 text-xs font-semibold text-emerald-200 cursor-pointer"
+              >
+                {copiedJsonBadge ? <Check className="w-3.5 h-3.5" /> : <ClipboardCopy className="w-3.5 h-3.5" />}
+                {copiedJsonBadge ? 'Copiado' : 'Copiar'}
+              </button>
+
+              <button
+                type="button"
+                onClick={handleDownloadStrictJson}
+                className="min-h-[32px] inline-flex items-center gap-1 px-2 py-1 rounded border border-sky-600/60 bg-sky-950 hover:bg-sky-900 text-xs font-semibold text-sky-200 cursor-pointer"
+              >
+                <FileJson className="w-3.5 h-3.5" />
+                .json
+              </button>
+            </div>
+          </div>
+
+          {jsonEditorOpen ? (
+            <div className="flex-1 flex flex-col gap-2">
+              <textarea
+                value={jsonDraftText}
+                onChange={(e) => setJsonDraftText(e.target.value)}
+                rows={13}
+                spellCheck={false}
+                className="w-full flex-1 rounded border border-slate-700 bg-slate-900 p-3 font-mono text-[11px] leading-relaxed text-emerald-300"
+              />
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setJsonEditorOpen(false)}
+                  className="px-3 py-1.5 rounded border border-slate-700 text-xs text-slate-300 cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleApplyEditedJson}
+                  className="px-3.5 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold cursor-pointer"
+                >
+                  Aplicar al Avatar 3D
+                </button>
+              </div>
+            </div>
+          ) : (
+            <pre className="flex-1 max-h-[370px] overflow-auto rounded border border-slate-800 bg-slate-900/90 p-3 font-mono text-[11px] leading-relaxed text-emerald-300 select-all tabular-nums">
+              {formattedStrictJsonString}
+            </pre>
+          )}
+        </section>
+      </div>
+
+      {/* NUEVA SECCIÓN: EVALUACIÓN DE MOVIMIENTOS REPETITIVOS POR CARGA DE VÍDEO (OCRA CHECK LIST, JSI, NAM 295) */}
+      <section className="bg-white border border-slate-300 rounded-md p-4 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2.5">
+          <div>
+            <span className="font-mono text-xs font-bold text-violet-800">
+              5. Evaluación de Movimientos Repetitivos desde Carga de Vídeo
+            </span>
+            <h2 className="text-sm sm:text-base font-bold text-slate-900">
+              Extracción de Acciones Técnicas, Ciclo T (s), Tiempos Angulares MMSS, OCRA Check List, JSI y NAM
+            </h2>
+          </div>
+          <span className="text-xs font-mono text-slate-600 tabular-nums">
+            Ciclo medido: {repetitiveMetrics.cycleDurationSec} s · {repetitiveMetrics.actionsPerMinR} acc/min
+          </span>
+        </div>
+
+        <RepetitiveCycleAndAnglesGuide methodName="Análisis de Movimientos Repetitivos por Vídeo (OCRA / JSI / NAM)" />
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2.5 text-xs">
+          <div>
+            <label className="block font-semibold text-slate-700 mb-1">Ciclo T (seg)</label>
+            <input
+              type="number"
+              min={1}
+              step={0.5}
+              value={repetitiveMetrics.cycleDurationSec}
+              onChange={(e) =>
+                setRepetitiveMetrics((m) => ({
+                  ...m,
+                  cycleDurationSec: Math.max(1, Number(e.target.value) || 1),
+                }))
+              }
+              className="w-full rounded border border-slate-300 px-2 py-1.5 font-mono tabular-nums"
+            />
+          </div>
+
+          <div>
+            <label className="block font-semibold text-slate-700 mb-1">Acc/min Der.</label>
+            <input
+              type="number"
+              min={1}
+              step={1}
+              value={repetitiveMetrics.actionsPerMinR}
+              onChange={(e) =>
+                setRepetitiveMetrics((m) => ({
+                  ...m,
+                  actionsPerMinR: Math.max(1, Number(e.target.value) || 1),
+                }))
+              }
+              className="w-full rounded border border-slate-300 px-2 py-1.5 font-mono tabular-nums"
+            />
+          </div>
+
+          <div>
+            <label className="block font-semibold text-slate-700 mb-1">Acc/min Izq.</label>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={repetitiveMetrics.actionsPerMinL}
+              onChange={(e) =>
+                setRepetitiveMetrics((m) => ({
+                  ...m,
+                  actionsPerMinL: Math.max(0, Number(e.target.value) || 0),
+                }))
+              }
+              className="w-full rounded border border-slate-300 px-2 py-1.5 font-mono tabular-nums"
+            />
+          </div>
+
+          <div>
+            <label className="block font-semibold text-slate-700 mb-1">Esfuerzo/ciclo (s)</label>
+            <input
+              type="number"
+              min={0.2}
+              step={0.2}
+              value={repetitiveMetrics.effortDurationSec}
+              onChange={(e) =>
+                setRepetitiveMetrics((m) => ({
+                  ...m,
+                  effortDurationSec: Math.max(0.2, Number(e.target.value) || 1),
+                }))
+              }
+              className="w-full rounded border border-slate-300 px-2 py-1.5 font-mono tabular-nums"
+            />
+          </div>
+
+          <div>
+            <label className="block font-semibold text-slate-700 mb-1">% Hombro &gt;80°</label>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              value={repetitiveMetrics.pctShoulderHigh}
+              onChange={(e) =>
+                setRepetitiveMetrics((m) => ({
+                  ...m,
+                  pctShoulderHigh: Math.max(0, Math.min(100, Number(e.target.value) || 0)),
+                }))
+              }
+              className="w-full rounded border border-slate-300 px-2 py-1.5 font-mono tabular-nums"
+            />
+          </div>
+
+          <div>
+            <label className="block font-semibold text-slate-700 mb-1">% Muñeca &gt;45°</label>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              value={repetitiveMetrics.pctWristAwkward}
+              onChange={(e) =>
+                setRepetitiveMetrics((m) => ({
+                  ...m,
+                  pctWristAwkward: Math.max(0, Math.min(100, Number(e.target.value) || 0)),
+                }))
+              }
+              className="w-full rounded border border-slate-300 px-2 py-1.5 font-mono tabular-nums"
+            />
+          </div>
+
+          <div>
+            <label className="block font-semibold text-slate-700 mb-1">Escala Borg (0–10)</label>
+            <select
+              value={borgPeakScore}
+              onChange={(e) => setBorgPeakScore(Number(e.target.value))}
+              className="w-full rounded border border-slate-300 bg-white px-2 py-1.5 font-mono"
+            >
+              <option value={1}>1 · Muy ligero</option>
+              <option value={2}>2 · Ligero</option>
+              <option value={3}>3 · Moderado</option>
+              <option value={4}>4 · Algo fuerte</option>
+              <option value={5}>5 · Fuerte</option>
+              <option value={7}>7 · Muy fuerte</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block font-semibold text-slate-700 mb-1">Agarre Mano-Dedos</label>
+            <select
+              value={distalGripType}
+              onChange={(e) =>
+                setDistalGripType(e.target.value as 'power' | 'pinch_33' | 'pinch_50' | 'pinch_80')
+              }
+              className="w-full rounded border border-slate-300 bg-white px-2 py-1.5"
+            >
+              <option value="power">Potencia óptimo</option>
+              <option value="pinch_33">Pinza / gancho 1/3</option>
+              <option value="pinch_50">Pinza / gancho 50%</option>
+              <option value="pinch_80">Pinza / gancho &gt;80%</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+          <div className="rounded border border-slate-200 bg-slate-50 p-3 flex items-center justify-between">
+            <div>
+              <div className="font-semibold text-slate-700">Check List OCRA (Vídeo)</div>
+              <div className="text-slate-500">{ocraEvalSummary.riskLabel}</div>
+            </div>
+            <div className="font-mono text-base font-bold text-slate-900 tabular-nums">
+              {ocraEvalSummary.primaryScoreText}
+            </div>
+          </div>
+
+          <div className="rounded border border-slate-200 bg-slate-50 p-3 flex items-center justify-between">
+            <div>
+              <div className="font-semibold text-slate-700">Job Strain Index — JSI</div>
+              <div className="text-slate-500">{jsiEvalSummary.riskLabel}</div>
+            </div>
+            <div className="font-mono text-base font-bold text-slate-900 tabular-nums">
+              {jsiEvalSummary.primaryScoreText}
+            </div>
+          </div>
+
+          <div className="rounded border border-slate-200 bg-slate-50 p-3 flex items-center justify-between">
+            <div>
+              <div className="font-semibold text-slate-700">NAM Res. MTESS 295/03</div>
+              <div className="text-slate-500">{namEvalSummary.riskLabel}</div>
+            </div>
+            <div className="font-mono text-base font-bold text-slate-900 tabular-nums">
+              {namEvalSummary.primaryScoreText}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-4 pt-2 border-t border-slate-100 text-xs text-slate-700">
+          <span className="font-semibold text-slate-900">
+            Pestañas a generar e incluir en el Informe PDF/Word (con Fotos Reales + Avatar 3D):
+          </span>
+          <label className="inline-flex items-center gap-1.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={emitNiosh}
+              onChange={(e) => setEmitNiosh(e.target.checked)}
+              className="rounded border-slate-300"
+            />
+            NIOSH (Toma y Destino)
+          </label>
+          <label className="inline-flex items-center gap-1.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={emitReba}
+              onChange={(e) => setEmitReba(e.target.checked)}
+              className="rounded border-slate-300"
+            />
+            REBA 3D
+          </label>
+          <label className="inline-flex items-center gap-1.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={emitOcraChecklist}
+              onChange={(e) => setEmitOcraChecklist(e.target.checked)}
+              className="rounded border-slate-300"
+            />
+            Check List OCRA (Repetitivos)
+          </label>
+          <label className="inline-flex items-center gap-1.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={emitJsi}
+              onChange={(e) => setEmitJsi(e.target.checked)}
+              className="rounded border-slate-300"
+            />
+            JSI (Repetitivos)
+          </label>
+          <label className="inline-flex items-center gap-1.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={emitNam295}
+              onChange={(e) => setEmitNam295(e.target.checked)}
+              className="rounded border-slate-300"
+            />
+            NAM Res. 295/03
+          </label>
+          <div className="ml-auto flex items-center gap-2">
+            <span>Minutos repetitivos/turno:</span>
+            <input
+              type="number"
+              min={30}
+              max={600}
+              value={netRepetitiveMinutes}
+              onChange={(e) => setNetRepetitiveMinutes(Math.max(30, Number(e.target.value) || 360))}
+              className="w-18 rounded border border-slate-300 px-2 py-1 font-mono tabular-nums"
+            />
+            <span>Sin pausa (h):</span>
+            <select
+              value={unrecoveredHours}
+              onChange={(e) => setUnrecoveredHours(Number(e.target.value) as 0 | 2 | 3 | 4 | 6)}
+              className="rounded border border-slate-300 bg-white px-2 py-1 font-mono"
+            >
+              <option value={0}>0 h</option>
+              <option value={2}>2 h</option>
+              <option value={3}>3 h</option>
+              <option value={4}>4 h</option>
+              <option value={6}>6 h</option>
+            </select>
+          </div>
+        </div>
+      </section>
+
+      {/* PANEL CONSOLIDADO FINAL: COMPRESIÓN L4/L5, MOMENTOS ARTICULARES Y EMISIÓN DE INFORME CON FOTOS GARANTIZADAS */}
+      <section className="bg-white border border-slate-300 rounded-md p-4 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3">
+          <div>
+            <span className="font-mono text-xs font-bold text-slate-600">
+              6. Informe Técnico Consolidado (Fotos Reales + Réplicas Avatar 3D Exactas)
+            </span>
+            <h2 className="text-sm sm:text-base font-bold text-slate-900">
+              Compresión L4/L5, Momentos (%MVC), NIOSH, REBA y Movimientos Repetitivos
+            </h2>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={isEmittingReport}
+              onClick={() => void handleEmitCompleteEvaluation(false)}
+              className="min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded bg-sky-700 hover:bg-sky-800 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer"
+            >
+              <Activity className="w-3.5 h-3.5" />
+              {isEmittingReport ? 'Generando Fotos y Pestañas...' : 'Enviar Pestañas y Fotos al Evaluador'}
+            </button>
 
             <button
               type="button"
-              onClick={() => void runVideoExtractionPipeline()}
-              disabled={!videoUrl || isProcessing || isGeneratingTestVideo || isNormalizingVideo}
-              className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-md bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white text-xs sm:text-sm font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+              disabled={isEmittingReport}
+              onClick={() => void handleEmitCompleteEvaluation(true)}
+              className="min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer"
             >
-              <Sparkles className="w-4 h-4 text-sky-400" />
-              {isProcessing
-                ? 'Procesando Video y Generando Informe...'
-                : 'Procesar Video y Emitir Informe Ergonómico'}
+              <FileDown className="w-3.5 h-3.5" />
+              Emitir Informe PDF Completo con Fotos
             </button>
 
-            {isProcessing && processingStage && (
-              <div className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-950 font-medium">
-                {processingStage}
-              </div>
-            )}
+            <button
+              type="button"
+              onClick={() => void onExportCurrentWord()}
+              className="min-h-[40px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-slate-300 bg-white hover:bg-slate-100 text-xs font-semibold text-slate-800 cursor-pointer"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              Exportar Word
+            </button>
 
-            {errorMsg && (
-              <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2.5 text-xs text-red-900 flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 text-red-700 shrink-0 mt-0.5" />
-                <span>{errorMsg}</span>
-              </div>
+            {hasEmittedTabs && (
+              <button
+                type="button"
+                onClick={onOpenGeneratedTabsInEvaluator}
+                className="min-h-[40px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-emerald-400 bg-emerald-50 hover:bg-emerald-100 text-xs font-semibold text-emerald-950 cursor-pointer"
+              >
+                Ver Previsualización en Evaluador →
+              </button>
             )}
           </div>
         </div>
 
-        {/* TIRA DE FOTOGRAMAS MUESTREADOS CON TIMESTAMPS EXACTOS */}
-        {sampledFrames.length > 0 && (
-          <div className="pt-2 border-t border-slate-200 space-y-2">
-            <div className="flex items-center justify-between text-xs text-slate-600">
-              <span className="font-semibold text-slate-800">
-                Secuencia Temporal Muestreada ({sampledFrames.length} fotogramas con marca de tiempo milimétrica)
-              </span>
-              <span className="font-mono tabular-nums">Haga clic en un fotograma para posicionar el reproductor</span>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div
+            className={`rounded border p-3 ${
+              ergonizaBiomechReport.l4l5CompressionN >= ergonizaBiomechReport.l4l5CompressionLimitN
+                ? 'border-rose-300 bg-rose-50/70'
+                : ergonizaBiomechReport.l4l5CompressionN >=
+                    ergonizaBiomechReport.l4l5CompressionLimitN * 0.78
+                  ? 'border-amber-300 bg-amber-50/70'
+                  : 'border-emerald-300 bg-emerald-50/60'
+            }`}
+          >
+            <span className="block text-[11px] font-semibold text-slate-600">
+              Compresión Discal L4/L5 Máx.
+            </span>
+            <div className="mt-1 font-mono text-xl font-bold text-slate-950 tabular-nums">
+              {ergonizaBiomechReport.l4l5CompressionN} N
             </div>
-            <div className="flex items-center gap-2 overflow-x-auto pb-1">
-              {sampledFrames.map((f, i) => (
-                <button
-                  key={`${f.timestamp}-${i}`}
-                  type="button"
-                  onClick={() => handleJumpVideoToTimestamp(f.timestamp)}
-                  className="shrink-0 w-28 rounded border border-slate-300 bg-slate-900 overflow-hidden hover:border-sky-600 transition-colors cursor-pointer text-left"
-                >
-                  <img
-                    src={f.previewUrl}
-                    alt={`Fotograma ${f.timestamp}`}
-                    referrerPolicy="no-referrer"
-                    className="w-full h-16 object-cover"
-                  />
-                  <div className="px-1.5 py-0.5 text-[10px] font-mono tabular-nums text-slate-200 bg-slate-950 text-center">
-                    {f.timestamp}
-                  </div>
-                </button>
-              ))}
-            </div>
+            <span className="block text-[11px] text-slate-600 font-mono tabular-nums mt-0.5">
+              Toma: {originBiomechReport.l4l5CompressionN} N · Dest: {destBiomechReport.l4l5CompressionN} N
+            </span>
           </div>
-        )}
+
+          <div
+            className={`rounded border p-3 ${
+              ergonizaBiomechReport.l4l5ShearN >= 500
+                ? 'border-rose-300 bg-rose-50/70'
+                : 'border-slate-200 bg-slate-50'
+            }`}
+          >
+            <span className="block text-[11px] font-semibold text-slate-600">
+              Cizalladura Lumbar L4/L5
+            </span>
+            <div className="mt-1 font-mono text-xl font-bold text-slate-950 tabular-nums">
+              {ergonizaBiomechReport.l4l5ShearN} N
+            </div>
+            <span className="block text-[11px] text-slate-600 font-mono tabular-nums mt-0.5">
+              Umbral admisible: &lt; {ergonizaBiomechReport.l4l5ShearLimitN} N
+            </span>
+          </div>
+
+          <div className="rounded border border-slate-200 bg-slate-50 p-3">
+            <span className="block text-[11px] font-semibold text-slate-600">
+              Ecuación NIOSH (Toma y Destino)
+            </span>
+            <div className="mt-1 font-mono text-xl font-bold text-slate-950 tabular-nums">
+              {nioshEval.primaryScoreText}
+            </div>
+            <span className="block text-[11px] text-slate-600 truncate mt-0.5">
+              {nioshEval.riskLabel}
+            </span>
+          </div>
+
+          <div className="rounded border border-slate-200 bg-slate-50 p-3">
+            <span className="block text-[11px] font-semibold text-slate-600">
+              Puntuación Postural REBA
+            </span>
+            <div className="mt-1 font-mono text-xl font-bold text-slate-950 tabular-nums">
+              {rebaEval.primaryScoreText}
+            </div>
+            <span className="block text-[11px] text-slate-600 truncate mt-0.5">
+              {rebaEval.riskLabel}
+            </span>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto border border-slate-200 rounded">
+          <table className="w-full text-left border-collapse text-xs">
+            <thead>
+              <tr className="bg-slate-100 border-b border-slate-200 text-slate-700">
+                <th className="py-2 px-3 font-semibold">Articulación Evaluada</th>
+                <th className="py-2 px-3 font-semibold">Ángulos Sincronizados</th>
+                <th className="py-2 px-3 font-semibold text-right">Momento Req. (N·m)</th>
+                <th className="py-2 px-3 font-semibold text-right">Capacidad MVC (N·m)</th>
+                <th className="py-2 px-3 font-semibold text-right">
+                  %MVC (TLV ≤ {ergonizaBiomechReport.joints[0]?.acgihTlvPercentMvc}%)
+                </th>
+                <th className="py-2 px-3 font-semibold text-right">% Población Protegida</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-200">
+              {ergonizaBiomechReport.joints.map((j) => (
+                <tr key={j.jointId} className="hover:bg-slate-50">
+                  <td className="py-2 px-3 font-semibold text-slate-900">{j.jointLabel}</td>
+                  <td className="py-2 px-3 font-mono text-[11px] text-slate-700 tabular-nums">
+                    {j.angleSummary}
+                  </td>
+                  <td className="py-2 px-3 font-mono text-right font-semibold text-slate-900 tabular-nums">
+                    {j.momentNm.toFixed(1)}
+                  </td>
+                  <td className="py-2 px-3 font-mono text-right text-slate-700 tabular-nums">
+                    {j.mvcCapacityNm.toFixed(1)}
+                  </td>
+                  <td
+                    className={`py-2 px-3 font-mono text-right font-bold tabular-nums ${
+                      j.status === 'critico'
+                        ? 'text-rose-700'
+                        : j.status === 'condicional'
+                          ? 'text-amber-700'
+                          : 'text-emerald-700'
+                    }`}
+                  >
+                    {j.percentMvc.toFixed(1)}%
+                  </td>
+                  <td className="py-2 px-3 font-mono text-right text-slate-800 tabular-nums">
+                    {j.protectedPopulationPct.toFixed(1)}%
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <p className="text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded p-3">
+          <strong>Síntesis biomecánica:</strong> {ergonizaBiomechReport.technicalSummary}
+        </p>
       </section>
 
-      {/* ===================================================================== */}
-      {/* INFORME BIOMECÁNICO Y ERGONÓMICO EMITIDO AUTOMÁTICAMENTE              */}
-      {/* ===================================================================== */}
-      {emittedBundle && (
-        <section className="bg-white border border-slate-300 rounded-lg p-5 space-y-6">
-          {/* Encabezado de Confirmación de Informe Emitido */}
-          <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 border-b border-slate-200 pb-4">
-            <div className="space-y-1">
-              <div className="flex flex-wrap items-center gap-2 text-xs text-emerald-800 font-semibold">
-                <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
-                <span>
-                  {emittedBundle.pdfAutoEmitted
-                    ? 'Video procesado e Informe PDF emitido con Semáforo de Riesgo'
-                    : 'Video procesado e Informe Técnico actualizado en el estudio activo'}
-                </span>
-                <span className="text-slate-300">·</span>
-                <span className="font-mono tabular-nums text-slate-600">
-                  {emittedBundle.sampledCount} fotogramas en {(emittedBundle.processingMs / 1000).toFixed(1)} s
+      {showErgonizaPdfModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/75 flex items-center justify-center p-3 sm:p-6">
+          <div className="bg-white rounded-md border border-slate-300 w-full max-w-5xl h-[86vh] flex flex-col overflow-hidden shadow-xl">
+            <div className="px-4 py-3 bg-slate-900 text-white flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 min-w-0">
+                <BookOpen className="w-4 h-4 text-sky-400 shrink-0" />
+                <span className="text-xs sm:text-sm font-bold truncate">
+                  Referencia Técnica: Modelización Biomecánica 3D de 16 Segmentos y 14 Articulaciones
                 </span>
               </div>
-              <h2 className="text-base sm:text-lg font-bold text-slate-900">
-                Informe Técnico de Extracción Biomecánica 3D y Control Normativo ({general.companyName})
-              </h2>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2 shrink-0">
-              <button
-                type="button"
-                onClick={() => void handleToggleInvertOriginDest()}
-                disabled={isProcessing}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-amber-300 bg-amber-50 hover:bg-amber-100 text-xs font-semibold text-amber-950 whitespace-nowrap shrink-0 cursor-pointer"
-                title="Intercambia las cotas de Origen y Destino (ej. pasar de levantar a bajar carga en ciclo reversible)"
-              >
-                <ArrowDownUp className="w-3.5 h-3.5 text-amber-800" />
-                {emittedBundle.invertedCycle ? 'Restaurar Origen → Destino' : 'Invertir Origen ↔ Destino'}
-              </button>
-
-              <button
-                type="button"
-                onClick={onOpenGeneratedTabsInEvaluator}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-sky-300 bg-sky-50 hover:bg-sky-100 text-xs font-semibold text-sky-900 whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <Layers className="w-3.5 h-3.5 text-sky-700" />
-                Abrir Pestañas NIOSH y REBA
-              </button>
-
-              <button
-                type="button"
-                onClick={() => void onExportCurrentPdf()}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-slate-900 hover:bg-slate-800 text-xs font-semibold text-white whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <FileDown className="w-3.5 h-3.5" />
-                Descargar Informe PDF
-              </button>
-
-              <button
-                type="button"
-                onClick={() => void onExportCurrentWord()}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-sky-700 hover:bg-sky-800 text-xs font-semibold text-white whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <FileSpreadsheet className="w-3.5 h-3.5" />
-                Descargar Word (.docx)
-              </button>
-            </div>
-          </div>
-
-          {/* ACLARACIÓN TÉCNICA DEL SENTIDO CINEMÁTICO (LEVANTAR VS. BAJAR Y DUALIDAD ORIGEN <-> DESTINO) */}
-          {(() => {
-            const traj = describeNioshTrajectory(
-              emittedBundle.nioshData.vOriginCm,
-              emittedBundle.nioshData.vDestCm,
-            );
-            return (
-              <div className="rounded-lg border border-sky-200 bg-sky-50/70 p-4 space-y-1.5 text-xs">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="font-bold text-sky-950">
-                    Interpretación Cinemática de la Carga: {traj.shortTitle}
-                  </span>
-                  <span className="font-mono font-semibold text-sky-900 tabular-nums">
-                    V origen = {emittedBundle.nioshData.vOriginCm} cm · V destino = {emittedBundle.nioshData.vDestCm} cm
-                  </span>
-                </div>
-                <p className="text-slate-700 leading-relaxed">{traj.technicalExplanation}</p>
-              </div>
-            );
-          })()}
-
-          {/* BLOQUE 1: ALERTA DE ATENCIÓN INMEDIATA + TABLA SEMÁFORO DE COLORES */}
-          <div className="space-y-4">
-            {emittedBundle.trafficLight.immediateAlerts.length > 0 ? (
-              <div className="rounded-lg border border-red-300 bg-red-50/90 p-4 space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-red-200 pb-2">
-                  <div className="flex items-center gap-2 text-red-900">
-                    <AlertOctagon className="w-5 h-5 text-red-700 shrink-0" />
-                    <h3 className="text-sm font-bold">
-                      ALERTA DE ATENCIÓN INMEDIATA: {emittedBundle.trafficLight.immediateAlerts.length} INDICADOR(ES) EN SEMÁFORO ROJO
-                    </h3>
-                  </div>
-                  <span className="text-xs font-mono font-semibold text-red-800 tabular-nums">
-                    Requiere intervención prioritaria
-                  </span>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {emittedBundle.trafficLight.immediateAlerts.map((al) => (
-                    <div key={al.id} className="rounded-md border border-red-200 bg-white p-3 space-y-1 text-xs">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="font-bold text-slate-900">{al.indicator}</span>
-                        <span className="font-mono font-bold text-red-700 tabular-nums">{al.measuredValue}</span>
-                      </div>
-                      <div className="text-slate-600">
-                        Límite normativo: <span className="font-mono text-slate-800">{al.normativeThreshold}</span> · Plazo:{' '}
-                        <strong className="text-red-800">{al.deadline}</strong>
-                      </div>
-                      <p className="text-slate-800">{al.actionRequired}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div
-                className={`rounded-lg border p-3.5 flex items-start gap-2.5 text-xs ${
-                  emittedBundle.trafficLight.amberCount > 0
-                    ? 'border-amber-300 bg-amber-50/80 text-amber-950'
-                    : 'border-emerald-300 bg-emerald-50/80 text-emerald-950'
-                }`}
-              >
-                {emittedBundle.trafficLight.amberCount > 0 ? (
-                  <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
-                ) : (
-                  <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
-                )}
-                <div>
-                  <span className="font-bold">
-                    {emittedBundle.trafficLight.amberCount > 0
-                      ? `Sin resultados intolerables inmediatos · ${emittedBundle.trafficLight.amberCount} indicador(es) en Semáforo Ámbar`
-                      : 'Todos los parámetros biomecánicos y normativos se sitúan en Semáforo Verde (Aceptable)'}
-                  </span>
-                </div>
-              </div>
-            )}
-
-            {/* Tabla Semáforo de Colores */}
-            <div className="space-y-2">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h3 className="text-sm font-bold text-slate-900">
-                  1. Tabla Semáforo de Resultados Biomecánicos y Ergonómicos
-                </h3>
-                <div className="flex items-center gap-3 text-xs font-mono tabular-nums">
-                  <span className="inline-flex items-center gap-1.5 text-red-800 font-semibold">
-                    <span className="w-2.5 h-2.5 rounded-full bg-red-600 inline-block" />
-                    Rojo: {emittedBundle.trafficLight.redCount}
-                  </span>
-                  <span className="inline-flex items-center gap-1.5 text-amber-800 font-semibold">
-                    <span className="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block" />
-                    Ámbar: {emittedBundle.trafficLight.amberCount}
-                  </span>
-                  <span className="inline-flex items-center gap-1.5 text-emerald-800 font-semibold">
-                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-600 inline-block" />
-                    Verde: {emittedBundle.trafficLight.greenCount}
-                  </span>
-                </div>
-              </div>
-
-              <div className="overflow-x-auto border border-slate-200 rounded-lg">
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead>
-                    <tr className="bg-slate-900 text-white">
-                      <th className="py-2.5 px-3 font-semibold">Semáforo</th>
-                      <th className="py-2.5 px-3 font-semibold">Parámetro / Método Evaluado</th>
-                      <th className="py-2.5 px-3 font-semibold">Valor Obtenido</th>
-                      <th className="py-2.5 px-3 font-semibold">Criterio Normativo</th>
-                      <th className="py-2.5 px-3 font-semibold">Acción Preventiva / Correctiva</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200">
-                    {emittedBundle.trafficLight.rows.map((r) => {
-                      const st = getTrafficStyles(r.color);
-                      return (
-                        <tr key={r.id} className="hover:bg-slate-50 align-top">
-                          <td className={`py-2.5 px-3 whitespace-nowrap ${st.rowBg}`}>
-                            <span className={`inline-flex items-center gap-2 ${st.badgeText}`}>
-                              <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${st.dotBg}`} />
-                              <span>{r.shortBadge}</span>
-                            </span>
-                          </td>
-                          <td className="py-2.5 px-3">
-                            <div className="font-semibold text-slate-900">{r.indicator}</div>
-                            <div className="text-slate-500 mt-0.5">{r.contextLabel}</div>
-                          </td>
-                          <td className="py-2.5 px-3 font-mono font-semibold tabular-nums text-slate-900">
-                            {r.measuredValue}
-                          </td>
-                          <td className="py-2.5 px-3 font-mono tabular-nums text-slate-700">
-                            {r.normativeThreshold}
-                          </td>
-                          <td className="py-2.5 px-3 text-slate-700">
-                            <span>{r.actionRequired}</span>{' '}
-                            <span className="font-semibold text-slate-900">({r.deadline})</span>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-
-          {/* BLOQUE 2: EVIDENCIA VISUAL Y MODELIZACIÓN 3D SIN SOLAPAMIENTO DE ÁNGULOS */}
-          <div className="space-y-2.5">
-            <h3 className="text-sm font-bold text-slate-900">
-              2. Fotogramas Críticos Extraídos y Modelización Biomecánica 3D (Rótulos Anticolisión)
-            </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3.5">
-              <div className="border border-slate-200 rounded-md p-2.5 bg-slate-50 space-y-1.5">
-                <div className="flex items-center justify-between text-[11px] font-semibold text-slate-800">
-                  <span>Video · Origen</span>
-                  <span className="font-mono tabular-nums text-sky-800">
-                    {emittedBundle.invertedCycle
-                      ? emittedBundle.extracted.critical_events.destino_timestamp
-                      : emittedBundle.extracted.critical_events.origen_timestamp}
-                  </span>
-                </div>
-                <img
-                  src={
-                    emittedBundle.invertedCycle
-                      ? emittedBundle.destKeyframeUrl
-                      : emittedBundle.originKeyframeUrl
-                  }
-                  alt="Fotograma crítico de origen"
-                  referrerPolicy="no-referrer"
-                  className={`w-full ${effectiveExpanded ? 'h-72' : 'h-52'} object-contain bg-slate-950 rounded-xs`}
-                />
-                <p className="text-[11px] text-slate-600 font-mono tabular-nums">
-                  V origen = {emittedBundle.nioshData.vOriginCm} cm · H = {emittedBundle.nioshData.hOriginCm} cm
-                </p>
-              </div>
-
-              <div className="border border-slate-200 rounded-md p-2.5 bg-slate-50 space-y-1.5">
-                <div className="flex items-center justify-between text-[11px] font-semibold text-slate-800">
-                  <span>Motor 3D · Origen</span>
-                  <span className="font-mono tabular-nums text-slate-600">
-                    V={emittedBundle.nioshData.vOriginCm} cm
-                  </span>
-                </div>
-                <img
-                  src={emittedBundle.origin3DUrl}
-                  alt="Reconstrucción 3D en origen"
-                  referrerPolicy="no-referrer"
-                  className={`w-full ${effectiveExpanded ? 'h-72' : 'h-52'} object-contain bg-white rounded-xs border border-slate-200`}
-                />
-                <p className="text-[11px] text-slate-600">
-                  Goniometría 3D en toma inicial de carga
-                </p>
-              </div>
-
-              <div className="border border-slate-200 rounded-md p-2.5 bg-slate-50 space-y-1.5">
-                <div className="flex items-center justify-between text-[11px] font-semibold text-slate-800">
-                  <span>Video · Destino</span>
-                  <span className="font-mono tabular-nums text-sky-800">
-                    {emittedBundle.invertedCycle
-                      ? emittedBundle.extracted.critical_events.origen_timestamp
-                      : emittedBundle.extracted.critical_events.destino_timestamp}
-                  </span>
-                </div>
-                <img
-                  src={
-                    emittedBundle.invertedCycle
-                      ? emittedBundle.originKeyframeUrl
-                      : emittedBundle.destKeyframeUrl
-                  }
-                  alt="Fotograma crítico de destino"
-                  referrerPolicy="no-referrer"
-                  className={`w-full ${effectiveExpanded ? 'h-72' : 'h-52'} object-contain bg-slate-950 rounded-xs`}
-                />
-                <p className="text-[11px] text-slate-600 font-mono tabular-nums">
-                  V destino = {emittedBundle.nioshData.vDestCm} cm · H = {emittedBundle.nioshData.hDestCm} cm
-                </p>
-              </div>
-
-              <div className="border border-slate-200 rounded-md p-2.5 bg-slate-50 space-y-1.5">
-                <div className="flex items-center justify-between text-[11px] font-semibold text-slate-800">
-                  <span>Motor 3D · Destino</span>
-                  <span className="font-mono tabular-nums text-slate-600">
-                    V={emittedBundle.nioshData.vDestCm} cm
-                  </span>
-                </div>
-                <img
-                  src={emittedBundle.dest3DUrl}
-                  alt="Reconstrucción 3D en destino"
-                  referrerPolicy="no-referrer"
-                  className={`w-full ${effectiveExpanded ? 'h-72' : 'h-52'} object-contain bg-white rounded-xs border border-slate-200`}
-                />
-                <p className="text-[11px] text-slate-600">
-                  Goniometría 3D en deposición final
-                </p>
-              </div>
-            </div>
-
-            {/* CORRECCIÓN MANUAL EN VIVO DE POSTURA DEL AVATAR EN ORIGEN Y DESTINO (SLIDERS + TEXTO) */}
-            <div className="border border-slate-300 rounded-lg bg-slate-50/80 p-4 space-y-3 mt-2">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2.5">
-                <div>
-                  <h4 className="text-xs font-bold text-slate-900">
-                    Corrección Manual de Postura 3D del Avatar (Origen y Destino por Slider y Texto)
-                  </h4>
-                  <p className="text-[11px] text-slate-600">
-                    Si desea afinar la altura de carga V (abajo en suelo vs. sobre hombros), distancia H, ángulos o fotograma seleccionado, ajuste con slider o número y pulse Actualizar.
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    disabled={isProcessing}
-                    onClick={() => {
-                      setEditVOrig(28);
-                      setEditHOrig(28);
-                      setEditTrunkOrig(16);
-                      setEditKneeOrig(112);
-                      setEditVDest(122);
-                      setEditHDest(32);
-                      setEditTrunkDest(4);
-                      setEditKneeDest(6);
-                    }}
-                    className="px-2.5 py-1.5 rounded-md border border-emerald-400 bg-emerald-50 hover:bg-emerald-100 text-[11px] font-semibold text-emerald-950 cursor-pointer"
-                  >
-                    Postura Ideal: Rodillas Flexionadas + Espalda Recta
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isProcessing}
-                    onClick={() => {
-                      setEditVOrig(24);
-                      setEditHOrig(38);
-                      setEditTrunkOrig(58);
-                      setEditKneeOrig(22);
-                      setEditVDest(148);
-                      setEditHDest(36);
-                      setEditTrunkDest(6);
-                      setEditKneeDest(6);
-                    }}
-                    className="px-2.5 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-100 text-[11px] font-semibold text-slate-800 cursor-pointer"
-                  >
-                    Contraste: Espalda Doblada → Sobre Hombros
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isProcessing}
-                    onClick={() => void handleApplyManualVideoAvatarCorrection(false)}
-                    className="px-3 py-1.5 rounded-md bg-sky-700 hover:bg-sky-800 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer"
-                  >
-                    Actualizar Avatar 3D e Informe
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isProcessing}
-                    onClick={() => void handleApplyManualVideoAvatarCorrection(true)}
-                    className="px-3 py-1.5 rounded-md bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer"
-                  >
-                    Actualizar y Descargar PDF
-                  </button>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                {/* COLUMNA ORIGEN */}
-                <div className="bg-white border border-slate-200 rounded-md p-3 space-y-2.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-bold text-slate-900">Foto 1 · Postura en Origen</span>
-                    {sampledFrames.length > 0 && (
-                      <select
-                        value={editOrigFrameIdx}
-                        onChange={(e) => setEditOrigFrameIdx(Number(e.target.value))}
-                        className="text-[11px] border border-slate-300 rounded px-2 py-1 bg-white text-slate-800 font-mono"
-                      >
-                        {sampledFrames.map((f, idx) => (
-                          <option key={idx} value={idx}>
-                            Cuadro #{idx + 1} ({f.timestamp})
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
-                    <label className="space-y-1">
-                      <span className="flex justify-between text-[11px] font-medium text-slate-700">
-                        <span>Altura Carga V Origen (cm)</span>
-                        <span className="font-mono font-bold text-sky-800">{editVOrig} cm</span>
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="range"
-                          min={5}
-                          max={185}
-                          value={editVOrig}
-                          onChange={(e) => setEditVOrig(Number(e.target.value))}
-                          className="flex-1 accent-sky-700"
-                        />
-                        <input
-                          type="number"
-                          min={5}
-                          max={185}
-                          value={editVOrig}
-                          onChange={(e) => setEditVOrig(Number(e.target.value) || 0)}
-                          className="w-16 border border-slate-300 rounded px-1.5 py-1 text-right font-mono text-xs"
-                        />
-                      </div>
-                    </label>
-
-                    <label className="space-y-1">
-                      <span className="flex justify-between text-[11px] font-medium text-slate-700">
-                        <span>Distancia H Origen (cm)</span>
-                        <span className="font-mono font-bold text-slate-900">{editHOrig} cm</span>
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="range"
-                          min={15}
-                          max={80}
-                          value={editHOrig}
-                          onChange={(e) => setEditHOrig(Number(e.target.value))}
-                          className="flex-1 accent-sky-700"
-                        />
-                        <input
-                          type="number"
-                          min={15}
-                          max={80}
-                          value={editHOrig}
-                          onChange={(e) => setEditHOrig(Number(e.target.value) || 15)}
-                          className="w-16 border border-slate-300 rounded px-1.5 py-1 text-right font-mono text-xs"
-                        />
-                      </div>
-                    </label>
-
-                    <label className="space-y-1">
-                      <span className="flex justify-between text-[11px] font-medium text-slate-700">
-                        <span>Flexión Tronco Origen (°)</span>
-                        <span className="font-mono font-bold text-slate-900">{editTrunkOrig}°</span>
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="range"
-                          min={-15}
-                          max={95}
-                          value={editTrunkOrig}
-                          onChange={(e) => setEditTrunkOrig(Number(e.target.value))}
-                          className="flex-1 accent-sky-700"
-                        />
-                        <input
-                          type="number"
-                          min={-15}
-                          max={95}
-                          value={editTrunkOrig}
-                          onChange={(e) => setEditTrunkOrig(Number(e.target.value) || 0)}
-                          className="w-16 border border-slate-300 rounded px-1.5 py-1 text-right font-mono text-xs"
-                        />
-                      </div>
-                    </label>
-
-                    <label className="space-y-1">
-                      <span className="flex justify-between text-[11px] font-medium text-slate-700">
-                        <span>Flexión Rodillas Origen (°)</span>
-                        <span className="font-mono font-bold text-slate-900">{editKneeOrig}°</span>
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="range"
-                          min={0}
-                          max={120}
-                          value={editKneeOrig}
-                          onChange={(e) => setEditKneeOrig(Number(e.target.value))}
-                          className="flex-1 accent-sky-700"
-                        />
-                        <input
-                          type="number"
-                          min={0}
-                          max={120}
-                          value={editKneeOrig}
-                          onChange={(e) => setEditKneeOrig(Number(e.target.value) || 0)}
-                          className="w-16 border border-slate-300 rounded px-1.5 py-1 text-right font-mono text-xs"
-                        />
-                      </div>
-                    </label>
-                  </div>
-                </div>
-
-                {/* COLUMNA DESTINO */}
-                <div className="bg-white border border-slate-200 rounded-md p-3 space-y-2.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-bold text-slate-900">Foto 2 · Postura en Destino</span>
-                    {sampledFrames.length > 0 && (
-                      <select
-                        value={editDestFrameIdx}
-                        onChange={(e) => setEditDestFrameIdx(Number(e.target.value))}
-                        className="text-[11px] border border-slate-300 rounded px-2 py-1 bg-white text-slate-800 font-mono"
-                      >
-                        {sampledFrames.map((f, idx) => (
-                          <option key={idx} value={idx}>
-                            Cuadro #{idx + 1} ({f.timestamp})
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
-                    <label className="space-y-1">
-                      <span className="flex justify-between text-[11px] font-medium text-slate-700">
-                        <span>Altura Carga V Destino (cm)</span>
-                        <span className="font-mono font-bold text-sky-800">{editVDest} cm</span>
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="range"
-                          min={5}
-                          max={185}
-                          value={editVDest}
-                          onChange={(e) => setEditVDest(Number(e.target.value))}
-                          className="flex-1 accent-sky-700"
-                        />
-                        <input
-                          type="number"
-                          min={5}
-                          max={185}
-                          value={editVDest}
-                          onChange={(e) => setEditVDest(Number(e.target.value) || 0)}
-                          className="w-16 border border-slate-300 rounded px-1.5 py-1 text-right font-mono text-xs"
-                        />
-                      </div>
-                    </label>
-
-                    <label className="space-y-1">
-                      <span className="flex justify-between text-[11px] font-medium text-slate-700">
-                        <span>Distancia H Destino (cm)</span>
-                        <span className="font-mono font-bold text-slate-900">{editHDest} cm</span>
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="range"
-                          min={15}
-                          max={80}
-                          value={editHDest}
-                          onChange={(e) => setEditHDest(Number(e.target.value))}
-                          className="flex-1 accent-sky-700"
-                        />
-                        <input
-                          type="number"
-                          min={15}
-                          max={80}
-                          value={editHDest}
-                          onChange={(e) => setEditHDest(Number(e.target.value) || 15)}
-                          className="w-16 border border-slate-300 rounded px-1.5 py-1 text-right font-mono text-xs"
-                        />
-                      </div>
-                    </label>
-
-                    <label className="space-y-1">
-                      <span className="flex justify-between text-[11px] font-medium text-slate-700">
-                        <span>Flexión Tronco Destino (°)</span>
-                        <span className="font-mono font-bold text-slate-900">{editTrunkDest}°</span>
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="range"
-                          min={-15}
-                          max={95}
-                          value={editTrunkDest}
-                          onChange={(e) => setEditTrunkDest(Number(e.target.value))}
-                          className="flex-1 accent-sky-700"
-                        />
-                        <input
-                          type="number"
-                          min={-15}
-                          max={95}
-                          value={editTrunkDest}
-                          onChange={(e) => setEditTrunkDest(Number(e.target.value) || 0)}
-                          className="w-16 border border-slate-300 rounded px-1.5 py-1 text-right font-mono text-xs"
-                        />
-                      </div>
-                    </label>
-
-                    <label className="space-y-1">
-                      <span className="flex justify-between text-[11px] font-medium text-slate-700">
-                        <span>Flexión Rodillas Destino (°)</span>
-                        <span className="font-mono font-bold text-slate-900">{editKneeDest}°</span>
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="range"
-                          min={0}
-                          max={120}
-                          value={editKneeDest}
-                          onChange={(e) => setEditKneeDest(Number(e.target.value))}
-                          className="flex-1 accent-sky-700"
-                        />
-                        <input
-                          type="number"
-                          min={0}
-                          max={120}
-                          value={editKneeDest}
-                          onChange={(e) => setEditKneeDest(Number(e.target.value) || 0)}
-                          className="w-16 border border-slate-300 rounded px-1.5 py-1 text-right font-mono text-xs"
-                        />
-                      </div>
-                    </label>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* BLOQUE 3: DICTAMEN DETERMINISTA NIOSH + REBA */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-            {(() => {
-              const nr = emittedBundle.nioshResult;
-              const sev = getSeverityStyles(nr.severity);
-              return (
-                <div className="border border-slate-200 rounded-lg p-4 space-y-3">
-                  <div className={`rounded-md border p-3.5 ${sev.box}`}>
-                    <div className="text-xs font-semibold">{nr.methodName}</div>
-                    <div className={`text-lg font-bold font-mono tabular-nums mt-0.5 ${sev.scoreText}`}>
-                      {nr.primaryScoreText}
-                    </div>
-                    {nr.secondaryScoreText && (
-                      <div className="text-xs font-mono tabular-nums mt-0.5">{nr.secondaryScoreText}</div>
-                    )}
-                    <div className={`text-xs font-semibold mt-1 ${sev.labelText}`}>
-                      {nr.riskLabel} · {nr.actionLevelText} · Plazo: {nr.recommendedDeadline}
-                    </div>
-                  </div>
-
-                  <p className="text-xs text-slate-700 leading-relaxed">{nr.interpretation}</p>
-
-                  <div className="overflow-x-auto border border-slate-200 rounded-md">
-                    <table className="w-full text-left border-collapse text-xs">
-                      <thead>
-                        <tr className="bg-slate-100 border-b border-slate-200 text-slate-800 font-semibold">
-                          <th className="py-2 px-3">Parámetro / Multiplicador NIOSH</th>
-                          <th className="py-2 px-3 text-right">Valor</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-200">
-                        {nr.breakdownRows.map((row, idx) => (
-                          <tr key={idx} className="hover:bg-slate-50">
-                            <td className="py-1.5 px-3 text-slate-700">{row.parameter}</td>
-                            <td className="py-1.5 px-3 text-right font-mono font-semibold text-slate-900 tabular-nums">
-                              {row.value}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              );
-            })()}
-
-            {(() => {
-              const rr = emittedBundle.rebaResult;
-              const sev = getSeverityStyles(rr.severity);
-              return (
-                <div className="border border-slate-200 rounded-lg p-4 space-y-3">
-                  <div className={`rounded-md border p-3.5 ${sev.box}`}>
-                    <div className="text-xs font-semibold">{rr.methodName}</div>
-                    <div className={`text-lg font-bold font-mono tabular-nums mt-0.5 ${sev.scoreText}`}>
-                      {rr.primaryScoreText}
-                    </div>
-                    <div className={`text-xs font-semibold mt-1 ${sev.labelText}`}>
-                      {rr.riskLabel} · {rr.actionLevelText} · Plazo: {rr.recommendedDeadline}
-                    </div>
-                  </div>
-
-                  <div className="overflow-x-auto border border-slate-200 rounded-md">
-                    <table className="w-full text-left border-collapse text-xs">
-                      <thead>
-                        <tr className="bg-slate-100 border-b border-slate-200 text-slate-800 font-semibold">
-                          <th className="py-2 px-3">Desglose Postural REBA (Instante Crítico)</th>
-                          <th className="py-2 px-3 text-right">Puntuación</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-200">
-                        {rr.breakdownRows.map((row, idx) => (
-                          <tr key={idx} className="hover:bg-slate-50">
-                            <td className="py-1.5 px-3 text-slate-700">{row.parameter}</td>
-                            <td className="py-1.5 px-3 text-right font-mono font-semibold text-slate-900 tabular-nums">
-                              {row.value}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  <div className="bg-slate-50 border border-slate-200 rounded-md p-3 space-y-1.5">
-                    <div className="text-xs font-bold text-slate-900 flex items-center justify-between">
-                      <span>Plan de Ingeniería y Rediseño Recomendado</span>
-                      <button
-                        type="button"
-                        onClick={() => void onExportCurrentPdf()}
-                        className="inline-flex items-center gap-1 text-sky-700 hover:text-sky-900 font-semibold whitespace-nowrap shrink-0 cursor-pointer"
-                      >
-                        <Download className="w-3 h-3" />
-                        PDF Completo
-                      </button>
-                    </div>
-                    <ul className="space-y-1 text-xs text-slate-700 list-decimal pl-4">
-                      {emittedBundle.nioshResult.suggestedMeasures.slice(0, 4).map((m, i) => (
-                        <li key={i}>{m}</li>
-                      ))}
-                    </ul>
-                  </div>
-                </div>
-              );
-            })()}
-          </div>
-
-          {/* BLOQUE 4: SALIDA JSON ESTRICTA DEL EXTRACTOR DE VISIÓN */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch pt-2 border-t border-slate-200">
-            <div className="lg:col-span-5 bg-slate-950 text-slate-100 rounded-lg border border-slate-800 p-4 flex flex-col justify-between space-y-3">
-              <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-2">
-                <span className="text-xs font-semibold text-sky-300">
-                  3. Salida JSON Estricta del Extractor de Visión
-                </span>
+              <div className="flex items-center gap-2">
+                <a
+                  href={ERGONIZA_MANUAL_PDF_URL}
+                  download="Ergoniza_Intelligent_Bases_de_funcionamiento.pdf"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-sky-700 hover:bg-sky-600 text-xs font-semibold text-white"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Descargar PDF
+                </a>
                 <button
                   type="button"
-                  onClick={() => void handleCopyJson()}
-                  className="inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-700 bg-slate-900 hover:bg-slate-800 text-[11px] font-medium text-slate-200 whitespace-nowrap shrink-0 cursor-pointer"
+                  onClick={() => setShowErgonizaPdfModal(false)}
+                  className="p-1 rounded hover:bg-slate-800 text-slate-300 hover:text-white cursor-pointer"
                 >
-                  <Copy className="w-3 h-3" />
-                  {copiedJson ? 'Copiado' : 'Copiar JSON'}
+                  <X className="w-4 h-4" />
                 </button>
-              </div>
-              <pre className="text-xs font-mono tabular-nums text-emerald-300 overflow-x-auto leading-relaxed max-h-64">
-                {JSON.stringify(emittedBundle.extracted, null, 2)}
-              </pre>
-            </div>
-
-            <div className="lg:col-span-7 grid grid-cols-2 sm:grid-cols-4 gap-3 content-start">
-              <div className="border border-slate-200 rounded-md p-3 bg-slate-50">
-                <div className="text-[11px] text-slate-500">Timestamp Origen</div>
-                <button
-                  type="button"
-                  onClick={() => handleJumpVideoToTimestamp(emittedBundle.extracted.critical_events.origen_timestamp)}
-                  className="mt-1 font-mono text-base font-bold text-sky-800 hover:underline tabular-nums cursor-pointer"
-                >
-                  {emittedBundle.extracted.critical_events.origen_timestamp}
-                </button>
-                <div className="text-[11px] text-slate-500 mt-0.5">
-                  V = {emittedBundle.nioshData.vOriginCm} cm
-                </div>
-              </div>
-
-              <div className="border border-slate-200 rounded-md p-3 bg-slate-50">
-                <div className="text-[11px] text-slate-500">Timestamp Destino</div>
-                <button
-                  type="button"
-                  onClick={() => handleJumpVideoToTimestamp(emittedBundle.extracted.critical_events.destino_timestamp)}
-                  className="mt-1 font-mono text-base font-bold text-sky-800 hover:underline tabular-nums cursor-pointer"
-                >
-                  {emittedBundle.extracted.critical_events.destino_timestamp}
-                </button>
-                <div className="text-[11px] text-slate-500 mt-0.5">
-                  V = {emittedBundle.nioshData.vDestCm} cm
-                </div>
-              </div>
-
-              <div className="border border-slate-200 rounded-md p-3 bg-slate-50">
-                <div className="text-[11px] text-slate-500">Distancia Horizontal H</div>
-                <div className="mt-1 font-mono text-base font-bold text-slate-900 tabular-nums">
-                  {Math.max(emittedBundle.nioshData.hOriginCm, emittedBundle.nioshData.hDestCm)} cm
-                </div>
-                <div className="text-[11px] text-slate-500 mt-0.5">Tobillos a centro manos</div>
-              </div>
-
-              <div className="border border-slate-200 rounded-md p-3 bg-slate-50">
-                <div className="text-[11px] text-slate-500">Desplazamiento D / A</div>
-                <div className="mt-1 font-mono text-base font-bold text-slate-900 tabular-nums">
-                  {Math.round(Math.abs(emittedBundle.nioshData.vDestCm - emittedBundle.nioshData.vOriginCm) * 10) / 10} cm
-                </div>
-                <div className="text-[11px] text-slate-500 mt-0.5">
-                  Asimetría A = {emittedBundle.extracted.niosh_inputs.A_deg}°
-                </div>
-              </div>
-
-              <div className="border border-slate-200 rounded-md p-3 bg-white">
-                <div className="text-[11px] text-slate-500">Flexión de Tronco</div>
-                <div className="mt-1 font-mono text-base font-bold text-slate-900 tabular-nums">
-                  {emittedBundle.extracted.postural_angles_deg.trunk_flexion}°
-                </div>
-                <div className="text-[11px] text-slate-500 mt-0.5">Eje L5/S1 – C7</div>
-              </div>
-
-              <div className="border border-slate-200 rounded-md p-3 bg-white">
-                <div className="text-[11px] text-slate-500">Flexión de Rodillas</div>
-                <div className="mt-1 font-mono text-base font-bold text-slate-900 tabular-nums">
-                  {emittedBundle.extracted.postural_angles_deg.knee_flexion}°
-                </div>
-                <div className="text-[11px] text-slate-500 mt-0.5">Soporte tren inferior</div>
-              </div>
-
-              <div className="border border-slate-200 rounded-md p-3 bg-white">
-                <div className="text-[11px] text-slate-500">Codo Derecho</div>
-                <div className="mt-1 font-mono text-base font-bold text-slate-900 tabular-nums">
-                  {emittedBundle.extracted.postural_angles_deg.right_elbow}°
-                </div>
-                <div className="text-[11px] text-slate-500 mt-0.5">Ángulo articular</div>
-              </div>
-
-              <div className="border border-slate-200 rounded-md p-3 bg-white">
-                <div className="text-[11px] text-slate-500">Codo Izquierdo</div>
-                <div className="mt-1 font-mono text-base font-bold text-slate-900 tabular-nums">
-                  {emittedBundle.extracted.postural_angles_deg.left_elbow}°
-                </div>
-                <div className="text-[11px] text-slate-500 mt-0.5">Ángulo articular</div>
               </div>
             </div>
+            <iframe
+              src={ERGONIZA_MANUAL_PDF_URL}
+              title="Manual de Bases Biomecánicas"
+              className="flex-1 w-full border-0 bg-slate-100"
+            />
           </div>
-        </section>
+        </div>
       )}
     </div>
   );

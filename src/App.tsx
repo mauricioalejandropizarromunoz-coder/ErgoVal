@@ -11,6 +11,7 @@ import {
   ClipboardList,
   FileDown,
   FileSpreadsheet,
+  Film,
   Info,
   Layers,
   Menu,
@@ -31,7 +32,7 @@ import {
 import { createInitialGeneralData, createNewStudyTab } from './utils/defaults';
 import { buildBlankStudy, buildPresetEmpresaX, buildPresetLibroEjemplos } from './utils/presets';
 import { evaluateStudyTab } from './utils/calculations';
-import { exportStudyToPdf, exportStudyToWord } from './utils/reportExport';
+import { exportSingleTabToPdf, exportStudyToPdf, exportStudyToWord } from './utils/reportExport';
 import { exportUserManualPdf } from './utils/manualExport';
 import { countModifiedFormulaMethods, subscribeFormulaChanges } from './utils/formulaConfig';
 import { GeneralDataForm } from './components/GeneralDataForm';
@@ -43,6 +44,7 @@ import { AboutModal } from './components/AboutModal';
 import { FigurePlanStudio } from './components/FigurePlanStudio';
 import { FormulaStudio } from './components/FormulaStudio';
 import { VideoBiomechExtractor } from './components/VideoBiomechExtractor';
+import { TwinAvatarVideoStudio } from './components/TwinAvatarVideoStudio';
 import { AvatarTesterWorkspace } from './components/AvatarTesterWorkspace';
 import { FreeAvatarStudioWorkspace } from './components/FreeAvatarStudioWorkspace';
 import {
@@ -166,6 +168,7 @@ export default function App() {
   const [activeWorkspace, setActiveWorkspace] = useState<
     | 'evaluador'
     | 'video_ia'
+    | 'video_mellizo'
     | 'avatar_libre'
     | 'testeo_avatar'
     | 'figuras3d'
@@ -384,24 +387,41 @@ export default function App() {
   const handleEmitTabsAndReportFromVideo = async ({
     nioshTab,
     rebaTab,
+    emittedTabs,
     autoDownloadPdf,
   }: {
     nioshTab: StudyTab;
     rebaTab: StudyTab;
+    emittedTabs?: StudyTab[];
     autoDownloadPdf: boolean;
   }) => {
+    const incomingTabs =
+      emittedTabs && emittedTabs.length > 0 ? emittedTabs : [nioshTab, rebaTab];
+    const hasRepetitive = incomingTabs.some(
+      (t) =>
+        t.method === MethodId.OCRA_CHECKLIST ||
+        t.method === MethodId.OCRA_COMPLETO ||
+        t.method === MethodId.JSI ||
+        t.method === MethodId.NAM_295,
+    );
     const updatedGeneral: GeneralStudyData = {
       ...general,
       hazardsIdentified: {
         ...general.hazardsIdentified,
         manipulacion_cargas: true,
         posturas_forzadas: true,
+        movimientos_repetitivos:
+          general.hazardsIdentified.movimientos_repetitivos || hasRepetitive,
       },
     };
+    const incomingIds = new Set(incomingTabs.map((t) => t.id));
     const filteredExisting = tabs.filter(
-      (t) => t.id !== 'tab-video-ia-niosh' && t.id !== 'tab-video-ia-reba',
+      (t) => !incomingIds.has(t.id) && !t.id.startsWith('tab-video-ia-'),
     );
-    const nextTabs = [...filteredExisting, nioshTab, rebaTab];
+    const nextTabs = [...filteredExisting, ...incomingTabs].map((t, i) => ({
+      ...t,
+      tabNumber: i + 1,
+    }));
 
     setGeneral(updatedGeneral);
     setTabs(nextTabs);
@@ -411,14 +431,14 @@ export default function App() {
       try {
         await exportStudyToPdf(updatedGeneral, nextTabs);
         showTempBanner(
-          'Video procesado: variables extraídas, pestañas NIOSH/REBA creadas e Informe Técnico PDF emitido automáticamente.',
+          `Vídeo procesado: ${incomingTabs.length} pestañas generadas con fotos reales y Avatar 3D e Informe PDF emitido.`,
         );
       } finally {
         setIsExportingPdf(false);
       }
     } else {
       showTempBanner(
-        'Video procesado: pestañas NIOSH y REBA integradas en el estudio EmpresaX con su informe en pantalla.',
+        `Vídeo procesado: ${incomingTabs.length} pestañas integradas con fotos reales de Toma/Destino y réplicas Avatar 3D.`,
       );
     }
   };
@@ -484,6 +504,7 @@ export default function App() {
   const workspaceLabelMap: Record<typeof activeWorkspace, string> = {
     evaluador: 'Estudio Multipestaña',
     video_ia: 'Video IA · Informe',
+    video_mellizo: 'Vídeo Mellizo 3D',
     avatar_libre: 'Avatar Libre 3D',
     testeo_avatar: 'Testeo Avatar 3D',
     figuras3d: 'Motor 3D · Figuras',
@@ -688,10 +709,24 @@ export default function App() {
                   ? 'bg-emerald-600 text-white border-emerald-400 shadow-xs'
                   : 'bg-emerald-950/80 text-emerald-200 border-emerald-700/80 hover:bg-emerald-900 hover:text-white'
               }`}
-              title="Extractor Biomecánico por Video IA, Tareas Humanizadas CENEA e Informe Automático"
+              title="Extractor Biomecánico por Video IA (Toma de Carga y Destino + Movimientos Repetitivos)"
             >
               <Video className="w-3.5 h-3.5" />
               <span>Video IA · Informe</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveWorkspace('video_mellizo')}
+              className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
+                activeWorkspace === 'video_mellizo'
+                  ? 'bg-teal-600 text-white border-teal-300 shadow-xs'
+                  : 'bg-teal-950/80 text-teal-200 border-teal-700/80 hover:bg-teal-900 hover:text-white'
+              }`}
+              title="Generar y descargar un Vídeo Mellizo del Avatar 3D copiando la posición exacta del vídeo subido desde su PC"
+            >
+              <Film className="w-3.5 h-3.5" />
+              <span>Vídeo Mellizo 3D</span>
             </button>
 
             <button
@@ -976,10 +1011,20 @@ export default function App() {
             />
           </ErrorBoundary>
         </main>
+      ) : activeWorkspace === 'video_mellizo' ? (
+        <main className="flex-1 max-w-[1440px] w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 overflow-x-hidden">
+          <ErrorBoundary>
+            <TwinAvatarVideoStudio
+              general={general}
+              onBackToEvaluator={() => setActiveWorkspace('evaluador')}
+              onEmitTwinFramesToStudy={handleAddTestedTabToStudy}
+            />
+          </ErrorBoundary>
+        </main>
       ) : activeWorkspace === 'video_ia' ? (
         <main
           className={`flex-1 ${
-            isVideoExpanded ? 'max-w-[1780px]' : 'max-w-[1400px]'
+            isVideoExpanded ? 'max-w-[1780px]' : 'max-w-[1440px]'
           } w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 overflow-x-hidden`}
         >
           <ErrorBoundary>
@@ -989,12 +1034,13 @@ export default function App() {
               onEmitTabsAndReport={handleEmitTabsAndReportFromVideo}
               onExportCurrentPdf={handleExportPdf}
               onExportCurrentWord={handleExportWord}
+              onOpenTwinVideoStudio={() => setActiveWorkspace('video_mellizo')}
               isExpandedView={isVideoExpanded}
               onToggleExpandedView={() => setIsVideoExpanded((prev) => !prev)}
               onOpenGeneratedTabsInEvaluator={() => {
                 setActiveWorkspace('evaluador');
-                const nioshIdx = tabs.findIndex((t) => t.id === 'tab-video-ia-niosh');
-                navigateToSlide(nioshIdx >= 0 ? nioshIdx + 1 : Math.max(1, tabs.length - 1));
+                const firstVidIdx = tabs.findIndex((t) => t.id.startsWith('tab-video-ia-'));
+                navigateToSlide(firstVidIdx >= 0 ? firstVidIdx + 1 : Math.max(1, tabs.length));
               }}
             />
           </ErrorBoundary>
@@ -1043,11 +1089,23 @@ export default function App() {
                   tab={tabs[safeSlideIndex - 1]}
                   tabIndex={safeSlideIndex - 1}
                   totalTabs={tabs.length}
+                  general={general}
                   onChange={(updated) => handleUpdateTab(safeSlideIndex - 1, updated)}
                   onDeleteTab={() => handleDeleteTab(safeSlideIndex - 1)}
                   onOpenReference={(methodId, query) => handleOpenReference(methodId, query)}
                   onOpenFormulaEditor={(methodId) => handleOpenFormulaEditor(methodId)}
                   onOpenVideoExtractor={() => setActiveWorkspace('video_ia')}
+                  onOpenTwinVideoStudio={() => setActiveWorkspace('video_mellizo')}
+                  onExportTabPdf={async (singleTab) => {
+                    try {
+                      setIsExportingPdf(true);
+                      await exportSingleTabToPdf(general, singleTab);
+                      showTempBanner(`Informe PDF de "${singleTab.tabLabel}" descargado con éxito.`);
+                    } finally {
+                      setIsExportingPdf(false);
+                    }
+                  }}
+                  onExportFullPdf={handleExportPdf}
                   onOpenEnvironmentalWorkspace={(methodId) => {
                     if (
                       methodId === MethodId.FANGER ||
@@ -1237,6 +1295,22 @@ export default function App() {
               >
                 <Video className="w-4 h-4 shrink-0" />
                 <span>Video IA · Informe</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveWorkspace('video_mellizo');
+                  setIsMobileMoreOpen(false);
+                }}
+                className={`min-h-[48px] px-3 py-2 rounded-md border text-left text-xs font-semibold flex items-center gap-2 ${
+                  activeWorkspace === 'video_mellizo'
+                    ? 'bg-teal-700 text-white border-teal-800'
+                    : 'bg-teal-50 text-teal-950 border-teal-300'
+                }`}
+              >
+                <Film className="w-4 h-4 shrink-0" />
+                <span>Vídeo Mellizo 3D</span>
               </button>
 
               <button
@@ -1452,6 +1526,7 @@ export default function App() {
             onClick={() => setIsMobileMoreOpen((prev) => !prev)}
             className={`flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold whitespace-nowrap transition-colors ${
               isMobileMoreOpen ||
+              activeWorkspace === 'video_mellizo' ||
               activeWorkspace === 'testeo_avatar' ||
               activeWorkspace === 'figuras3d' ||
               activeWorkspace === 'formulas'

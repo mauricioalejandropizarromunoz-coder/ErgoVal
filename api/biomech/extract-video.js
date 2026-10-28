@@ -1,3 +1,5 @@
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -8,109 +10,125 @@ export default async function handler(req, res) {
 
   let body = req.body;
   if (typeof body === 'string') {
-    try { body = JSON.parse(body); } catch (e) { body = {}; }
+    try {
+      body = JSON.parse(body);
+    } catch {
+      body = {};
+    }
   }
 
-  // Recibe la analítica biomecánica real calculada por MediaPipe en el cliente
   const {
     postural_angles_deg = null,
     niosh_inputs = null,
     movement_analysis = null,
     critical_events = null,
-    workerHeightCm = 172,
-    videoDurationSec = 10,
   } = body || {};
 
-  // Formateamos un resultado de contingencia dinámico con los datos reales por si la IA llegase a fallar
+  const trunkFlex = Number(postural_angles_deg?.trunk_flexion ?? 38);
+  const kneeFlex = Number(postural_angles_deg?.knee_flexion ?? 44);
+  const rightElbow = Number(postural_angles_deg?.right_elbow ?? 72);
+  const leftElbow = Number(postural_angles_deg?.left_elbow ?? 70);
+
+  const ergonizaFallback = {
+    analisis_exitoso: true,
+    fotograma_critico_segundo: 1.2,
+    condiciones_apoyo_detectadas: 'Bipedestación bilateral',
+    sincronizacion_avatar_3d: {
+      plano_referencia: 'Sagital',
+      articulaciones_principales: {
+        tronco: {
+          flexion_extension_grados: trunkFlex,
+          lateralizacion_grados: 0.0,
+          rotacion_axial_grados: Number(niosh_inputs?.A_deg ?? 10),
+        },
+        hombro_derecho: {
+          flexion_anteroposterior_grados: 45.0,
+          abduccion_aduccion_grados: 12.0,
+          rotacion_humeral_grados: 0.0,
+        },
+        codo_derecho: {
+          flexion_extension_grados: rightElbow,
+        },
+        cadera_derecha: {
+          flexion_extension_grados: Math.round(kneeFlex * 0.72 * 10) / 10,
+        },
+        rodilla_derecha: {
+          flexion_extension_grados: kneeFlex,
+        },
+      },
+    },
+    datos_faltantes_requeridos: [
+      'Peso exacto de la carga manipulada en kg',
+      'Datos antropométricos del operario (sexo, edad, estatura, masa corporal y complexión)',
+      'Frecuencia de levantamiento (acciones/min) y duración de exposición diaria',
+      'Calidad del acoplamiento mano-objeto (bueno, regular o malo)',
+    ],
+  };
+
   const dynamicFallbackResult = {
     status: 'processed',
-    critical_events: critical_events || { origen_timestamp: '00:00.600', destino_timestamp: '00:02.800' },
+    critical_events: critical_events || {
+      origen_frame_index: 0,
+      destino_frame_index: 1,
+      critico_frame_index: 0,
+      origen_timestamp: '00:00.600',
+      destino_timestamp: '00:02.800',
+    },
     movement_analysis: movement_analysis || {
       direction: 'levantamiento_suelo_a_estanteria',
       v_origen_cm: 36.0,
       v_destino_cm: 118.0,
       h_origen_cm: 34.0,
       h_destino_cm: 42.0,
-      trajectory_note: 'Procesamiento biomecánico cinemático en tiempo real.'
+      trajectory_note: 'Procesamiento biomecánico cinemático en tiempo real.',
     },
     niosh_inputs: niosh_inputs || { H_cm: 38.0, V_cm: 36.0, D_cm: 82.0, A_deg: 10.0 },
-    postural_angles_deg: postural_angles_deg || { trunk_flexion: 46.0, knee_flexion: 42.0, right_elbow: 76.0, left_elbow: 72.0 }
+    postural_angles_deg: {
+      trunk_flexion: trunkFlex,
+      knee_flexion: kneeFlex,
+      right_elbow: rightElbow,
+      left_elbow: leftElbow,
+    },
+    ergoniza_digital_twin: ergonizaFallback,
   };
 
   const apiKey = process.env.GEMINI_API_KEY;
-  // Si no hay API Key o no llegaron ángulos del frontend, devolvemos el resultado de contingencia seguro
   if (!apiKey || !postural_angles_deg) {
     return res.status(200).json(dynamicFallbackResult);
   }
 
-  // Estructuramos el prompt con verdades matemáticas para aniquilar la alucinación contextual de Gemini
-  const promptIngenieria = `
-    Actúa como un perito e ingeniero consultor experto en ergonomía industrial, biomecánica y salud ocupacional.
-    Un algoritmo de visión artificial de alta precisión (Google MediaPipe Pose) ha auditado el video MP4 del operario frame por frame y ha extraído los siguientes ángulos cinemáticos y datos reales medidos en el cuerpo del trabajador:
-
-    ÁNGULOS POSTURALES MÁXIMOS MEDIDOS:
-    - Flexión del tronco (Columna L5/S1): ${postural_angles_deg.trunk_flexion} grados.
-    - Flexión de la rodilla: ${postural_angles_deg.knee_flexion} grados.
-    - Apertura del codo derecho: ${postural_angles_deg.right_elbow} grados.
-    - Apertura del codo izquierdo: ${postural_angles_deg.left_elbow} grados.
-
-    DATOS GEOMÉTRICOS ADICIONALES PARA LA ECUACIÓN DE NIOSH / REBA:
-    - Distancia Horizontal (H): ${niosh_inputs?.H_cm || 38.0} cm.
-    - Altura Vertical de Origen (V): ${niosh_inputs?.V_cm || 36.0} cm.
-    - Ángulo de Asimetría/Torsión (A): ${niosh_inputs?.A_deg || 10.0} grados.
-    - Desplazamiento Vertical Neto (D): ${niosh_inputs?.D_cm || 82.0} cm.
-    - Trayectoria del Movimiento: ${movement_analysis?.trajectory_note || 'Levantamiento continuo'}
-
-    INSTRUCCIÓN DE RETORNO:
-    Analiza rigurosamente los datos provistos utilizando los criterios de la ecuación de NIOSH y el método postural REBA. Determina el nivel de riesgo ergonómico correspondiente.
-    Debes devolver OBLIGATORIAMENTE y ÚNICAMENTE una respuesta estructurada en formato JSON válido. No incluyas texto conversacional introductorio ni explicaciones fuera del bloque de datos. Utiliza exactamente los mismos campos provistos enriqueciendo la respuesta con los diagnósticos de riesgo calculados.
-    
-    Estructura esperada del JSON:
-    {
-      "status": "processed",
-      "critical_events": { "origen_timestamp": "${critical_events?.origen_timestamp || '00:00.600'}", "destino_timestamp": "${critical_events?.destino_timestamp || '00:02.800'}" },
-      "movement_analysis": { "direction": "${movement_analysis?.direction || 'levantamiento'}", "diagnostico_riesgo": "Tu conclusión técnica aquí" },
-      "niosh_inputs": { "H_cm": ${niosh_inputs?.H_cm || 38.0}, "V_cm": ${niosh_inputs?.V_cm || 36.0}, "D_cm": ${niosh_inputs?.D_cm || 82.0}, "A_deg": ${niosh_inputs?.A_deg || 10.0}, "indice_levantamiento_IL": "Tu cálculo de IL aquí" },
-      "postural_angles_deg": { "trunk_flexion": ${postural_angles_deg.trunk_flexion}, "knee_flexion": ${postural_angles_deg.knee_flexion}, "nivel_riesgo_reba": "Tu puntuación REBA aquí" }
-    }
-  `;
-
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 4000); // Límite estricto anti-timeout de Vercel
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        timeout: 12000,
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    });
 
-    const responseGemini = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        body: JSON.stringify({
-          contents: [{
-            role: 'user',
-            parts: [{ text: promptIngenieria }]
-          }],
-          generationConfig: { 
-            temperature: 0.1, // Temperatura baja para forzar consistencia matemática estricta
-            responseMimeType: 'application/json' 
-          }
-        }),
-      }
-    );
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: `Valida y calibra biomecánicamente estos datos extraídos de vídeo laboral (Tronco=${trunkFlex}°, Rodilla=${kneeFlex}°, CodoDer=${rightElbow}°, H=${niosh_inputs?.H_cm || 38}cm, V=${niosh_inputs?.V_cm || 36}cm, A=${niosh_inputs?.A_deg || 10}°) y devuelve JSON compatible con Ergoniza Intelligent.`,
+      config: {
+        temperature: 0.1,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        responseMimeType: 'application/json',
+      },
+    });
 
-    clearTimeout(timeout);
-
-    if (responseGemini.ok) {
-      const data = await responseGemini.json();
-      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (text) {
-        const clean = text.replace(/```json/g, '').replace(/```/g, '').trim();
-        const parsed = JSON.parse(clean);
-        return res.status(200).json(parsed);
-      }
+    const rawText = (response.text || '').replace(/```json/gi, '').replace(/```/g, '').trim();
+    if (rawText) {
+      const parsed = JSON.parse(rawText);
+      return res.status(200).json({
+        ...dynamicFallbackResult,
+        ...parsed,
+        ergoniza_digital_twin: parsed.ergoniza_digital_twin || ergonizaFallback,
+      });
     }
-  } catch (e) {
-    // Si la llamada por red excede los 4 segundos, el backend responde los datos reales instantáneamente
+  } catch {
+    // Fallback determinista inmediato
   }
 
   return res.status(200).json(dynamicFallbackResult);

@@ -34,57 +34,6 @@ interface VisualAngleSelectorProps<T extends number> {
   plateRefs?: PlateRefItem[];
 }
 
-function SliceThumbnail({
-  slice,
-  fallback,
-}: {
-  slice: AnglePhotoSlice;
-  fallback: React.ReactNode;
-}) {
-  const [failed, setFailed] = useState(false);
-
-  if (failed || !slice.url) {
-    return <>{fallback}</>;
-  }
-
-  if (slice.totalCols === 1) {
-    return (
-      <img
-        src={slice.url}
-        alt={slice.figCode}
-        referrerPolicy="no-referrer"
-        onError={() => setFailed(true)}
-        className="w-full h-full object-contain p-0.5"
-      />
-    );
-  }
-
-  const colW = 100;
-  const totalW = slice.totalCols * colW;
-  const boxH = slice.totalCols === 4 ? 156 : slice.totalCols === 3 ? 174 : 186;
-  const viewY = slice.totalCols === 4 ? 8 : 6;
-  const viewH = boxH - viewY * 2;
-  const viewX = slice.colIndex * colW;
-
-  return (
-    <svg
-      viewBox={`${viewX} ${viewY} ${colW} ${viewH}`}
-      className="w-full h-full"
-      aria-label={slice.figCode}
-    >
-      <image
-        href={slice.url}
-        x="0"
-        y="0"
-        width={totalW}
-        height={boxH}
-        preserveAspectRatio="xMidYMid meet"
-        onError={() => setFailed(true)}
-      />
-    </svg>
-  );
-}
-
 export function VisualAngleSelector<T extends number>({
   label,
   figureRef,
@@ -94,10 +43,6 @@ export function VisualAngleSelector<T extends number>({
   columns = 4,
   plateRefs,
 }: VisualAngleSelectorProps<T>) {
-  const hasAnyPhotoSlice = options.some((o) => Boolean(o.photoSlice?.url));
-  const [thumbMode, setThumbMode] = useState<'photo' | 'vector'>('photo');
-  const [showFullPlate, setShowFullPlate] = useState<boolean>(false);
-
   const effectivePlates: PlateRefItem[] =
     plateRefs && plateRefs.length > 0
       ? plateRefs
@@ -108,7 +53,7 @@ export function VisualAngleSelector<T extends number>({
             if (o.photoSlice?.url && !seen.has(o.photoSlice.url)) {
               seen.add(o.photoSlice.url);
               derived.push({
-                code: o.photoSlice.figCode,
+                code: o.photoSlice.figCode.replace(/\s*\(\d+\)\s*$/, ''),
                 label: label,
                 url: o.photoSlice.url,
               });
@@ -116,6 +61,8 @@ export function VisualAngleSelector<T extends number>({
           });
           return derived;
         })();
+
+  const [showFullPlate, setShowFullPlate] = useState<boolean>(effectivePlates.length > 0);
 
   const gridClass =
     columns === 2
@@ -137,78 +84,28 @@ export function VisualAngleSelector<T extends number>({
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
-          {hasAnyPhotoSlice && (
-            <div className="inline-flex rounded border border-slate-300 bg-white p-0.5">
-              <button
-                type="button"
-                onClick={() => setThumbMode('photo')}
-                className={`px-2 py-0.5 rounded-xs text-[11px] font-semibold whitespace-nowrap shrink-0 cursor-pointer ${
-                  thumbMode === 'photo'
-                    ? 'bg-sky-700 text-white'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Lámina Cap. 4
-              </button>
-              <button
-                type="button"
-                onClick={() => setThumbMode('vector')}
-                className={`px-2 py-0.5 rounded-xs text-[11px] font-semibold whitespace-nowrap shrink-0 cursor-pointer ${
-                  thumbMode === 'vector'
-                    ? 'bg-slate-800 text-white'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Vectorial
-              </button>
-            </div>
-          )}
-
           {effectivePlates.length > 0 && (
             <button
               type="button"
               onClick={() => setShowFullPlate((v) => !v)}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-300 bg-white hover:bg-slate-50 text-[11px] font-medium text-sky-800 whitespace-nowrap shrink-0 cursor-pointer"
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-300 bg-white hover:bg-slate-50 text-[11px] font-semibold text-sky-800 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <ImageIcon className="w-3 h-3" />
-              <span>{showFullPlate ? 'Ocultar lámina' : 'Ver lámina completa'}</span>
+              <span>
+                {showFullPlate
+                  ? 'Ocultar Foto Asignada Debajo'
+                  : 'Ver Foto Asignada Debajo (Todas las posturas)'}
+              </span>
               {showFullPlate ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
             </button>
           )}
         </div>
       </div>
 
-      {showFullPlate && effectivePlates.length > 0 && (
-        <div className="rounded-md border border-slate-300 bg-white p-3 space-y-2.5">
-          <div
-            className={`grid gap-3 ${
-              effectivePlates.length > 1 ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1'
-            }`}
-          >
-            {effectivePlates.map((pl) => (
-              <div key={pl.code + pl.url} className="space-y-1">
-                <div className="flex items-center justify-between text-[11px] text-slate-600">
-                  <span className="font-mono font-bold text-sky-900">{pl.code}</span>
-                  <span className="truncate">{pl.label}</span>
-                </div>
-                <div className="rounded border border-slate-200 bg-white p-2 flex items-center justify-center">
-                  <img
-                    src={pl.url}
-                    alt={`${pl.code} ${pl.label}`}
-                    referrerPolicy="no-referrer"
-                    className="max-h-56 w-auto object-contain"
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
+      {/* ARRIBA: Opciones posturales individuales sin repetir ni recortar la foto asignada */}
       <div className={`grid ${gridClass} gap-2.5`}>
         {options.map((opt) => {
           const isSelected = selectedValue === opt.value;
-          const usePhoto = thumbMode === 'photo' && Boolean(opt.photoSlice?.url);
           return (
             <button
               key={opt.value}
@@ -221,15 +118,11 @@ export function VisualAngleSelector<T extends number>({
               }`}
             >
               <div
-                className={`w-full h-28 flex items-center justify-center rounded border mb-2 overflow-hidden ${
+                className={`w-full h-24 flex items-center justify-center rounded border mb-2 overflow-hidden ${
                   isSelected ? 'bg-white border-sky-200' : 'bg-white border-slate-200/80'
                 }`}
               >
-                {usePhoto && opt.photoSlice ? (
-                  <SliceThumbnail slice={opt.photoSlice} fallback={opt.renderSvg(isSelected)} />
-                ) : (
-                  opt.renderSvg(isSelected)
-                )}
+                {opt.renderSvg(isSelected)}
               </div>
               <div className="w-full flex items-baseline justify-between gap-1">
                 <span className="font-mono text-xs font-semibold tabular-nums text-sky-800">{opt.angleText}</span>
@@ -243,6 +136,37 @@ export function VisualAngleSelector<T extends number>({
           );
         })}
       </div>
+
+      {/* DEBAJO: Foto Asignada completa con TODAS las posturas del método en este punto (sin duplicarse) */}
+      {showFullPlate && effectivePlates.length > 0 && (
+        <div className="rounded-md border border-slate-300 bg-white p-3 space-y-2">
+          <div className="text-[11px] font-semibold text-slate-700">
+            Foto Asignada de Referencia — Todas las posturas evaluadas en este punto:
+          </div>
+          <div
+            className={`grid gap-3 ${
+              effectivePlates.length > 1 ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1'
+            }`}
+          >
+            {effectivePlates.map((pl) => (
+              <div key={pl.code + pl.url} className="space-y-1">
+                <div className="flex items-center justify-between text-[11px] text-slate-600">
+                  <span className="font-mono font-bold text-sky-900">{pl.code}</span>
+                  <span className="truncate">{pl.label}</span>
+                </div>
+                <div className="rounded border border-slate-200 bg-slate-50/40 p-2 flex items-center justify-center">
+                  <img
+                    src={pl.url}
+                    alt={`${pl.code} ${pl.label}`}
+                    referrerPolicy="no-referrer"
+                    className="max-h-56 w-auto object-contain"
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -254,7 +178,7 @@ export function ModifierPlateBanner({
   plates: PlateRefItem[];
   caption: string;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
 
   return (
     <div className="space-y-2">
@@ -802,68 +726,112 @@ export function NioshGeometryGuide({
   vOriginCm,
   vDestCm,
   asymmetryDeg,
+  loadKg,
   onSelectAsymmetry,
 }: {
   hCm: number;
   vOriginCm: number;
   vDestCm: number;
   asymmetryDeg: number;
+  loadKg?: number;
   onSelectAsymmetry?: (deg: number) => void;
 }) {
   const radA = ((asymmetryDeg - 90) * Math.PI) / 180;
   const ax = 75 + Math.cos(radA) * 42;
   const ay = 62 + Math.sin(radA) * 42;
+  const dCm = Math.abs(vDestCm - vOriginCm);
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 p-4 rounded-lg border border-slate-200 bg-white">
-      {/* Vista Sagital H, V, D */}
-      <div className="flex items-center gap-4">
-        <svg viewBox="0 0 190 130" className="w-44 h-32 shrink-0 bg-slate-50 rounded border border-slate-100">
+      {/* Vista Sagital Acotada: H (cm), V Origen (cm), V Destino (cm) y D (cm) directamente sobre la imagen */}
+      <div className="flex flex-col sm:flex-row items-center gap-4">
+        <svg viewBox="0 0 250 165" className="w-60 h-40 shrink-0 bg-slate-50 rounded border border-slate-200">
           {/* Suelo */}
-          <line x1="12" y1="115" x2="178" y2="115" stroke="#475569" strokeWidth="2" />
-          {/* Trabajador estilizado */}
-          <circle cx="48" cy="30" r="8" fill="#e2e8f0" stroke="#334155" strokeWidth="1.8" />
-          <line x1="48" y1="38" x2="44" y2="76" stroke="#334155" strokeWidth="5" strokeLinecap="round" />
-          <line x1="44" y1="76" x2="44" y2="115" stroke="#334155" strokeWidth="4.5" strokeLinecap="round" />
-          <line x1="48" y1="45" x2="96" y2="68" stroke="#0284c7" strokeWidth="3.5" strokeLinecap="round" />
-          {/* Caja / Carga */}
-          <rect x="92" y="60" width="24" height="20" rx="2" fill="#bae6fd" stroke="#0284c7" strokeWidth="1.8" />
-          {/* Cota H */}
-          <line x1="44" y1="106" x2="104" y2="106" stroke="#0284c7" strokeWidth="1.8" />
-          <text x="74" y="102" textAnchor="middle" className="text-[9px] font-mono fill-sky-800 font-semibold">
-            H={hCm}cm
+          <line x1="12" y1="142" x2="238" y2="142" stroke="#334155" strokeWidth="2.2" />
+          <text x="16" y="155" className="text-[8.5px] font-mono fill-slate-600 font-semibold">
+            SUELO (0 cm)
           </text>
-          {/* Cota V */}
-          <line x1="132" y1="115" x2="132" y2="70" stroke="#0f172a" strokeWidth="1.5" strokeDasharray="3 2" />
-          <text x="158" y="94" textAnchor="middle" className="text-[9px] font-mono fill-slate-700 font-semibold">
-            V={vOriginCm}→{vDestCm}
+
+          {/* Operario en plano sagital */}
+          <circle cx="48" cy="34" r="8.5" fill="#e2e8f0" stroke="#334155" strokeWidth="1.8" />
+          <line x1="48" y1="43" x2="44" y2="86" stroke="#334155" strokeWidth="5.5" strokeLinecap="round" />
+          <line x1="44" y1="86" x2="44" y2="142" stroke="#334155" strokeWidth="4.8" strokeLinecap="round" />
+          <circle cx="44" cy="140" r="3" fill="#0284c7" />
+          <line x1="48" y1="50" x2="108" y2="96" stroke="#0284c7" strokeWidth="3.5" strokeLinecap="round" />
+          <line x1="48" y1="50" x2="114" y2="48" stroke="#94a3b8" strokeWidth="2.2" strokeDasharray="3 2" />
+
+          {/* Caja en Toma (Origen) */}
+          <rect x="98" y="88" width="28" height="20" rx="2" fill="#bae6fd" stroke="#0284c7" strokeWidth="1.8" />
+          <text x="112" y="101" textAnchor="middle" className="text-[8px] font-mono fill-sky-950 font-bold">
+            {loadKg ? `${loadKg}kg` : 'ORIGEN'}
+          </text>
+
+          {/* Caja en Destino (punteada arriba) */}
+          <rect
+            x="104"
+            y="36"
+            width="28"
+            height="18"
+            rx="2"
+            fill="#dcfce7"
+            stroke="#16a34a"
+            strokeWidth="1.5"
+            strokeDasharray="3 2"
+          />
+          <text x="118" y="48" textAnchor="middle" className="text-[7.5px] font-mono fill-emerald-900 font-bold">
+            DESTINO
+          </text>
+
+          {/* Línea vertical de tobillos y centro de carga para H (cm) */}
+          <line x1="44" y1="112" x2="44" y2="142" stroke="#0284c7" strokeWidth="1.2" strokeDasharray="2 2" />
+          <line x1="112" y1="108" x2="112" y2="132" stroke="#0284c7" strokeWidth="1.2" strokeDasharray="2 2" />
+          <line x1="44" y1="128" x2="112" y2="128" stroke="#dc2626" strokeWidth="2.2" />
+          <polygon points="44,128 50,125 50,131" fill="#dc2626" />
+          <polygon points="112,128 106,125 106,131" fill="#dc2626" />
+          <rect x="54" y="114" width="48" height="12" rx="2" fill="#fef2f2" stroke="#dc2626" strokeWidth="1" />
+          <text x="78" y="123" textAnchor="middle" className="text-[8.5px] font-mono fill-red-700 font-bold">
+            H = {hCm} cm
+          </text>
+
+          {/* Cota V Origen (cm) */}
+          <line x1="148" y1="142" x2="148" y2="98" stroke="#0284c7" strokeWidth="2" />
+          <polygon points="148,98 145,104 151,104" fill="#0284c7" />
+          <text x="153" y="122" className="text-[8px] font-mono fill-sky-800 font-bold">
+            Vo={vOriginCm}cm
+          </text>
+
+          {/* Cota V Destino (cm) y D */}
+          <line x1="202" y1="142" x2="202" y2="45" stroke="#16a34a" strokeWidth="2" />
+          <polygon points="202,45 199,51 205,51" fill="#16a34a" />
+          <text x="198" y="28" textAnchor="end" className="text-[8px] font-mono fill-emerald-800 font-bold">
+            Vd={vDestCm}cm (D={dCm}cm)
           </text>
         </svg>
+
         <div className="space-y-1.5 text-xs text-slate-600">
-          <p className="font-semibold text-slate-900">Referencias Geométricas de Medición</p>
+          <p className="font-semibold text-slate-900">Guía Visual Fácil — ¿Qué medir en cm?</p>
           <p>
-            <strong className="text-slate-800">H (Horizontal):</strong> Desde el punto medio entre los tobillos hasta la proyección del centro de la carga (mín. 25 cm, máx. 63 cm).
+            <strong className="text-red-700 font-mono">H (cm):</strong> Distancia horizontal en piso desde la mitad entre los <strong>tobillos</strong> hasta el centro de las <strong>manos/caja</strong> (mín. 25 cm).
           </p>
           <p>
-            <strong className="text-slate-800">V (Altura):</strong> Altura de las manos respecto al suelo (óptimo = 75 cm). Desplazamiento <span className="font-mono">D = |Vd − Vo| = {Math.abs(vDestCm - vOriginCm)} cm</span>.
+            <strong className="text-sky-800 font-mono">V Origen / V Destino (cm):</strong> Altura vertical desde el <strong>suelo</strong> hasta los nudillos/agarre al tomar (<span className="font-mono">Vo={vOriginCm} cm</span>) y al soltar (<span className="font-mono">Vd={vDestCm} cm</span>).
+          </p>
+          <p>
+            <strong className="text-emerald-800 font-mono">D = {dCm} cm:</strong> Recorrido vertical automático <span className="font-mono">|Vd − Vo|</span>.
           </p>
         </div>
       </div>
 
       {/* Vista Superior Plano Sagital / Ángulo de Asimetría A */}
       <div className="flex items-center gap-4">
-        <svg viewBox="0 0 150 120" className="w-38 h-32 shrink-0 bg-slate-50 rounded border border-slate-100">
-          {/* Arco transportador 0 a 135 */}
+        <svg viewBox="0 0 150 120" className="w-38 h-32 shrink-0 bg-slate-50 rounded border border-slate-200">
           <path d="M 75 20 A 42 42 0 0 1 117 62" fill="none" stroke="#cbd5e1" strokeWidth="1.5" strokeDasharray="2 2" />
-          {/* Plano sagital neutro 0° */}
           <line x1="75" y1="62" x2="75" y2="16" stroke="#16a34a" strokeWidth="1.8" strokeDasharray="3 2" />
           <text x="75" y="12" textAnchor="middle" className="text-[8px] font-mono fill-emerald-700 font-semibold">
-            0° Sagital
+            0° Frente
           </text>
-          {/* Hombros vista superior */}
           <ellipse cx="75" cy="62" rx="18" ry="8" fill="#e2e8f0" stroke="#475569" strokeWidth="1.5" />
           <circle cx="75" cy="62" r="5" fill="#475569" />
-          {/* Vector asimetría actual */}
           <line x1="75" y1="62" x2={ax} y2={ay} stroke="#0284c7" strokeWidth="2.8" strokeLinecap="round" />
           <circle cx={ax} cy={ay} r="4" fill="#0284c7" />
           <text x="75" y="106" textAnchor="middle" className="text-[10px] font-mono fill-slate-900 font-semibold">
@@ -871,8 +839,10 @@ export function NioshGeometryGuide({
           </text>
         </svg>
         <div className="space-y-2 text-xs">
-          <p className="font-semibold text-slate-900">Ángulo de Asimetría (A)</p>
-          <p className="text-slate-600">Torsión del tronco respecto al plano neutro sagital (máx. 135°).</p>
+          <p className="font-semibold text-slate-900">Ángulo de Asimetría A (°)</p>
+          <p className="text-slate-600">
+            Giro de la caja respecto a los pies (<strong>0°</strong> = frente al cuerpo; <strong>90°</strong> = giro lateral completo).
+          </p>
           {onSelectAsymmetry && (
             <div className="flex flex-wrap gap-1.5">
               {[0, 15, 30, 45, 60, 90, 120].map((deg) => (
@@ -1057,3 +1027,122 @@ export function VibrationAxesGuide({ mode }: { mode: 'whole_body' | 'hand_arm' }
     </div>
   );
 }
+
+// ============================================================================
+// GUÍA VISUAL PARA SNOOK Y CIRIELLO (ALTURA DE MANOS, FUERZA INICIAL/SOSTENIDA Y DISTANCIA)
+// ============================================================================
+export function SnookDimensionGuide({
+  operationType,
+  valueSummary,
+}: {
+  operationType: 'levantamiento' | 'empuje' | 'traccion' | 'transporte';
+  valueSummary: string;
+}) {
+  const isPushPull = operationType === 'empuje' || operationType === 'traccion';
+  return (
+    <div className="flex flex-col sm:flex-row items-center gap-4 p-4 rounded-lg border border-slate-200 bg-slate-50/70">
+      <svg viewBox="0 0 220 120" className="w-56 h-30 shrink-0 bg-white rounded border border-slate-200">
+        <line x1="12" y1="104" x2="208" y2="104" stroke="#334155" strokeWidth="2" />
+        <circle cx="48" cy="28" r="7.5" fill="#e2e8f0" stroke="#334155" strokeWidth="1.6" />
+        <line x1="48" y1="36" x2="45" y2="70" stroke="#334155" strokeWidth="4.8" strokeLinecap="round" />
+        <line x1="45" y1="70" x2="45" y2="104" stroke="#334155" strokeWidth="4.2" strokeLinecap="round" />
+        <line x1="48" y1="43" x2="96" y2="54" stroke="#0284c7" strokeWidth="3.2" strokeLinecap="round" />
+
+        {isPushPull ? (
+          <>
+            <rect x="98" y="42" width="46" height="48" rx="3" fill="#bae6fd" stroke="#0284c7" strokeWidth="1.6" />
+            <circle cx="108" cy="97" r="6" fill="#334155" />
+            <circle cx="134" cy="97" r="6" fill="#334155" />
+            <line x1="150" y1="56" x2="196" y2="56" stroke="#dc2626" strokeWidth="2.4" />
+            <polygon
+              points={operationType === 'empuje' ? '198,56 190,52 190,60' : '148,56 156,52 156,60'}
+              fill="#dc2626"
+            />
+            <text x="174" y="48" textAnchor="middle" className="text-[8.5px] font-mono fill-red-700 font-bold">
+              Fi / Fs (N)
+            </text>
+            <line x1="94" y1="104" x2="94" y2="54" stroke="#0284c7" strokeWidth="1.5" strokeDasharray="3 2" />
+            <text x="72" y="84" textAnchor="middle" className="text-[8px] font-mono fill-sky-800 font-bold">
+              h manos
+            </text>
+          </>
+        ) : (
+          <>
+            <rect x="92" y="46" width="26" height="20" rx="2" fill="#bae6fd" stroke="#0284c7" strokeWidth="1.6" />
+            <line x1="130" y1="104" x2="130" y2="56" stroke="#16a34a" strokeWidth="1.8" strokeDasharray="3 2" />
+            <text x="168" y="76" textAnchor="middle" className="text-[8.5px] font-mono fill-emerald-800 font-bold">
+              Franja V / Dist.
+            </text>
+          </>
+        )}
+      </svg>
+      <div className="space-y-1 text-xs text-slate-600">
+        <p className="font-semibold text-slate-900">
+          Guía Visual de Datos Solicitados — Snook y Ciriello ({valueSummary})
+        </p>
+        {isPushPull ? (
+          <p>
+            <strong className="text-sky-800 font-mono">Altura manos (cm):</strong> Desde el suelo hasta el manillar del carro (~140 cm hombros, ~100 cm codo, ~60 cm bajo).{' '}
+            <strong className="text-red-700 font-mono">Fi / Fs (N):</strong> Fuerza inicial para vencer inercia y fuerza sostenida medidas con dinamómetro (1 kgf ≈ 9,81 N).
+          </p>
+        ) : (
+          <p>
+            Indique la <strong>franja vertical</strong> donde operan las manos (rodillas, hombros o sobre cabeza), la <strong>frecuencia</strong> (lev/min) o <strong>distancia recorrida (m)</strong> y el <strong>peso real (kg)</strong>.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// GUÍA VISUAL PARA MOVIMIENTOS REPETITIVOS (ACCIONES TÉCNICAS, TIEMPO DE CICLO Y BORG)
+// ============================================================================
+export function RepetitiveCycleAndAnglesGuide({
+  methodName,
+}: {
+  methodName: string;
+}) {
+  return (
+    <div className="flex flex-col sm:flex-row items-center gap-4 p-3.5 rounded-lg border border-slate-200 bg-slate-50/80">
+      <svg viewBox="0 0 230 108" className="w-58 h-28 shrink-0 bg-white rounded border border-slate-200">
+        {/* Línea de tiempo del ciclo T_ciclo */}
+        <line x1="16" y1="84" x2="214" y2="84" stroke="#334155" strokeWidth="2" />
+        <line x1="16" y1="78" x2="16" y2="90" stroke="#334155" strokeWidth="2" />
+        <line x1="214" y1="78" x2="214" y2="90" stroke="#334155" strokeWidth="2" />
+        <text x="115" y="99" textAnchor="middle" className="text-[8.5px] font-mono fill-slate-800 font-bold">
+          Duración total del ciclo T (segundos)
+        </text>
+        {/* Bloques de esfuerzo / acciones técnicas */}
+        <rect x="24" y="54" width="38" height="22" rx="2" fill="#bae6fd" stroke="#0284c7" strokeWidth="1.4" />
+        <text x="43" y="68" textAnchor="middle" className="text-[7.5px] font-mono fill-sky-950 font-bold">
+          Acción 1
+        </text>
+        <rect x="74" y="54" width="44" height="22" rx="2" fill="#bae6fd" stroke="#0284c7" strokeWidth="1.4" />
+        <text x="96" y="68" textAnchor="middle" className="text-[7.5px] font-mono fill-sky-950 font-bold">
+          Acción 2
+        </text>
+        <rect x="132" y="54" width="36" height="22" rx="2" fill="#fde68a" stroke="#d97706" strokeWidth="1.4" />
+        <text x="150" y="68" textAnchor="middle" className="text-[7.5px] font-mono fill-amber-950 font-bold">
+          Pico Borg
+        </text>
+        <text x="115" y="24" textAnchor="middle" className="text-[8px] font-mono fill-red-700 font-bold">
+          Hombro &gt;80° · Codo &gt;60° · Muñeca &gt;45°
+        </text>
+        <line x1="24" y1="32" x2="204" y2="32" stroke="#cbd5e1" strokeWidth="1" strokeDasharray="3 2" />
+      </svg>
+      <div className="space-y-1 text-xs text-slate-600">
+        <p className="font-semibold text-slate-900">
+          Guía Visual de Carga de Datos — {methodName}
+        </p>
+        <p>
+          <strong className="text-sky-800">Acción técnica / esfuerzo:</strong> Cada vez que la mano alcanza, toma, gira, empuja o posiciona una pieza dentro de un <strong>ciclo T (s)</strong>.
+        </p>
+        <p>
+          <strong className="text-amber-800">Escala Borg (0–10):</strong> 0 = nulo · 2 = ligero · 3–4 = moderado · 5–6 = fuerte · ≥7 = muy fuerte (puede autocompletarse subiendo un vídeo en <strong>Video IA</strong>).
+        </p>
+      </div>
+    </div>
+  );
+}
+

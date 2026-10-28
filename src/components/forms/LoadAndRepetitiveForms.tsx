@@ -16,7 +16,9 @@ import {
   LOWER_ARM_OPTIONS,
   NamThresholdChart,
   NioshGeometryGuide,
+  RepetitiveCycleAndAnglesGuide,
   RULA_WRIST_OPTIONS,
+  SnookDimensionGuide,
   UPPER_ARM_OPTIONS,
   VisualAngleSelector,
 } from '../AngleGuides';
@@ -63,6 +65,7 @@ export function NioshForm({ data, onChange }: { data: NioshData; onChange: (next
           vOriginCm={data.vOriginCm}
           vDestCm={data.vDestCm}
           asymmetryDeg={guideTarget === 'origin' ? data.asymmetryOriginDeg : data.asymmetryDestDeg}
+          loadKg={data.loadWeightKg}
           onSelectAsymmetry={(deg) =>
             guideTarget === 'origin'
               ? onChange({ ...data, asymmetryOriginDeg: deg })
@@ -265,8 +268,13 @@ export function NioshForm({ data, onChange }: { data: NioshData; onChange: (next
 // 2. TABLAS DE SNOOK Y CIRIELLO (CAPÍTULO 5.9)
 // ============================================================================
 export function SnookForm({ data, onChange }: { data: SnookData; onChange: (next: SnookData) => void }) {
+  const snookSummary =
+    data.operationType === 'empuje' || data.operationType === 'traccion'
+      ? `Fi=${data.actualInitialForceN} N · Fs=${data.actualSustainedForceN} N · ${data.pushPullDistance}`
+      : `${data.actualWeightKg} kg`;
   return (
     <div className="p-5 rounded-lg border border-slate-200 bg-white space-y-5">
+      <SnookDimensionGuide operationType={data.operationType} valueSummary={snookSummary} />
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
           <label className="block text-xs font-medium text-slate-700 mb-1.5">Tipo de Operación Manual (Apartado 5.9)</label>
@@ -647,6 +655,7 @@ export function OcraCompletoForm({
 }) {
   return (
     <div className="p-5 rounded-lg border border-slate-200 bg-white space-y-5">
+      <RepetitiveCycleAndAnglesGuide methodName="OCRA Análisis Completo (Cap. 6.2)" />
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div>
           <label className="block text-xs font-medium text-slate-700 mb-1">Acciones Técnicas por Ciclo</label>
@@ -831,6 +840,7 @@ export function OcraChecklistForm({
 
   return (
     <div className="space-y-5">
+      <RepetitiveCycleAndAnglesGuide methodName="Check List OCRA (Cap. 6.3)" />
       <div className="p-4 rounded-lg border border-slate-200 bg-white flex flex-wrap items-center justify-between gap-3">
         <div>
           <span className="block text-xs font-semibold text-slate-900">Modalidad de Cálculo Check List OCRA</span>
@@ -1264,6 +1274,7 @@ const JSI_WRIST_OPTIONS: AngleOption<1 | 2 | 3 | 4 | 5>[] = [
 export function JsiForm({ data, onChange }: { data: JsiData; onChange: (next: JsiData) => void }) {
   return (
     <div className="p-5 rounded-lg border border-slate-200 bg-white space-y-5">
+      <RepetitiveCycleAndAnglesGuide methodName="Job Strain Index — JSI (Cap. 6.4)" />
       <VisualAngleSelector
         label="Postura de la Mano / Muñeca (PM — Tabla 6.22)"
         figureRef="Guía angular distal JSI"
@@ -1417,6 +1428,7 @@ export function Nam295Form({
 
   return (
     <div className="space-y-5">
+      <RepetitiveCycleAndAnglesGuide methodName="Nivel de Actividad Manual NAM — Res. 295/03" />
       {namPoints && (
         <NamThresholdChart
           rightNam={namPoints.right.nam}

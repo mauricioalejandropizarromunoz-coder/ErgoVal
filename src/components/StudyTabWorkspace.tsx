@@ -1,21 +1,36 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   BookOpen,
+  Box,
   Calculator,
   CheckCircle2,
   ClipboardPenLine,
   Eye,
+  FileDown,
   FileText,
+  Film,
   Sparkles,
   Thermometer,
   Trash2,
   Video,
   X,
 } from 'lucide-react';
-import { MethodEvaluationResult, MethodId, RiskSeverity, StudyTab } from '../types/ergonomics';
+import {
+  GeneralStudyData,
+  MethodEvaluationResult,
+  MethodId,
+  RiskSeverity,
+  StudyPhoto,
+  StudyTab,
+} from '../types/ergonomics';
 import { evaluateStudyTab } from '../utils/calculations';
 import { METHOD_CATALOG } from '../utils/defaults';
 import { isMethodFormulaModified } from '../utils/formulaConfig';
+import {
+  isAvatarReplicaPhoto,
+  isBiomechanicalVisualMethod,
+  renderMethodAvatarStudyPhotos,
+} from '../utils/methodAvatarReportHelper';
 import { PhotoGoniometer } from './PhotoGoniometer';
 import { EnvironmentFormsSwitch, LoadRepetitiveSwitch, PosturalSwitch } from './MethodFormDispatcher';
 
@@ -23,12 +38,16 @@ interface StudyTabWorkspaceProps {
   tab: StudyTab;
   tabIndex: number;
   totalTabs: number;
+  general?: GeneralStudyData;
   onChange: (updated: StudyTab) => void;
   onDeleteTab: () => void;
   onOpenReference?: (methodId: MethodId, query?: string) => void;
   onOpenFormulaEditor?: (methodId: MethodId) => void;
   onOpenVideoExtractor?: () => void;
+  onOpenTwinVideoStudio?: () => void;
   onOpenEnvironmentalWorkspace?: (methodId: MethodId) => void;
+  onExportTabPdf?: (tab: StudyTab) => Promise<void> | void;
+  onExportFullPdf?: () => Promise<void> | void;
 }
 
 export function getSeverityStyles(severity: RiskSeverity) {
@@ -64,19 +83,70 @@ export function StudyTabWorkspace({
   tab,
   tabIndex,
   totalTabs,
+  general,
   onChange,
   onDeleteTab,
   onOpenReference,
   onOpenFormulaEditor,
   onOpenVideoExtractor,
+  onOpenTwinVideoStudio,
   onOpenEnvironmentalWorkspace,
+  onExportTabPdf,
+  onExportFullPdf,
 }: StudyTabWorkspaceProps) {
   const [showRefPoster, setShowRefPoster] = useState(false);
+  const [liveAutoAvatarPhotos, setLiveAutoAvatarPhotos] = useState<StudyPhoto[]>([]);
+  const [showReportPreview, setShowReportPreview] = useState<boolean>(true);
+  const [isPinningAvatar, setIsPinningAvatar] = useState<boolean>(false);
 
   const catalogItem = METHOD_CATALOG.find((m) => m.id === tab.method)!;
   const result: MethodEvaluationResult = evaluateStudyTab(tab);
   const sevStyle = getSeverityStyles(result.severity);
   const isCustomFormula = isMethodFormulaModified(tab.method);
+  const isVisualBiomech = isBiomechanicalVisualMethod(tab.method);
+
+  // Actualizar en vivo las réplicas 3D del Avatar con los ángulos exactos de este método para la Previsualización del Informe
+  useEffect(() => {
+    if (!isVisualBiomech) {
+      setLiveAutoAvatarPhotos([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      renderMethodAvatarStudyPhotos(tab)
+        .then((generated) => {
+          if (!cancelled) setLiveAutoAvatarPhotos(generated);
+        })
+        .catch(() => {
+          if (!cancelled) setLiveAutoAvatarPhotos([]);
+        });
+    }, 120);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [tab, isVisualBiomech]);
+
+  const realOperatorPhotos = tab.photos.filter((p) => !isAvatarReplicaPhoto(p));
+  const attachedAvatarPhotos = tab.photos.filter((p) => isAvatarReplicaPhoto(p));
+  const effectivePreviewAvatarPhotos =
+    attachedAvatarPhotos.length > 0 ? attachedAvatarPhotos : liveAutoAvatarPhotos;
+
+  const handlePinAvatarPhotosIntoTab = async () => {
+    if (!isVisualBiomech) return;
+    setIsPinningAvatar(true);
+    try {
+      const fresh = await renderMethodAvatarStudyPhotos(tab);
+      if (fresh.length > 0) {
+        onChange({
+          ...tab,
+          photos: [...realOperatorPhotos, ...fresh],
+        });
+      }
+    } finally {
+      setIsPinningAvatar(false);
+    }
+  };
 
   const handleMethodChange = (nextMethod: MethodId) => {
     const nextMeta = METHOD_CATALOG.find((m) => m.id === nextMethod)!;
@@ -217,23 +287,29 @@ export function StudyTabWorkspace({
                 </button>
               )}
 
-            {onOpenVideoExtractor &&
-              (tab.method === MethodId.NIOSH ||
-                tab.method === MethodId.REBA ||
-                tab.method === MethodId.RULA ||
-                tab.method === MethodId.OWAS ||
-                tab.method === MethodId.LMC_295 ||
-                tab.method === MethodId.SNOOK) && (
-                <button
-                  type="button"
-                  onClick={onOpenVideoExtractor}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded border border-sky-700 bg-sky-700 hover:bg-sky-800 text-xs font-semibold text-white whitespace-nowrap shrink-0 cursor-pointer transition-colors"
-                  title="Extraer variables geométricas (H, V, D, A) y ángulos desde archivo de video y emitir informe"
-                >
-                  <Video className="w-3.5 h-3.5" />
-                  Extraer desde Video IA
-                </button>
-              )}
+            {onOpenVideoExtractor && isVisualBiomech && (
+              <button
+                type="button"
+                onClick={onOpenVideoExtractor}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded border border-sky-700 bg-sky-700 hover:bg-sky-800 text-xs font-semibold text-white whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                title="Extraer posturas de Toma de Carga y Destino o Movimientos Repetitivos desde archivo de vídeo"
+              >
+                <Video className="w-3.5 h-3.5" />
+                Extraer desde Video IA
+              </button>
+            )}
+
+            {onOpenTwinVideoStudio && isVisualBiomech && (
+              <button
+                type="button"
+                onClick={onOpenTwinVideoStudio}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded border border-emerald-700 bg-emerald-700 hover:bg-emerald-800 text-xs font-semibold text-white whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                title="Generar y descargar un Vídeo Mellizo del Avatar 3D copiando la posición exacta de un vídeo subido desde su PC"
+              >
+                <Film className="w-3.5 h-3.5" />
+                Vídeo Mellizo 3D
+              </button>
+            )}
 
             {onOpenFormulaEditor && (
               <button
@@ -313,6 +389,7 @@ export function StudyTabWorkspace({
           {/* Registro Fotográfico y Goniómetro Digital de 3 puntos (solo para métodos biomecánicos/posturales) */}
           {catalogItem.category !== 'ambiente_termico' && catalogItem.category !== 'vibraciones' && (
             <PhotoGoniometer
+              tab={tab}
               photos={tab.photos}
               onChange={(photos) => onChange({ ...tab, photos })}
             />
@@ -539,6 +616,227 @@ export function StudyTabWorkspace({
             </select>
           </div>
         </div>
+      </section>
+
+      {/* PREVISUALIZACIÓN EN VIVO DEL INFORME TÉCNICO DE ESTE MÉTODO (OPERARIO REAL + AVATAR 3D CON ÁNGULOS EXACTOS) */}
+      <section className="rounded-lg border border-slate-300 bg-white overflow-hidden">
+        <div className="bg-slate-900 text-white px-5 py-3.5 flex flex-wrap items-center justify-between gap-3">
+          <div className="space-y-0.5">
+            <div className="text-xs font-mono text-sky-300">
+              Previsualización en Vivo de la Hoja en el Informe PDF / Word ({catalogItem.shortName})
+            </div>
+            <h4 className="text-sm sm:text-base font-bold text-white">
+              Vista Previa del Informe Técnico con Fotos de Operario y Réplica Avatar 3D de Ángulos Exactos
+            </h4>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {isVisualBiomech && (
+              <button
+                type="button"
+                disabled={isPinningAvatar}
+                onClick={() => void handlePinAvatarPhotosIntoTab()}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-xs font-semibold text-white cursor-pointer"
+                title="Guarda y actualiza las imágenes del Avatar 3D con los ángulos exactos actuales dentro de esta pestaña"
+              >
+                <Box className="w-3.5 h-3.5" />
+                {isPinningAvatar ? 'Actualizando 3D...' : 'Fijar Fotos Avatar 3D en Pestaña'}
+              </button>
+            )}
+
+            {onExportTabPdf && (
+              <button
+                type="button"
+                onClick={() => void onExportTabPdf(tab)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-sky-600 hover:bg-sky-700 text-xs font-semibold text-white cursor-pointer"
+              >
+                <FileDown className="w-3.5 h-3.5" />
+                Descargar PDF de este Método
+              </button>
+            )}
+
+            {onExportFullPdf && (
+              <button
+                type="button"
+                onClick={() => void onExportFullPdf()}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-slate-600 bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-100 cursor-pointer"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                Exportar Informe Completo
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setShowReportPreview((v) => !v)}
+              className="px-2.5 py-1.5 rounded border border-slate-700 text-xs text-slate-300 hover:bg-slate-800 cursor-pointer"
+            >
+              {showReportPreview ? 'Contraer' : 'Mostrar Vista Previa'}
+            </button>
+          </div>
+        </div>
+
+        {showReportPreview && (
+          <div className="p-5 bg-slate-100/80">
+            {/* Hoja Institucional simulando exactamente el folio A4 que se exporta */}
+            <div className="max-w-5xl mx-auto rounded border border-slate-300 bg-white p-5 sm:p-6 shadow-xs space-y-5">
+              {/* Encabezado del folio */}
+              <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-200 pb-3.5 text-xs">
+                <div className="space-y-0.5">
+                  <div className="font-bold text-slate-900 text-sm">
+                    {general?.companyName || 'EMPRESA EVALUADA'} · PUESTO: {general?.workstationName || '-'}
+                  </div>
+                  <div className="text-slate-600">
+                    Sector: {general?.department || '-'} · Evaluador: {general?.evaluatorName || '-'} · Fecha: {general?.reportDate || '-'}
+                  </div>
+                </div>
+                <div className="text-right font-mono tabular-nums">
+                  <div className="font-bold text-slate-900">
+                    ESTUDIO {tabIndex + 1} DE {totalTabs} · {catalogItem.shortName}
+                  </div>
+                  <div className="text-slate-500">{catalogItem.chapterRef}</div>
+                </div>
+              </div>
+
+              {/* Resumen del resultado del método */}
+              <div className={`rounded border p-3.5 flex flex-wrap items-center justify-between gap-3 ${sevStyle.box}`}>
+                <div>
+                  <div className="text-xs font-semibold text-slate-700">
+                    Subtarea: {tab.taskEvaluated || 'Ciclo operativo del puesto'}
+                  </div>
+                  <div className={`text-lg font-bold font-mono tabular-nums mt-0.5 ${sevStyle.scoreText}`}>
+                    {result.primaryScoreText}
+                    {result.secondaryScoreText ? ` · ${result.secondaryScoreText}` : ''}
+                  </div>
+                </div>
+                <div className="text-right text-xs">
+                  <div className="font-bold">{result.riskLabel}</div>
+                  <div>{result.actionLevelText}</div>
+                  <div className="font-mono mt-0.5">Plazo: {tab.implementationDeadline}</div>
+                </div>
+              </div>
+
+              {/* Bloque Fotográfico Obligatorio: Operario Real + Avatar 3D con Ángulos Exactos */}
+              {isVisualBiomech && (
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h5 className="text-xs font-bold text-slate-900">
+                      Registro Fotográfico del Operario y Réplica Avatar 3D con Ángulos Exactos (Incluido en PDF y Word):
+                    </h5>
+                    <span className="text-[11px] font-mono text-slate-600 tabular-nums">
+                      Fotos Operario: {realOperatorPhotos.length} · Réplicas Avatar 3D: {effectivePreviewAvatarPhotos.length}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Columna / Tarjetas de Fotos Reales del Operario */}
+                    {realOperatorPhotos.length > 0 ? (
+                      realOperatorPhotos.map((ph) => (
+                        <div key={ph.id} className="rounded border border-slate-300 bg-slate-50 p-3 space-y-2">
+                          <div className="text-[11px] font-semibold text-slate-800">
+                            Operario Real · {ph.name}
+                          </div>
+                          <div className="rounded border border-slate-200 bg-white h-56 flex items-center justify-center overflow-hidden">
+                            <img
+                              src={ph.annotatedDataUrl || ph.dataUrl}
+                              alt={ph.caption}
+                              className="max-h-full max-w-full object-contain"
+                            />
+                          </div>
+                          <p className="text-[11px] text-slate-600 italic leading-snug">
+                            {ph.caption}
+                            {ph.annotations.length > 0
+                              ? ` | Ángulos medidos: ${ph.annotations.map((a) => `${a.label}: ${a.degrees}°`).join(', ')}`
+                              : ''}
+                          </p>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="rounded border border-dashed border-amber-400 bg-amber-50/50 p-4 flex flex-col justify-center items-start gap-2 text-xs text-amber-950">
+                        <div className="font-bold">
+                          Aún no adjuntó fotografía real del operario en esta pestaña
+                        </div>
+                        <p className="text-[11.5px] leading-relaxed">
+                          El informe ya incluye automáticamente la <strong>Réplica del Avatar 3D con ángulos exactos</strong> (a la derecha). Para incluir también la foto real del trabajador, súbala arriba en <em>Cargar Foto Operario</em> o extraiga Toma y Destino desde <em>Extraer desde Video IA</em>.
+                        </p>
+                        {onOpenVideoExtractor && (
+                          <button
+                            type="button"
+                            onClick={onOpenVideoExtractor}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-amber-700 hover:bg-amber-800 text-white text-xs font-semibold cursor-pointer"
+                          >
+                            <Video className="w-3.5 h-3.5" />
+                            Extraer Fotos Reales + Avatar desde Vídeo
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Tarjetas de Réplica Avatar 3D con Ángulos Exactos */}
+                    {effectivePreviewAvatarPhotos.map((av) => (
+                      <div key={av.id} className="rounded border border-sky-300 bg-sky-50/30 p-3 space-y-2">
+                        <div className="text-[11px] font-semibold text-sky-950">
+                          {av.name}
+                        </div>
+                        <div className="rounded border border-slate-200 bg-white h-56 flex items-center justify-center overflow-hidden">
+                          <img
+                            src={av.annotatedDataUrl || av.dataUrl}
+                            alt={av.caption}
+                            className="max-h-full max-w-full object-contain"
+                          />
+                        </div>
+                        <p className="text-[11px] text-slate-700 font-mono leading-snug">
+                          {av.caption}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Resumen compacto de variables del método que irán en la tabla del informe */}
+              <div className="overflow-x-auto border border-slate-200 rounded">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-900 text-white">
+                      <th className="py-1.5 px-3 font-semibold">Parámetro / Factor del Método</th>
+                      <th className="py-1.5 px-3 font-semibold">Valor Calculado</th>
+                      <th className="py-1.5 px-3 font-semibold">Referencia Normativa</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {result.breakdownRows.slice(0, 6).map((r, idx) => (
+                      <tr key={idx} className="odd:bg-white even:bg-slate-50/70">
+                        <td className="py-1.5 px-3 font-medium text-slate-800">{r.parameter}</td>
+                        <td className="py-1.5 px-3 font-mono font-semibold tabular-nums text-slate-900">
+                          {r.value}
+                        </td>
+                        <td className="py-1.5 px-3 text-slate-500">{r.reference || '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Pie de observaciones y medidas en la vista previa */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs border-t border-slate-200 pt-3">
+                <div className="rounded border border-slate-200 bg-slate-50 p-3">
+                  <div className="font-semibold text-slate-900 mb-1">Observaciones en el Informe:</div>
+                  <p className="text-slate-700 whitespace-pre-line line-clamp-4">
+                    {tab.evaluatorObservations.trim() || result.interpretation}
+                  </p>
+                </div>
+                <div className="rounded border border-slate-200 bg-slate-50 p-3">
+                  <div className="font-semibold text-slate-900 mb-1">Medidas Correctivas en el Informe:</div>
+                  <p className="text-slate-700 whitespace-pre-line line-clamp-4">
+                    {tab.correctiveMeasures.trim() ||
+                      result.suggestedMeasures.map((s, i) => `${i + 1}. ${s}`).join('\n')}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </section>
     </div>
   );

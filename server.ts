@@ -14,30 +14,24 @@ const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-export const DEFAULT_VIDEO_BIOMECH_SYSTEM_INSTRUCTION = `SYSTEM INSTRUCTION: EXTRACTOR DE VARIABLES BIOMECÁNICAS DESDE ARCHIVO DE VIDEO
+export const DEFAULT_VIDEO_BIOMECH_SYSTEM_INSTRUCTION = `SYSTEM INSTRUCTION: MOTOR EXPERTO EN ANÁLISIS ERGONÓMICO COMPUTACIONAL Y GEMELO DIGITAL BIOMECÁNICO (ESTÁNDAR ERGONIZA INTELLIGENT · 16 SEGMENTOS Y 14 ARTICULACIONES)
 
-Eres un sistema de visión por computador y estimación biomecánica 3D espacial. Tu tarea es analizar la secuencia cronológica de fotogramas numerados del video laboral para seleccionar los fotogramas útiles reales y extraer las variables geométricas y angulares exactas de cada postura observada.
+Eres un motor computacional de visión biomecánica 3D basado en principios de RULA, REBA, NIOSH y modelización estática de 16 segmentos y 14 articulaciones. Analiza la secuencia cronológica de fotogramas del vídeo laboral aplicando estrictamente:
 
-REGLAS ESTRICTAS DE ANÁLISIS VISUAL Y CALIBRACIÓN POR HITOS ANATÓMICOS:
-1. Selecciona obligatoriamente DOS fotogramas distintos y verificables dentro de la secuencia numerada:
-   - 'origen_frame_index' y 'origen_timestamp': Fotograma exacto donde las manos sujetan la carga al INICIAR el movimiento (ej. abajo cerca del suelo/espinilla/rodillas si es un levantamiento, o arriba si es un descenso).
-   - 'destino_frame_index' y 'destino_timestamp': Fotograma exacto (DISTINTO al de origen) donde el operario coloca o sostiene la carga en su punto FINAL (ej. arriba en pecho/hombros/estantería si levanta, o abajo si desciende).
-   - 'critico_frame_index': Fotograma de mayor exigencia postural global (REBA).
-2. Calibra con máxima precisión 'v_origen_cm' y 'v_destino_cm' observando a qué altura del cuerpo del trabajador se encuentran las manos y la carga en ESE fotograma (para estatura ~172 cm):
-   - Suelo / tobillos: 8 a 24 cm
-   - Media pierna / espinillas: 25 a 45 cm
-   - Nivel de rodillas: 46 a 62 cm
-   - Muslos / nudillos con brazos colgando: 63 a 82 cm
-   - Cadera / cintura / ombligo: 83 a 108 cm
-   - Pecho / esternón: 109 a 134 cm
-   - Nivel de los hombros / clavículas: 135 a 152 cm
-   - Por encima de los hombros / cabeza: 153 a 185 cm
-   NUNCA asignes alturas de hombros (>130 cm) a un fotograma donde el humano tiene la carga abajo cerca del suelo, rodillas o muslos.
-3. Convención goniométrica anatómica obligatoria (0° = posición neutra extendida):
-   - 'trunk_flexion': 0° = tronco erguido vertical; 10° a 24° cuando el trabajador levanta con ESPALDA RECTA y rodillas flexionadas; 40° a 75° únicamente cuando curva o inclina severamente el tronco hacia adelante.
-   - 'knee_flexion': 0° = piernas rectas extendidas; 80° a 125° cuando flexiona las rodillas en cuclillas; 5° a 25° cuando mantiene las piernas casi rectas.
-   - 'shoulder_flexion': 0° = brazo paralelo al tronco; 30° a 90° = brazo proyectado hacia adelante; >100° = brazo elevado sobre nivel de hombros.
-   - 'right_elbow' y 'left_elbow': FLEXIÓN desde extensión completa (0° = codo totalmente estirado/recto cuando los brazos cuelgan hacia abajo tomando carga baja -> 10° a 35°; 90° = codo en ángulo recto L; NUNCA devuelvas el ángulo interior suplementario de 160°-180°).
+1. ANÁLISIS DE VÍDEO, FOTOGRAMA CRÍTICO Y ANCLAJES GEOMÉTRICOS:
+   - Identifica 'critico_frame_index' (pico de esfuerzo biomecánico o postura más comprometida), además de 'origen_frame_index' y 'destino_frame_index' (DISTINTOS entre sí).
+   - Toma la vertical real del fondo (marcos de puertas, columnas de estanterías, aristas de paredes) como referencia absoluta de gravedad (0°).
+   - Traza vectores articulares precisos: oreja-hombro-cadera para el eje del tronco; hombro-codo-muñeca para brazo y antebrazo; cadera-rodilla-tobillo para miembro inferior, compensando la distorsión de perspectiva oblicua de la cámara.
+
+2. CÁLCULO MÉTRICO ANATÓMICO Y CONDICIONES DE APOYO:
+   - Calibra 'v_origen_cm' y 'v_destino_cm' según los hitos anatómicos del trabajador (suelo/tobillos: 8-24 cm; espinillas: 25-45 cm; rodillas: 46-62 cm; muslos/nudillos: 63-82 cm; cintura: 83-108 cm; pecho: 109-134 cm; hombros: 135-152 cm; sobre hombros: 153-185 cm).
+   - Convención goniométrica (0° = posición anatómica neutra erguida):
+     * 'trunk_flexion' (0° = vertical; 10°-24° si espalda recta en cuclillas; 40°-80° si flexiona columna), 'trunk_lateral' (-35°..+35°), 'trunk_twist' (-60°..+60°).
+     * 'shoulder_flexion' (-49°..+180°), 'shoulder_abduction' (0°..+135°), 'humeral_rotation' (-90°..+90° ángulo diedro).
+     * 'right_elbow' y 'left_elbow': FLEXIÓN desde extensión (0° = brazo recto estirado, 90° = ángulo recto L; NUNCA devuelvas 180°).
+     * 'hip_flexion' (-20°..+125°) y 'knee_flexion' (0° = piernas rectas, 80°-120° = cuclillas/sedestación).
+   - Identifica 'support_condition' visible: ej. "Bipedestación bilateral simétrica", "Bipedestación asimétrica / paso adelantado", "Monopedestación", "Sedestación", "Cuclillas / Bipedestación con rodillas flexionadas" o "Apoyo en rodillas y pies".
+   - Determina 'reference_plane': "Sagital", "Frontal" o "Sagital/Frontal".
 
 FORMATO DE SALIDA (ESTRICTAMENTE JSON):
 Responde ÚNICAMENTE con un objeto JSON válido conforme al esquema requerido.`;
@@ -743,6 +737,12 @@ async function startServer() {
       ),
     };
 
+    if (typeof p.shoulderRRotationDeg === 'number' && Number.isFinite(p.shoulderRRotationDeg)) {
+      normalized.shoulderRRotationDeg = clampRound(p.shoulderRRotationDeg, 0, -90, 90);
+    }
+    if (typeof p.shoulderLRotationDeg === 'number' && Number.isFinite(p.shoulderLRotationDeg)) {
+      normalized.shoulderLRotationDeg = clampRound(p.shoulderLRotationDeg, 0, -90, 90);
+    }
     if (typeof p.forearmLPronationDeg === 'number' && Number.isFinite(p.forearmLPronationDeg)) {
       normalized.forearmLPronationDeg = clampRound(p.forearmLPronationDeg, 0, -90, 90);
     }
@@ -784,6 +784,21 @@ async function startServer() {
     }
     if (typeof p.rootYawDeg === 'number' && Number.isFinite(p.rootYawDeg) && Math.abs(p.rootYawDeg) > 0.1) {
       normalized.rootYawDeg = clampRound(p.rootYawDeg, 0, -180, 180);
+    }
+    if (typeof p.propOffsetX === 'number' && Number.isFinite(p.propOffsetX) && Math.abs(p.propOffsetX) > 0.001) {
+      normalized.propOffsetX = Math.round(Math.max(-2.5, Math.min(2.5, p.propOffsetX)) * 100) / 100;
+    }
+    if (typeof p.propOffsetY === 'number' && Number.isFinite(p.propOffsetY) && Math.abs(p.propOffsetY) > 0.001) {
+      normalized.propOffsetY = Math.round(Math.max(-1.8, Math.min(1.8, p.propOffsetY)) * 100) / 100;
+    }
+    if (typeof p.propOffsetZ === 'number' && Number.isFinite(p.propOffsetZ) && Math.abs(p.propOffsetZ) > 0.001) {
+      normalized.propOffsetZ = Math.round(Math.max(-2.5, Math.min(2.5, p.propOffsetZ)) * 100) / 100;
+    }
+    if (typeof p.propRotYDeg === 'number' && Number.isFinite(p.propRotYDeg) && Math.abs(p.propRotYDeg) > 0.1) {
+      normalized.propRotYDeg = clampRound(p.propRotYDeg, 0, -180, 180);
+    }
+    if (typeof p.propScale === 'number' && Number.isFinite(p.propScale) && Math.abs(p.propScale - 1) > 0.01) {
+      normalized.propScale = Math.round(Math.max(0.45, Math.min(2.0, p.propScale)) * 100) / 100;
     }
     if (
       typeof p.loadDetachedPhase === 'string' &&
@@ -1507,12 +1522,36 @@ CONVENCIÓN GONIOMÉTRICA OBLIGATORIA DEL AVATAR 3D (0° = posición anatómica 
           },
           origen_angles_deg: phaseAngleSchema,
           destino_angles_deg: phaseAngleSchema,
-          postural_angles_deg: {
+            postural_angles_deg: {
             type: Type.OBJECT,
             properties: {
               trunk_flexion: {
                 type: Type.NUMBER,
-                description: 'Flexión máxima del tronco respecto a la vertical en grados en el instante crítico',
+                description: 'Flexión máxima del tronco respecto a la vertical real (0°) en grados en el instante crítico',
+              },
+              trunk_lateral: {
+                type: Type.NUMBER,
+                description: 'Inclinación lateral del tronco en plano frontal (-35° a +35°)',
+              },
+              trunk_twist: {
+                type: Type.NUMBER,
+                description: 'Rotación axial del tronco en plano transversal (-60° a +60°)',
+              },
+              shoulder_flexion: {
+                type: Type.NUMBER,
+                description: 'Flexión anteroposterior del hombro derecho respecto al eje del tronco en el instante crítico',
+              },
+              shoulder_abduction: {
+                type: Type.NUMBER,
+                description: 'Abducción lateral del hombro derecho en plano frontal (0° a 135°)',
+              },
+              humeral_rotation: {
+                type: Type.NUMBER,
+                description: 'Rotación humeral derecha en grados (-90° interna a +90° externa)',
+              },
+              hip_flexion: {
+                type: Type.NUMBER,
+                description: 'Flexión coxofemoral derecha en el instante crítico (0° de pie recto, 90° sentado/cuclilla)',
               },
               knee_flexion: {
                 type: Type.NUMBER,
@@ -1520,11 +1559,19 @@ CONVENCIÓN GONIOMÉTRICA OBLIGATORIA DEL AVATAR 3D (0° = posición anatómica 
               },
               right_elbow: {
                 type: Type.NUMBER,
-                description: 'Ángulo articular del codo derecho en grados en el instante crítico',
+                description: 'Flexión anatómica del codo derecho en grados (0° = recto, 90° = L)',
               },
               left_elbow: {
                 type: Type.NUMBER,
-                description: 'Ángulo articular del codo izquierdo en grados en el instante crítico',
+                description: 'Flexión anatómica del codo izquierdo en grados (0° = recto, 90° = L)',
+              },
+              support_condition: {
+                type: Type.STRING,
+                description: 'Condiciones reales de apoyo observadas: ej. Bipedestación bilateral, Monopedestación, Sedestación, Apoyo de rodillas',
+              },
+              reference_plane: {
+                type: Type.STRING,
+                description: 'Plano anatómico principal observado: Sagital, Frontal o Sagital/Frontal',
               },
             },
             required: ['trunk_flexion', 'knee_flexion', 'right_elbow', 'left_elbow'],
@@ -1789,12 +1836,85 @@ CONVENCIÓN GONIOMÉTRICA OBLIGATORIA DEL AVATAR 3D (0° = posición anatómica 
               ? `Levantamiento ascendente desde nivel inferior (${vOrig} cm, suelo/tarima) hacia estantería o plano superior (${vDest} cm). En ciclos de reposición inversa, el origen actúa también como destino.`
               : `Traslado horizontal de carga a altura similar (${vOrig} cm <-> ${vDest} cm), pudiendo alternarse origen y destino.`;
 
+      const resolvedCritSec =
+        subsetLen > 0 && typeof activeSubsetForMapping[subCritIdx]?.frame.timeSec === 'number'
+          ? Math.round(activeSubsetForMapping[subCritIdx].frame.timeSec! * 100) / 100
+          : Math.round((parseFlexibleTimestampSec(activeSubsetForMapping[subCritIdx]?.frame.timestamp) ?? 1.2) * 100) / 100;
+
+      const resolvedTrunkCrit = Math.max(peakTrunk, origenAngles.trunk_flexion, destinoAngles.trunk_flexion);
+      const resolvedKneeCrit = Math.max(peakKnee, origenAngles.knee_flexion, destinoAngles.knee_flexion);
+      const resolvedLatCrit = clampRound(angles.trunk_lateral, 0, -35, 35);
+      const resolvedTwistCrit = clampRound(angles.trunk_twist ?? niosh.A_deg, 10, -60, 60);
+      const resolvedShFlexCrit = clampRound(
+        angles.shoulder_flexion,
+        isOrigLow ? origenAngles.shoulder_flexion : destinoAngles.shoulder_flexion,
+        -49,
+        180,
+      );
+      const resolvedShAbdCrit = clampRound(angles.shoulder_abduction, 12, -26, 135);
+      const resolvedHumRotCrit = clampRound(angles.humeral_rotation, 0, -90, 90);
+      const resolvedHipCrit = clampRound(
+        angles.hip_flexion,
+        Math.round(Math.min(115, resolvedKneeCrit * 0.72 + resolvedTrunkCrit * 0.35)),
+        -35,
+        130,
+      );
+      const resolvedSupport =
+        typeof angles.support_condition === 'string' && angles.support_condition.trim().length > 3
+          ? angles.support_condition.trim()
+          : resolvedKneeCrit >= 85 && resolvedTrunkCrit <= 22
+            ? 'Bipedestación bilateral con flexión profunda de rodillas (cuclillas)'
+            : 'Bipedestación bilateral';
+      const resolvedPlane =
+        typeof angles.reference_plane === 'string' && angles.reference_plane.trim().length > 2
+          ? angles.reference_plane.trim()
+          : Math.abs(resolvedLatCrit) > 10 || Math.abs(resolvedTwistCrit) > 20
+            ? 'Sagital/Frontal'
+            : 'Sagital';
+
+      const ergonizaDigitalTwin = {
+        analisis_exitoso: true,
+        fotograma_critico_segundo: resolvedCritSec,
+        condiciones_apoyo_detectadas: resolvedSupport,
+        sincronizacion_avatar_3d: {
+          plano_referencia: resolvedPlane,
+          articulaciones_principales: {
+            tronco: {
+              flexion_extension_grados: Number(resolvedTrunkCrit.toFixed(1)),
+              lateralizacion_grados: Number(resolvedLatCrit.toFixed(1)),
+              rotacion_axial_grados: Number(resolvedTwistCrit.toFixed(1)),
+            },
+            hombro_derecho: {
+              flexion_anteroposterior_grados: Number(resolvedShFlexCrit.toFixed(1)),
+              abduccion_aduccion_grados: Number(resolvedShAbdCrit.toFixed(1)),
+              rotacion_humeral_grados: Number(resolvedHumRotCrit.toFixed(1)),
+            },
+            codo_derecho: {
+              flexion_extension_grados: Number(peakElbR.toFixed(1)),
+            },
+            cadera_derecha: {
+              flexion_extension_grados: Number(resolvedHipCrit.toFixed(1)),
+            },
+            rodilla_derecha: {
+              flexion_extension_grados: Number(resolvedKneeCrit.toFixed(1)),
+            },
+          },
+        },
+        datos_faltantes_requeridos: [
+          'Peso exacto de la carga manipulada en kg',
+          'Datos antropométricos del operario (sexo biológico, edad, estatura en cm y peso corporal en kg)',
+          'Frecuencia de la tarea (levantamientos/min) y duración diaria de exposición',
+          'Calidad del acoplamiento mano-carga (bueno, regular o malo) y coeficiente de fricción del calzado',
+        ],
+      };
+
       const normalizedPayload = {
         status: 'processed' as const,
         critical_events: {
           origen_frame_index: resolvedOrigIdx,
           destino_frame_index: resolvedDestIdx,
           critico_frame_index: resolvedCritIdx,
+          critico_timestamp_sec: resolvedCritSec,
           origen_timestamp: resolvedOriginTs,
           destino_timestamp: resolvedDestTs,
         },
@@ -1818,11 +1938,20 @@ CONVENCIÓN GONIOMÉTRICA OBLIGATORIA DEL AVATAR 3D (0° = posición anatómica 
         origen_angles_deg: origenAngles,
         destino_angles_deg: destinoAngles,
         postural_angles_deg: {
-          trunk_flexion: Math.max(peakTrunk, origenAngles.trunk_flexion, destinoAngles.trunk_flexion),
-          knee_flexion: Math.max(peakKnee, origenAngles.knee_flexion, destinoAngles.knee_flexion),
+          trunk_flexion: resolvedTrunkCrit,
+          trunk_lateral: resolvedLatCrit,
+          trunk_twist: resolvedTwistCrit,
+          shoulder_flexion: resolvedShFlexCrit,
+          shoulder_abduction: resolvedShAbdCrit,
+          humeral_rotation: resolvedHumRotCrit,
+          hip_flexion: resolvedHipCrit,
+          knee_flexion: resolvedKneeCrit,
           right_elbow: peakElbR,
           left_elbow: peakElbL,
+          support_condition: resolvedSupport,
+          reference_plane: resolvedPlane,
         },
+        ergoniza_digital_twin: ergonizaDigitalTwin,
       };
 
       res.json(normalizedPayload);
