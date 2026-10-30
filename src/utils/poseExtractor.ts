@@ -7,6 +7,10 @@ import {
 } from './ergonizaBiomechEngine';
 import { makeNeutralPose } from './figurePlanCatalog';
 import { initHeavyPoseMoCap } from './mocapRetargeter';
+import {
+  clampPoseToNormativeWorkAgeLimits,
+  NORMATIVE_JOINT_LIMITS,
+} from './normativeJointLimits';
 
 interface Vec3 {
   x: number;
@@ -174,7 +178,13 @@ function analyzeWorldLandmarksFrame(
   const trunkTwistDeg = clamp(round1(twistSign * twistMag), -60, 60);
 
   const neckVec = sub3(midEar, midShoulder);
-  const neckFlexDeg = clamp(round1(angleBetweenDeg(neckVec, trunkUpVec) - 8), -35, 45);
+  const neckMag = angleBetweenDeg(neckVec, trunkUpVec);
+  const neckSign = dot3(normalize3(neckVec), subjectForward) >= dot3(normalize3(trunkUpVec), subjectForward) - 0.04 ? 1 : -1;
+  const neckFlexDeg = clamp(
+    round1(neckSign * Math.max(0, neckMag - 8)),
+    NORMATIVE_JOINT_LIMITS.cervicalAndShoulder.neckExtensionMinDeg,
+    NORMATIVE_JOINT_LIMITS.cervicalAndShoulder.neckFlexionMaxDeg,
+  );
 
   const humerusR = sub3(elbR, shR);
   const forearmR = sub3(wrR, elbR);
@@ -204,18 +214,47 @@ function analyzeWorldLandmarksFrame(
     135,
   );
 
-  const elbowRFlexDeg = clamp(round1(angleBetweenDeg(humerusR, forearmR)), 0, 160);
-  const elbowLFlexDeg = clamp(round1(angleBetweenDeg(humerusL, forearmL)), 0, 160);
+  const elbowRFlexDeg = clamp(
+    round1(angleBetweenDeg(humerusR, forearmR)),
+    NORMATIVE_JOINT_LIMITS.elbow.flexionMinDeg,
+    NORMATIVE_JOINT_LIMITS.elbow.flexionMaxDeg,
+  );
+  const elbowLFlexDeg = clamp(
+    round1(angleBetweenDeg(humerusL, forearmL)),
+    NORMATIVE_JOINT_LIMITS.elbow.flexionMinDeg,
+    NORMATIVE_JOINT_LIMITS.elbow.flexionMaxDeg,
+  );
 
-  const wristRFlexDeg = clamp(round1(angleBetweenDeg(forearmR, handVecR) * 0.7), -35, 45);
-  const wristLFlexDeg = clamp(round1(angleBetweenDeg(forearmL, handVecL) * 0.7), -35, 45);
+  const pinkyR = worldLm[18] || wrR;
+  const pinkyL = worldLm[17] || wrL;
+  const palmNormalR = cross3(sub3(idxR, wrR), sub3(pinkyR, wrR));
+  const palmNormalL = cross3(sub3(pinkyL, wrL), sub3(idxL, wrL));
+  const wristSignR =
+    norm3(palmNormalR) > 1e-4 && dot3(normalize3(handVecR), normalize3(palmNormalR)) < 0 ? -1 : 1;
+  const wristSignL =
+    norm3(palmNormalL) > 1e-4 && dot3(normalize3(handVecL), normalize3(palmNormalL)) < 0 ? -1 : 1;
+
+  const wristRFlexDeg = clamp(
+    round1(wristSignR * angleBetweenDeg(forearmR, handVecR) * 0.78),
+    NORMATIVE_JOINT_LIMITS.wrist.dorsalExtensionMinDeg,
+    NORMATIVE_JOINT_LIMITS.wrist.palmarFlexionMaxDeg,
+  );
+  const wristLFlexDeg = clamp(
+    round1(wristSignL * angleBetweenDeg(forearmL, handVecL) * 0.78),
+    NORMATIVE_JOINT_LIMITS.wrist.dorsalExtensionMinDeg,
+    NORMATIVE_JOINT_LIMITS.wrist.palmarFlexionMaxDeg,
+  );
 
   let humeralRotRDeg = 0;
   const nPlaneTorsoArm = cross3(trunkDownVec, normalize3(humerusR));
   const nPlaneArmFore = cross3(normalize3(humerusR), normalize3(forearmR));
   if (norm3(nPlaneTorsoArm) > 0.16 && norm3(nPlaneArmFore) > 0.16 && elbowRFlexDeg >= 12) {
     const rawDihedral = angleBetweenDeg(nPlaneTorsoArm, nPlaneArmFore);
-    humeralRotRDeg = clamp(round1(rawDihedral - 90), -90, 90);
+    humeralRotRDeg = clamp(
+      round1(rawDihedral - 90),
+      -NORMATIVE_JOINT_LIMITS.cervicalAndShoulder.shoulderExternalRotMaxDeg,
+      NORMATIVE_JOINT_LIMITS.cervicalAndShoulder.shoulderInternalRotMaxDeg,
+    );
   }
 
   const thighR = sub3(kneeR, hipR);
@@ -223,10 +262,26 @@ function analyzeWorldLandmarksFrame(
   const thighL = sub3(kneeL, hipL);
   const shankL = sub3(ankL, kneeL);
 
-  const kneeRFlexDeg = clamp(round1(angleBetweenDeg(thighR, shankR)), 0, 155);
-  const kneeLFlexDeg = clamp(round1(angleBetweenDeg(thighL, shankL)), 0, 155);
-  const hipRFlexDeg = clamp(round1(angleBetweenDeg(thighR, downGravity)), -25, 128);
-  const hipLFlexDeg = clamp(round1(angleBetweenDeg(thighL, downGravity)), -25, 128);
+  const kneeRFlexDeg = clamp(
+    round1(angleBetweenDeg(thighR, shankR)),
+    NORMATIVE_JOINT_LIMITS.knee.flexionMinDeg,
+    NORMATIVE_JOINT_LIMITS.knee.flexionMaxDeg,
+  );
+  const kneeLFlexDeg = clamp(
+    round1(angleBetweenDeg(thighL, shankL)),
+    NORMATIVE_JOINT_LIMITS.knee.flexionMinDeg,
+    NORMATIVE_JOINT_LIMITS.knee.flexionMaxDeg,
+  );
+  const hipRFlexDeg = clamp(
+    round1(angleBetweenDeg(thighR, downGravity)),
+    NORMATIVE_JOINT_LIMITS.hip.extensionMaxDeg,
+    NORMATIVE_JOINT_LIMITS.hip.flexionMaxDeg,
+  );
+  const hipLFlexDeg = clamp(
+    round1(angleBetweenDeg(thighL, downGravity)),
+    NORMATIVE_JOINT_LIMITS.hip.extensionMaxDeg,
+    NORMATIVE_JOINT_LIMITS.hip.flexionMaxDeg,
+  );
 
   const ankDiffY = Math.abs((ankR.y ?? 0) - (ankL.y ?? 0));
   let supportCondition = 'Bipedestación bilateral';
@@ -269,28 +324,38 @@ function analyzeWorldLandmarksFrame(
     130,
   );
 
-  const poseFrame = makeNeutralPose({
-    trunkFlexionDeg: trunkFlexDeg,
-    trunkLateralDeg: trunkLatDeg,
-    trunkTwistDeg: trunkTwistDeg,
-    neckFlexionDeg: neckFlexDeg,
-    shoulderRFlexionDeg: shoulderRFlexDeg,
-    shoulderRAbductionDeg: shoulderRAbdDeg,
-    shoulderRRotationDeg: humeralRotRDeg,
-    shoulderLFlexionDeg: shoulderLFlexDeg,
-    shoulderLAbductionDeg: shoulderLAbdDeg,
-    elbowRFlexionDeg: elbowRFlexDeg,
-    elbowLFlexionDeg: elbowLFlexDeg,
-    wristRFlexionDeg: wristRFlexDeg,
-    wristLFlexionDeg: wristLFlexDeg,
-    hipRFlexionDeg: hipRFlexDeg,
-    kneeRFlexionDeg: kneeRFlexDeg,
-    ankleRDorsiflexionDeg: clamp(round1(kneeRFlexDeg - hipRFlexDeg), -24, 34),
-    hipLFlexionDeg: hipLFlexDeg,
-    kneeLFlexionDeg: kneeLFlexDeg,
-    ankleLDorsiflexionDeg: clamp(round1(kneeLFlexDeg - hipLFlexDeg), -24, 34),
-    stanceMode,
-  });
+  const poseFrame = clampPoseToNormativeWorkAgeLimits(
+    makeNeutralPose({
+      trunkFlexionDeg: trunkFlexDeg,
+      trunkLateralDeg: trunkLatDeg,
+      trunkTwistDeg: trunkTwistDeg,
+      neckFlexionDeg: neckFlexDeg,
+      shoulderRFlexionDeg: shoulderRFlexDeg,
+      shoulderRAbductionDeg: shoulderRAbdDeg,
+      shoulderRRotationDeg: humeralRotRDeg,
+      shoulderLFlexionDeg: shoulderLFlexDeg,
+      shoulderLAbductionDeg: shoulderLAbdDeg,
+      elbowRFlexionDeg: elbowRFlexDeg,
+      elbowLFlexionDeg: elbowLFlexDeg,
+      wristRFlexionDeg: wristRFlexDeg,
+      wristLFlexionDeg: wristLFlexDeg,
+      hipRFlexionDeg: hipRFlexDeg,
+      kneeRFlexionDeg: kneeRFlexDeg,
+      ankleRDorsiflexionDeg: clamp(
+        round1(kneeRFlexDeg - hipRFlexDeg),
+        NORMATIVE_JOINT_LIMITS.ankle.plantarflexionMinDeg,
+        NORMATIVE_JOINT_LIMITS.ankle.dorsiflexionMaxDeg,
+      ),
+      hipLFlexionDeg: hipLFlexDeg,
+      kneeLFlexionDeg: kneeLFlexDeg,
+      ankleLDorsiflexionDeg: clamp(
+        round1(kneeLFlexDeg - hipLFlexDeg),
+        NORMATIVE_JOINT_LIMITS.ankle.plantarflexionMinDeg,
+        NORMATIVE_JOINT_LIMITS.ankle.dorsiflexionMaxDeg,
+      ),
+      stanceMode,
+    }),
+  );
 
   const midWrist = mid3(wrR, wrL);
   const handReachHoriz = Math.hypot(midWrist.x - midAnk.x, midWrist.z - midAnk.z);

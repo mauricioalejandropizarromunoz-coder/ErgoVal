@@ -92,14 +92,18 @@ export interface PosturePose3D {
   hipRFlexionDeg: number; // 0 = standing straight, 90 = seated
   kneeRFlexionDeg: number; // 0 = straight, 90 = 90° bend
   ankleRDorsiflexionDeg: number; // + dorsiflexion, - plantarflexion
+  toeRExtensionDeg?: number; // Articulación MTF dedos del pie ISO 7250-1: + extensión despegue (+52°), - flexión garra (-42°)
   hipLFlexionDeg: number;
   kneeLFlexionDeg: number;
   ankleLDorsiflexionDeg: number;
+  toeLExtensionDeg?: number;
   stanceMode?: 'standing' | 'seated' | 'kneeling' | 'squatting' | 'one_leg' | 'walking';
   prop?: ScenePropType;
   loadKg?: number;
   highlightGroup?: 'none' | 'rula_groups' | 'sagittal_split' | 'l5s1_disc';
-  handGripMode?: 'relaxed' | 'pinch' | 'power_grip' | 'box_cradle';
+  handGripMode?: 'open' | 'relaxed' | 'pinch' | 'power_grip' | 'box_cradle';
+  handLGripMode?: 'open' | 'relaxed' | 'pinch' | 'power_grip' | 'box_cradle';
+  handRGripMode?: 'open' | 'relaxed' | 'pinch' | 'power_grip' | 'box_cradle';
   /** Desplazamiento y orientación espacial del operario en el estudio (metros / grados) para tareas dinámicas y movimiento libre */
   rootOffsetX?: number;
   rootOffsetZ?: number;
@@ -117,7 +121,7 @@ export interface PosturePose3D {
 export interface AngleArcAnnotation {
   joint: JointKey;
   /** Reference direction in 2D screen angle (deg, 0=right, 90=down, -90=up) or second joint */
-  refType: 'vertical_down' | 'vertical_up' | 'horizontal' | 'trunk_axis' | 'forearm_axis' | 'segment';
+  refType: 'vertical_down' | 'vertical_up' | 'horizontal' | 'trunk_axis' | 'forearm_axis' | 'segment' | 'internal_segment';
   toJoint?: JointKey;
   parentJoint?: JointKey;
   label: string; // e.g., "α = 20°–45°" or "38°"

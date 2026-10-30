@@ -157,7 +157,8 @@ export function buildMethodAvatarSheetSpecs(tab: StudyTab): MethodAvatarSheetSpe
       const side = d.evaluatedSide === 'izquierdo' ? d.left : d.right;
       const shDeg =
         side.upperArmPos === 1 ? 12 : side.upperArmPos === 2 ? 34 : side.upperArmPos === 3 ? 68 : 108;
-      const elbDeg = side.lowerArmPos === 1 ? 82 : 114;
+      const elbDeg = side.lowerArmPos === 1 ? 84 : 18;
+      const elbIntDeg = 180 - elbDeg;
       const wrDeg = side.wristPos === 1 ? 0 : side.wristPos === 2 ? 12 : 28;
       const nkDeg = d.neckPos === 1 ? 6 : d.neckPos === 2 ? 16 : d.neckPos === 3 ? 30 : -18;
       const trDeg = d.trunkPos === 1 ? 0 : d.trunkPos === 2 ? 14 : d.trunkPos === 3 ? 40 : 68;
@@ -192,12 +193,12 @@ export function buildMethodAvatarSheetSpecs(tab: StudyTab): MethodAvatarSheetSpe
         {
           idSuffix: 'rula-3d',
           title: `Réplica Avatar 3D · RULA (${tab.tabLabel})`,
-          caption: `Réplica Avatar 3D con ángulos exactos RULA · Tronco ${trDeg}°, Cuello ${nkDeg}°, Hombro ${shDeg}°, Codo ${elbDeg}°, Muñeca ${wrDeg}°`,
+          caption: `Réplica Avatar 3D con ángulos exactos RULA · Tronco ${trDeg}°, Cuello ${nkDeg}°, Hombro ${shDeg}°, Codo int. ${elbIntDeg}°, Muñeca ${wrDeg}°`,
           widthPx: 680,
           heightPx: 520,
           panels: [
             {
-              subTitle: `Postura RULA · Tronco ${trDeg}° · Brazo ${shDeg}° · Codo ${elbDeg}°`,
+              subTitle: `Postura RULA · Tronco ${trDeg}° · Brazo ${shDeg}° · Codo ${elbIntDeg}°`,
               scoreBadge: `Muñeca ${wrDeg}° · Cuello ${nkDeg}°`,
               focusZone: 'full_body',
               cameraPreset: d.trunkTwisted || side.armAbducted ? 'isometric' : 'sagittal_right',
@@ -205,7 +206,7 @@ export function buildMethodAvatarSheetSpecs(tab: StudyTab): MethodAvatarSheetSpe
               angleArcs: [
                 { joint: 'l5s1', refType: 'vertical_up', toJoint: 'c7', label: `Tronco ${trDeg}°` },
                 { joint: 'shoulderR', refType: 'trunk_axis', toJoint: 'elbowR', label: `Hombro ${shDeg}°` },
-                { joint: 'elbowR', refType: 'segment', parentJoint: 'shoulderR', toJoint: 'wristR', label: `Codo ${elbDeg}°` },
+                { joint: 'elbowR', refType: 'internal_segment', parentJoint: 'shoulderR', toJoint: 'wristR', label: `Codo ${elbIntDeg}°` },
               ],
             },
           ],
@@ -213,7 +214,7 @@ export function buildMethodAvatarSheetSpecs(tab: StudyTab): MethodAvatarSheetSpe
             { label: 'Tronco', degrees: trDeg },
             { label: 'Cuello', degrees: nkDeg },
             { label: 'Hombro', degrees: shDeg },
-            { label: 'Codo', degrees: elbDeg },
+            { label: 'Codo (int.)', degrees: elbIntDeg },
             { label: 'Muñeca', degrees: wrDeg },
           ],
         },
@@ -227,7 +228,8 @@ export function buildMethodAvatarSheetSpecs(tab: StudyTab): MethodAvatarSheetSpe
       const nkDeg = d.neckPos === 1 ? 10 : 28;
       const shDeg =
         side.upperArmPos === 1 ? 12 : side.upperArmPos === 2 ? 34 : side.upperArmPos === 3 ? 68 : 106;
-      const elbDeg = side.lowerArmPos === 1 ? 80 : 42;
+      const elbDeg = side.lowerArmPos === 1 ? 84 : 18;
+      const elbIntDeg = 180 - elbDeg;
       const wrDeg = side.wristPos === 1 ? 8 : 26;
       const knDeg = d.legsKneeFlexion === 0 ? 8 : d.legsKneeFlexion === 1 ? 46 : 78;
       const hpDeg = Math.round(knDeg * 0.68 + trDeg * 0.28);
@@ -257,19 +259,20 @@ export function buildMethodAvatarSheetSpecs(tab: StudyTab): MethodAvatarSheetSpe
         {
           idSuffix: 'reba-3d',
           title: `Réplica Avatar 3D · REBA (${tab.tabLabel})`,
-          caption: `Réplica Avatar 3D con ángulos exactos REBA · Tronco ${trDeg}°, Cuello ${nkDeg}°, Hombro ${shDeg}°, Codo ${elbDeg}°, Rodilla ${knDeg}°`,
+          caption: `Réplica Avatar 3D con ángulos exactos REBA · Tronco ${trDeg}°, Cuello ${nkDeg}°, Hombro ${shDeg}°, Codo int. ${elbIntDeg}°, Rodilla ${knDeg}°`,
           widthPx: 680,
           heightPx: 520,
           panels: [
             {
               subTitle: `Postura REBA · Tronco ${trDeg}° · Rodilla ${knDeg}°`,
-              scoreBadge: `Hombro ${shDeg}° · Codo ${elbDeg}°`,
+              scoreBadge: `Hombro ${shDeg}° · Codo ${elbIntDeg}°`,
               focusZone: 'full_body',
               cameraPreset: d.trunkTwistedOrSide ? 'isometric' : 'sagittal_right',
               pose,
               angleArcs: [
                 { joint: 'l5s1', refType: 'vertical_up', toJoint: 'c7', label: `Tronco ${trDeg}°` },
                 { joint: 'shoulderR', refType: 'trunk_axis', toJoint: 'elbowR', label: `Hombro ${shDeg}°` },
+                { joint: 'elbowR', refType: 'internal_segment', parentJoint: 'shoulderR', toJoint: 'wristR', label: `Codo ${elbIntDeg}°` },
                 { joint: 'kneeR', refType: 'vertical_down', toJoint: 'ankleR', label: `Rodilla ${knDeg}°` },
               ],
             },
@@ -278,7 +281,7 @@ export function buildMethodAvatarSheetSpecs(tab: StudyTab): MethodAvatarSheetSpe
             { label: 'Tronco', degrees: trDeg },
             { label: 'Cuello', degrees: nkDeg },
             { label: 'Hombro', degrees: shDeg },
-            { label: 'Codo', degrees: elbDeg },
+            { label: 'Codo (int.)', degrees: elbIntDeg },
             { label: 'Rodilla', degrees: knDeg },
           ],
         },

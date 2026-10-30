@@ -51,6 +51,7 @@ import {
   CeneaSampleCaseId,
   buildCeneaSampleFrameSpec,
 } from '../utils/ceneaSampleVideosCatalog';
+import { makeNeutralPose } from '../utils/figurePlanCatalog';
 import { createNewStudyTab } from '../utils/defaults';
 import { renderAnnotatedOperatorFrameJpeg } from '../utils/methodAvatarReportHelper';
 
@@ -196,6 +197,14 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
   const [cameraPreset, setCameraPreset] = useState<CameraPreset>('frontal');
   const [orbit, setOrbit] = useState<CameraOrbitOverride>(DEFAULT_ORBIT_OVERRIDE);
   const [sceneProp, setSceneProp] = useState<ScenePropType>('none');
+  const [propVisibilityMode, setPropVisibilityMode] = useState<'always' | 'hidden' | 'final_photo_only'>('always');
+  const [previewFinalPhotoProp, setPreviewFinalPhotoProp] = useState<boolean>(false);
+  const [propOffsetX, setPropOffsetX] = useState<number>(0);
+  const [propOffsetY, setPropOffsetY] = useState<number>(0);
+  const [propOffsetZ, setPropOffsetZ] = useState<number>(0);
+  const [propRotYDeg, setPropRotYDeg] = useState<number>(0);
+  const [propScale, setPropScale] = useState<number>(1);
+  const [shelfBoxOnRack, setShelfBoxOnRack] = useState<boolean>(true);
 
   // Grabación y descarga del Vídeo Mellizo
   const [exportLayout, setExportLayout] = useState<ExportVideoLayout>('side_by_side');
@@ -302,59 +311,126 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
     [mode, mocapTimeline, effectivePins, autoAssistSevereOcclusion],
   );
 
+  const liveEffectiveProp: ScenePropType =
+    propVisibilityMode === 'hidden'
+      ? 'none'
+      : propVisibilityMode === 'final_photo_only' && !previewFinalPhotoProp
+        ? 'none'
+        : sceneProp;
+
+  const finalPhotoProp: ScenePropType = propVisibilityMode === 'hidden' ? 'none' : sceneProp;
+
+  const propPlacementConfig = useMemo(
+    () => ({
+      propOffsetX,
+      propOffsetY,
+      propOffsetZ,
+      propRotYDeg,
+      propScale,
+      loadKg:
+        shelfBoxOnRack && (sceneProp === 'cold_room_high_shelf' || sceneProp === 'pallet_jack_rack')
+          ? 0
+          : undefined,
+      loadDetachedPhase:
+        shelfBoxOnRack && (sceneProp === 'cold_room_high_shelf' || sceneProp === 'pallet_jack_rack')
+          ? ('dest_rest' as const)
+          : undefined,
+    }),
+    [propOffsetX, propOffsetY, propOffsetZ, propRotYDeg, propScale, shelfBoxOnRack, sceneProp],
+  );
+
   // Dibuja un instante exacto tanto en el Avatar 3D como en la capa de esqueleto sobre el vídeo real
   const drawFrameAtTime = useCallback(
     (tSec: number, pinsOverride?: MocapCorrectionPin[]) => {
       if (!avatarCanvasRef.current || isRecordingTwin) return;
 
-      if (mode === 'pc_upload' && mocapTimeline) {
-        const sample = getMocapSampleAtTime(tSec, pinsOverride);
-        if (sample) {
-          renderMocapTwinFrameToCanvas(sample, avatarCanvasRef.current, 640, 480, orbit, {
-            cameraPreset,
-            sceneProp,
-            showAngleHUD: showAvatarAngleHUD,
-            dpiScale: 1.65,
-          });
+      if (mode === 'pc_upload') {
+        if (mocapTimeline) {
+          const sample = getMocapSampleAtTime(tSec, pinsOverride);
+          if (sample) {
+            renderMocapTwinFrameToCanvas(sample, avatarCanvasRef.current, 640, 480, orbit, {
+              cameraPreset,
+              sceneProp: liveEffectiveProp,
+              propPlacement: propPlacementConfig,
+              showAngleHUD: showAvatarAngleHUD,
+              dpiScale: 1.65,
+            });
 
-          const ovCanvas = videoOverlayCanvasRef.current;
-          const vidEl = sourceVideoRef.current;
-          if (ovCanvas) {
-            const cw = ovCanvas.clientWidth || 640;
-            const ch = ovCanvas.clientHeight || 480;
-            const dpr = Math.min(2, window.devicePixelRatio || 1);
-            if (
-              ovCanvas.width !== Math.round(cw * dpr) ||
-              ovCanvas.height !== Math.round(ch * dpr)
-            ) {
-              ovCanvas.width = Math.round(cw * dpr);
-              ovCanvas.height = Math.round(ch * dpr);
-            }
-            const octx = ovCanvas.getContext('2d');
-            if (octx) {
-              octx.setTransform(dpr, 0, 0, dpr, 0, 0);
-              octx.clearRect(0, 0, cw, ch);
-              if (showVideoSkeletonOverlay && vidEl && vidEl.videoWidth > 0) {
-                const vRect = computeContainedVideoRect(
-                  cw,
-                  ch,
-                  vidEl.videoWidth,
-                  vidEl.videoHeight,
-                );
-                drawDetectedSkeletonOverlay(octx, sample, vRect);
+            const ovCanvas = videoOverlayCanvasRef.current;
+            const vidEl = sourceVideoRef.current;
+            if (ovCanvas) {
+              const cw = ovCanvas.clientWidth || 640;
+              const ch = ovCanvas.clientHeight || 480;
+              const dpr = Math.min(2, window.devicePixelRatio || 1);
+              if (
+                ovCanvas.width !== Math.round(cw * dpr) ||
+                ovCanvas.height !== Math.round(ch * dpr)
+              ) {
+                ovCanvas.width = Math.round(cw * dpr);
+                ovCanvas.height = Math.round(ch * dpr);
+              }
+              const octx = ovCanvas.getContext('2d');
+              if (octx) {
+                octx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                octx.clearRect(0, 0, cw, ch);
+                if (showVideoSkeletonOverlay && vidEl && vidEl.videoWidth > 0) {
+                  const vRect = computeContainedVideoRect(
+                    cw,
+                    ch,
+                    vidEl.videoWidth,
+                    vidEl.videoHeight,
+                  );
+                  drawDetectedSkeletonOverlay(octx, sample, vRect);
+                }
               }
             }
+            return;
           }
-          return;
         }
+
+        // En modo Vídeo Subido desde PC sin secuencia aún: mostrar postura neutra estática (jamás simular el ciclo de levantamiento de Video IA)
+        const ovCanvas = videoOverlayCanvasRef.current;
+        if (ovCanvas) {
+          const octx = ovCanvas.getContext('2d');
+          if (octx) octx.clearRect(0, 0, ovCanvas.width, ovCanvas.height);
+        }
+        const standbyPose = makeNeutralPose({
+          stanceMode: 'standing',
+          prop: liveEffectiveProp,
+          ...propPlacementConfig,
+        });
+        renderInteractivePose3DToCanvas(
+          {
+            subTitle: isTracking
+              ? 'Rastreando vídeo real fotograma a fotograma...'
+              : pcVideoUrl
+                ? 'Pulse "Re-analizar Vídeo" para reconstruir el Mellizo 3D'
+                : 'Suba un vídeo desde su PC para iniciar el Mellizo 3D',
+            focusZone: 'full_body',
+            cameraPreset: cameraPreset === 'frontal' ? 'isometric' : cameraPreset,
+            pose: standbyPose,
+          },
+          avatarCanvasRef.current,
+          640,
+          480,
+          orbit,
+          1.65,
+        );
+        return;
       }
 
-      // Respaldo modo demostración sintética
+      // Modo Ciclo de Prueba (exclusivo cuando el usuario selecciona la pestaña Ciclo de Prueba)
       const dur = Math.max(1, videoDurationSec || 5);
       const progress = Math.max(0, Math.min(1, tSec / dur));
       const built = buildCeneaSampleFrameSpec(activeDemoSample, progress, 172);
-      const poseWithProp: PosturePose3D =
-        sceneProp !== 'none' ? { ...built.panelSpec.pose, prop: sceneProp } : built.panelSpec.pose;
+      const poseWithProp: PosturePose3D = {
+        ...built.panelSpec.pose,
+        prop: liveEffectiveProp !== 'none' ? liveEffectiveProp : built.panelSpec.pose.prop,
+        ...propPlacementConfig,
+      };
+      if (propVisibilityMode === 'hidden' || (propVisibilityMode === 'final_photo_only' && !previewFinalPhotoProp)) {
+        poseWithProp.prop = 'none';
+      }
       const demoSpec: Panel3DSpec = {
         subTitle: `Ciclo Demostración · t = ${tSec.toFixed(2)} s`,
         scoreBadge: `Tronco ${Math.round(poseWithProp.trunkFlexionDeg)}°`,
@@ -373,12 +449,17 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
     },
     [
       isRecordingTwin,
+      isTracking,
+      pcVideoUrl,
       mode,
       mocapTimeline,
       getMocapSampleAtTime,
       orbit,
       cameraPreset,
-      sceneProp,
+      liveEffectiveProp,
+      propPlacementConfig,
+      propVisibilityMode,
+      previewFinalPhotoProp,
       showAvatarAngleHUD,
       showVideoSkeletonOverlay,
       videoDurationSec,
@@ -466,13 +547,14 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
 
   const currentReadoutPose = useMemo<PosturePose3D>(() => {
     if (activeLiveSample) return activeLiveSample.ergonomicPose;
+    if (mode === 'pc_upload') return makeNeutralPose({ stanceMode: 'standing' });
     const dur = Math.max(1, videoDurationSec || 5);
     return buildCeneaSampleFrameSpec(
       activeDemoSample,
       Math.max(0, Math.min(1, currentTimeSec / dur)),
       172,
     ).panelSpec.pose;
-  }, [activeLiveSample, videoDurationSec, activeDemoSample, currentTimeSec]);
+  }, [activeLiveSample, mode, videoDurationSec, activeDemoSample, currentTimeSec]);
 
   const resetDraftControls = () => {
     setDraftMirrorArm('none');
@@ -524,6 +606,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
   const handleUploadPcVideo = async (file: File) => {
     setIsPlaying(false);
     setIsTracking(true);
+    setMocapTimeline(null);
     setTrackingProgressPct(4);
     setTrackingMsg('Abriendo vídeo y verificando códec de vídeo...');
     setNotice(null);
@@ -633,7 +716,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
         setMocapTimeline(null);
         setNotice({
           tone: 'warning',
-          text: 'No se pudo detectar una figura humana clara en el vídeo. Procure que el operario se observe de cuerpo entero y con iluminación suficiente.',
+          text: 'No se pudo detectar una figura humana clara en el vídeo. Pulse "Re-analizar Vídeo" o verifique que el operario sea visible.',
         });
       }
     } catch (err) {
@@ -647,8 +730,67 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
     }
   };
 
+  // Re-analizar en 1 clic el vídeo actualmente cargado en pantalla
+  const handleReanalyzeCurrentVideo = async () => {
+    const vidEl = sourceVideoRef.current;
+    if (!vidEl || !pcVideoUrl || isTracking || isRecordingTwin) return;
+    setIsPlaying(false);
+    vidEl.pause();
+    setIsTracking(true);
+    setMocapTimeline(null);
+    setTrackingProgressPct(6);
+    setTrackingMsg('Reiniciando motor 3D y rastreando vídeo actual...');
+    setNotice(null);
+
+    try {
+      const dur =
+        Number.isFinite(vidEl.duration) && vidEl.duration > 0.2
+          ? Math.min(25, vidEl.duration)
+          : videoDurationSec || 5.0;
+      setVideoDurationSec(dur);
+      const timeline = await extractTrueMocapTimeline(vidEl, {
+        targetFps: dur <= 14 ? 24 : 18,
+        onProgress: (pct, phaseText) => {
+          setTrackingProgressPct(pct);
+          if (phaseText) setTrackingMsg(phaseText);
+        },
+      });
+      await seekVideoFrame(vidEl, 0);
+      setCurrentTimeSec(0);
+      if (timeline && timeline.frames.length > 0) {
+        setMocapTimeline(timeline);
+        setNotice({
+          tone: 'success',
+          text: `Re-análisis 3D completado (${timeline.frames.length} cuadros a ${timeline.sampledFps} fps).`,
+        });
+      } else {
+        setNotice({
+          tone: 'warning',
+          text: 'No se detectó esqueleto 3D en el vídeo actual. Verifique que el vídeo esté cargado y muestre al operario.',
+        });
+      }
+    } catch (err) {
+      setNotice({
+        tone: 'error',
+        text: err instanceof Error ? err.message : 'Error al re-analizar el vídeo.',
+      });
+    } finally {
+      setIsTracking(false);
+      setTrackingMsg('');
+    }
+  };
+
   // Grabación y exportación del Vídeo Mellizo con el motor directo de cuaterniones 3D
   const handleRecordAndDownloadTwinVideo = async () => {
+    if (mode === 'pc_upload' && !mocapTimeline) {
+      setNotice({
+        tone: 'warning',
+        text: pcVideoUrl
+          ? 'Pulse primero "Re-analizar Vídeo" para completar el rastreo 3D antes de grabar.'
+          : 'Suba primero un vídeo desde su PC para grabar el Vídeo Mellizo 3D.',
+      });
+      return;
+    }
     await ensureAvatarGlbLoaded();
     setIsPlaying(false);
     setIsRecordingTwin(true);
@@ -731,17 +873,22 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
             orbit,
             {
               cameraPreset,
-              sceneProp,
+              sceneProp: liveEffectiveProp,
+              propPlacement: propPlacementConfig,
               showAngleHUD: showAvatarAngleHUD,
               dpiScale: 1.5,
             },
           );
         } else {
           const built = buildCeneaSampleFrameSpec(activeDemoSample, tSec / dur, 172);
-          poseForFooter =
-            sceneProp !== 'none'
-              ? { ...built.panelSpec.pose, prop: sceneProp }
-              : built.panelSpec.pose;
+          poseForFooter = {
+            ...built.panelSpec.pose,
+            prop: liveEffectiveProp !== 'none' ? liveEffectiveProp : built.panelSpec.pose.prop,
+            ...propPlacementConfig,
+          };
+          if (propVisibilityMode === 'hidden' || (propVisibilityMode === 'final_photo_only' && !previewFinalPhotoProp)) {
+            poseForFooter.prop = 'none';
+          }
           renderInteractivePose3DToCanvas(
             {
               subTitle: `Avatar 3D Mellizo · t = ${tSec.toFixed(2)} s`,
@@ -817,13 +964,15 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
           ctx.drawImage(rawAvatarCanvas, 20, 40, avatarRenderW, avatarRenderH);
         }
 
-        // Pie métrico
+        // Pie métrico (codo en ángulo interno anatómico 30°–170°)
+        const elbDIntFooter = Math.max(30, Math.min(170, Math.round(180 - poseForFooter.elbowRFlexionDeg)));
+        const elbIIntFooter = Math.max(30, Math.min(170, Math.round(180 - poseForFooter.elbowLFlexionDeg)));
         ctx.fillStyle = '#1e293b';
         ctx.fillRect(0, outH - 42, outW, 42);
         ctx.fillStyle = '#f8fafc';
         ctx.font = 'bold 12px "IBM Plex Mono", monospace';
         ctx.fillText(
-          `Tronco ${Math.round(poseForFooter.trunkFlexionDeg)}° · Giro Pelvis ${Math.round(poseForFooter.rootYawDeg ?? 0)}° · Brazo D ${Math.round(poseForFooter.shoulderRFlexionDeg)}° / Codo D ${Math.round(poseForFooter.elbowRFlexionDeg)}° · Brazo I ${Math.round(poseForFooter.shoulderLFlexionDeg)}° / Codo I ${Math.round(poseForFooter.elbowLFlexionDeg)}° · Rodilla ${Math.round(Math.max(poseForFooter.kneeRFlexionDeg, poseForFooter.kneeLFlexionDeg))}°`,
+          `Tronco ${Math.round(poseForFooter.trunkFlexionDeg)}° · Giro Pelvis ${Math.round(poseForFooter.rootYawDeg ?? 0)}° · Brazo D ${Math.round(poseForFooter.shoulderRFlexionDeg)}° / Codo D ${elbDIntFooter}° · Brazo I ${Math.round(poseForFooter.shoulderLFlexionDeg)}° / Codo I ${elbIIntFooter}° · Rodilla ${Math.round(Math.max(poseForFooter.kneeRFlexionDeg, poseForFooter.kneeLFlexionDeg))}°`,
           16,
           outH - 21,
         );
@@ -870,6 +1019,15 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
   // Emitir capturas de Toma de Carga y Destino al estudio usando el retargeting 3D real
   const handleSendKeyPosturesToStudy = async () => {
     if (!onEmitTwinFramesToStudy) return;
+    if (mode === 'pc_upload' && !mocapTimeline) {
+      setNotice({
+        tone: 'warning',
+        text: pcVideoUrl
+          ? 'Pulse primero "Re-analizar Vídeo" antes de enviar las posturas al estudio.'
+          : 'Suba primero un vídeo desde su PC.',
+      });
+      return;
+    }
     await ensureAvatarGlbLoaded();
     const dur = Math.max(1, videoDurationSec || 5);
 
@@ -930,17 +1088,24 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
       if (sample) {
         renderMocapTwinFrameToCanvas(sample, subCanvas, sheetW, sheetH - 74, orbit, {
           cameraPreset,
-          sceneProp,
+          sceneProp: finalPhotoProp,
+          propPlacement: propPlacementConfig,
           showAngleHUD: true,
           dpiScale: 1.75,
         });
       } else {
+        const finalFallbackPose: PosturePose3D = {
+          ...fallbackPose,
+          prop: finalPhotoProp !== 'none' ? finalPhotoProp : fallbackPose.prop,
+          ...propPlacementConfig,
+        };
+        if (propVisibilityMode === 'hidden') finalFallbackPose.prop = 'none';
         renderInteractivePose3DToCanvas(
           {
             subTitle: headerTitle,
             focusZone: 'full_body',
             cameraPreset: 'isometric',
-            pose: fallbackPose,
+            pose: finalFallbackPose,
           },
           subCanvas,
           sheetW,
@@ -1019,17 +1184,20 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
       }
     }
 
+    const origElbInt = Math.max(30, Math.min(170, Math.round(180 - origPose.elbowRFlexionDeg)));
+    const destElbInt = Math.max(30, Math.min(170, Math.round(180 - destPose.elbowRFlexionDeg)));
+
     const origAvatarJpeg = renderTwinReportJpeg(
       origSample,
       origPose,
       `AVATAR 3D MELLIZO · 1. TOMA DE CARGA (t = ${tOrigin.toFixed(2)} s)`,
-      `Tronco ${Math.round(origPose.trunkFlexionDeg)}° | Giro ${Math.round(origPose.rootYawDeg ?? 0)}° | Hombro D ${Math.round(origPose.shoulderRFlexionDeg)}° | Codo D ${Math.round(origPose.elbowRFlexionDeg)}° | Rodilla ${Math.round(origPose.kneeRFlexionDeg)}°`,
+      `Tronco ${Math.round(origPose.trunkFlexionDeg)}° | Giro ${Math.round(origPose.rootYawDeg ?? 0)}° | Hombro D ${Math.round(origPose.shoulderRFlexionDeg)}° | Codo D ${origElbInt}° | Rodilla ${Math.round(origPose.kneeRFlexionDeg)}°`,
     );
     const destAvatarJpeg = renderTwinReportJpeg(
       destSample,
       destPose,
       `AVATAR 3D MELLIZO · 2. DESTINO (t = ${tDest.toFixed(2)} s)`,
-      `Tronco ${Math.round(destPose.trunkFlexionDeg)}° | Giro ${Math.round(destPose.rootYawDeg ?? 0)}° | Hombro D ${Math.round(destPose.shoulderRFlexionDeg)}° | Codo D ${Math.round(destPose.elbowRFlexionDeg)}° | Rodilla ${Math.round(destPose.kneeRFlexionDeg)}°`,
+      `Tronco ${Math.round(destPose.trunkFlexionDeg)}° | Giro ${Math.round(destPose.rootYawDeg ?? 0)}° | Hombro D ${Math.round(destPose.shoulderRFlexionDeg)}° | Codo D ${destElbInt}° | Rodilla ${Math.round(destPose.kneeRFlexionDeg)}°`,
     );
 
     const makeAnns = (p: PosturePose3D): AngleAnnotation[] => [
@@ -1051,11 +1219,11 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
       },
       {
         id: 'ann-el',
-        label: 'Codo D',
+        label: 'Codo D (int.)',
         p1: { x: 0.5, y: 0.3 },
         vertex: { x: 0.6, y: 0.5 },
         p2: { x: 0.8, y: 0.5 },
-        degrees: Math.round(p.elbowRFlexionDeg),
+        degrees: Math.max(30, Math.min(170, Math.round(180 - p.elbowRFlexionDeg))),
       },
     ];
 
@@ -1089,6 +1257,64 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
     setNotice({
       tone: 'success',
       text: 'Se incorporaron las fotos reales del operario y las réplicas 3D por cuaterniones (Toma y Destino) como nueva pestaña en el estudio.',
+    });
+  };
+
+  const handleDownloadFinalPhotoPng = async () => {
+    if (mode === 'pc_upload' && !mocapTimeline) {
+      setNotice({
+        tone: 'warning',
+        text: pcVideoUrl
+          ? 'Pulse primero "Re-analizar Vídeo" para reconstruir la postura del operario antes de descargar.'
+          : 'Suba primero un vídeo desde su PC.',
+      });
+      return;
+    }
+    await ensureAvatarGlbLoaded();
+    const outCanvas = document.createElement('canvas');
+    const sample = getMocapSampleAtTime(currentTimeSec, effectivePins);
+    if (sample) {
+      renderMocapTwinFrameToCanvas(sample, outCanvas, 920, 680, orbit, {
+        cameraPreset,
+        sceneProp: finalPhotoProp,
+        propPlacement: propPlacementConfig,
+        showAngleHUD: showAvatarAngleHUD,
+        dpiScale: 2,
+      });
+    } else {
+      const dur = Math.max(1, videoDurationSec || 5);
+      const built = buildCeneaSampleFrameSpec(
+        activeDemoSample,
+        Math.max(0, Math.min(1, currentTimeSec / dur)),
+        172,
+      );
+      const poseFinal: PosturePose3D = {
+        ...built.panelSpec.pose,
+        prop: finalPhotoProp !== 'none' ? finalPhotoProp : built.panelSpec.pose.prop,
+        ...propPlacementConfig,
+      };
+      if (propVisibilityMode === 'hidden') poseFinal.prop = 'none';
+      renderInteractivePose3DToCanvas(
+        {
+          subTitle: `Foto Final Avatar 3D · t = ${currentTimeSec.toFixed(2)} s`,
+          focusZone: 'full_body',
+          cameraPreset: cameraPreset === 'frontal' ? 'isometric' : cameraPreset,
+          pose: poseFinal,
+        },
+        outCanvas,
+        920,
+        680,
+        orbit,
+        2,
+      );
+    }
+    const a = document.createElement('a');
+    a.href = outCanvas.toDataURL('image/png');
+    a.download = `avatar_mellizo_foto_final_t${currentTimeSec.toFixed(1)}s.png`;
+    a.click();
+    setNotice({
+      tone: 'success',
+      text: `Foto final PNG descargada (t = ${currentTimeSec.toFixed(2)} s) con la configuración de mobiliario seleccionada.`,
     });
   };
 
@@ -1130,6 +1356,17 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
                 e.currentTarget.value = '';
               }}
             />
+            {mode === 'pc_upload' && pcVideoUrl && (
+              <button
+                type="button"
+                disabled={isTracking || isRecordingTwin}
+                onClick={() => void handleReanalyzeCurrentVideo()}
+                className="px-3 py-2 rounded-md border border-sky-300 bg-sky-50 hover:bg-sky-100 disabled:opacity-50 text-sky-900 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isTracking ? 'animate-spin' : ''}`} />
+                Re-analizar Vídeo
+              </button>
+            )}
             <button
               type="button"
               disabled={isTracking || isRecordingTwin}
@@ -1401,8 +1638,9 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
             <span>
               Tronco {Math.round(currentReadoutPose.trunkFlexionDeg)}° · Giro{' '}
               {Math.round(currentReadoutPose.rootYawDeg ?? 0)}° · Brazo D{' '}
-              {Math.round(currentReadoutPose.shoulderRFlexionDeg)}° · Brazo I{' '}
-              {Math.round(currentReadoutPose.shoulderLFlexionDeg)}° · Rodilla{' '}
+              {Math.round(currentReadoutPose.shoulderRFlexionDeg)}° · Codo D{' '}
+              {Math.max(30, Math.min(170, Math.round(180 - currentReadoutPose.elbowRFlexionDeg)))}° ·
+              Rodilla{' '}
               {Math.round(
                 Math.max(
                   currentReadoutPose.kneeRFlexionDeg,
@@ -1423,7 +1661,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
         </div>
       </div>
 
-      {/* Línea de tiempo sincronizada + Marcadores de oclusión */}
+      {/* Línea de tiempo sincronizada + Mobiliario / Estanterías movibles o solo foto final */}
       <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-xs space-y-3">
         <div className="flex flex-wrap items-center gap-3">
           <button
@@ -1451,17 +1689,192 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
           <span className="text-xs font-mono tabular-nums font-semibold text-slate-700">
             {currentTimeSec.toFixed(2)} s / {videoDurationSec.toFixed(2)} s
           </span>
+        </div>
 
-          <select
-            value={sceneProp}
-            onChange={(e) => setSceneProp(e.target.value as ScenePropType)}
-            className="border border-slate-300 rounded-md px-2.5 py-1.5 text-xs bg-white text-slate-800"
-          >
-            <option value="none">Sin objeto en manos</option>
-            <option value="box_load">Caja industrial en manos</option>
-            <option value="hopper_sack_pour">Saco / Bolsa en manos</option>
-            <option value="trench_shovel">Pala / Herramienta</option>
-          </select>
+        {/* Control de Mobiliario / Estanterías: Mover, Quitar o Solo para la Foto Final */}
+        <div className="pt-3 border-t border-slate-100 space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-bold text-slate-900">Mobiliario / Estanterías:</span>
+              <select
+                value={sceneProp}
+                onChange={(e) => setSceneProp(e.target.value as ScenePropType)}
+                className="border border-slate-300 rounded-md px-2.5 py-1.5 text-xs bg-white text-slate-800"
+              >
+                <option value="none">Sin muebles (Quitar todo)</option>
+                <option value="cold_room_high_shelf">Estantería regulable (4 niveles)</option>
+                <option value="pallet_jack_rack">Estantería industrial + tarima</option>
+                <option value="work_desk_support">Mesa / Banco de apoyo</option>
+                <option value="box_load">Caja industrial en manos</option>
+                <option value="conveyor_veg_line">Línea / Cinta transportadora</option>
+                <option value="hopper_sack_pour">Tolva + Saco</option>
+                <option value="trench_shovel">Pala / Herramienta</option>
+              </select>
+
+              <div className="flex items-center gap-1 p-0.5 bg-slate-100 rounded border border-slate-200">
+                {(
+                  [
+                    ['always', 'Siempre visible'],
+                    ['hidden', 'Quitar / Ocultar'],
+                    ['final_photo_only', 'Solo para la foto final'],
+                  ] as const
+                ).map(([vMode, vLabel]) => (
+                  <button
+                    key={vMode}
+                    type="button"
+                    onClick={() => setPropVisibilityMode(vMode)}
+                    className={`px-2.5 py-1 rounded text-xs font-medium cursor-pointer transition-colors ${
+                      propVisibilityMode === vMode
+                        ? 'bg-white text-slate-900 font-semibold shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {vLabel}
+                  </button>
+                ))}
+              </div>
+
+              {propVisibilityMode === 'final_photo_only' && (
+                <label className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-amber-50 border border-amber-200 text-amber-950 font-medium cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={previewFinalPhotoProp}
+                    onChange={(e) => setPreviewFinalPhotoProp(e.target.checked)}
+                  />
+                  <span>Mostrar ahora para acomodarlo</span>
+                </label>
+              )}
+
+              {(sceneProp === 'cold_room_high_shelf' || sceneProp === 'pallet_jack_rack') &&
+                propVisibilityMode !== 'hidden' && (
+                  <label className="inline-flex items-center gap-1.5 text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={shelfBoxOnRack}
+                      onChange={(e) => setShelfBoxOnRack(e.target.checked)}
+                    />
+                    <span>Caja apoyada en estante</span>
+                  </label>
+                )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              {(propOffsetX !== 0 ||
+                propOffsetY !== 0 ||
+                propOffsetZ !== 0 ||
+                propRotYDeg !== 0 ||
+                propScale !== 1) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPropOffsetX(0);
+                    setPropOffsetY(0);
+                    setPropOffsetZ(0);
+                    setPropRotYDeg(0);
+                    setPropScale(1);
+                  }}
+                  className="px-2.5 py-1 rounded border border-slate-300 bg-white hover:bg-slate-50 text-xs font-medium text-slate-700 cursor-pointer"
+                >
+                  Restablecer posición
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={isRecordingTwin || isTracking}
+                onClick={() => void handleDownloadFinalPhotoPng()}
+                className="px-3 py-1.5 rounded-md bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Descargar Foto Final PNG
+              </button>
+            </div>
+          </div>
+
+          {sceneProp !== 'none' &&
+            propVisibilityMode !== 'hidden' &&
+            (propVisibilityMode === 'always' || previewFinalPhotoProp) && (
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-1 text-[11px]">
+                <label className="space-y-0.5">
+                  <span className="flex justify-between text-slate-600">
+                    <span>Lateral X</span>
+                    <span className="font-mono tabular-nums">{propOffsetX.toFixed(2)} m</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={-1.5}
+                    max={1.5}
+                    step={0.04}
+                    value={propOffsetX}
+                    onChange={(e) => setPropOffsetX(Number(e.target.value))}
+                    className="w-full accent-sky-700"
+                  />
+                </label>
+
+                <label className="space-y-0.5">
+                  <span className="flex justify-between text-slate-600">
+                    <span>Profundidad Z</span>
+                    <span className="font-mono tabular-nums">{propOffsetZ.toFixed(2)} m</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={-1.0}
+                    max={1.5}
+                    step={0.04}
+                    value={propOffsetZ}
+                    onChange={(e) => setPropOffsetZ(Number(e.target.value))}
+                    className="w-full accent-sky-700"
+                  />
+                </label>
+
+                <label className="space-y-0.5">
+                  <span className="flex justify-between text-slate-600">
+                    <span>Altura Y</span>
+                    <span className="font-mono tabular-nums">{propOffsetY.toFixed(2)} m</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={-0.5}
+                    max={1.0}
+                    step={0.03}
+                    value={propOffsetY}
+                    onChange={(e) => setPropOffsetY(Number(e.target.value))}
+                    className="w-full accent-sky-700"
+                  />
+                </label>
+
+                <label className="space-y-0.5">
+                  <span className="flex justify-between text-slate-600">
+                    <span>Giro °</span>
+                    <span className="font-mono tabular-nums">{propRotYDeg}°</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={-180}
+                    max={180}
+                    step={5}
+                    value={propRotYDeg}
+                    onChange={(e) => setPropRotYDeg(Number(e.target.value))}
+                    className="w-full accent-sky-700"
+                  />
+                </label>
+
+                <label className="space-y-0.5">
+                  <span className="flex justify-between text-slate-600">
+                    <span>Escala</span>
+                    <span className="font-mono tabular-nums">{propScale.toFixed(2)}×</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={0.6}
+                    max={1.6}
+                    step={0.05}
+                    value={propScale}
+                    onChange={(e) => setPropScale(Number(e.target.value))}
+                    className="w-full accent-sky-700"
+                  />
+                </label>
+              </div>
+            )}
         </div>
 
         {/* Tramos de oclusión detectados automáticamente */}

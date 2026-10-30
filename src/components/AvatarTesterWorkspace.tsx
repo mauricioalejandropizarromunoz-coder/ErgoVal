@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   Box,
@@ -150,17 +150,17 @@ const DualNumericSlider: React.FC<DualNumericSliderProps> = ({
 const SCENE_PROP_OPTIONS: { value: ScenePropType; label: string }[] = [
   { value: 'box_load', label: 'Caja de carga bimanual' },
   { value: 'none', label: 'Sin objeto (solo avatar)' },
+  { value: 'cold_room_high_shelf', label: 'Estantería regulable de 4 niveles (con caja)' },
+  { value: 'pallet_jack_rack', label: 'Transpaleta + Estantería industrial de almacén' },
+  { value: 'work_desk_support', label: 'Mesa / banco de trabajo' },
   { value: 'bin_to_cart', label: 'Bin contenedor + Carro plataforma (Fig. 12.3)' },
   { value: 'pallet_cooler', label: 'Pallet + Conservadora isotérmica (Fig. 12.8)' },
   { value: 'bus_driver_seat', label: 'Butaca y volante de conducción (Fig. 13.2)' },
   { value: 'electrical_panel', label: 'Tablero eléctrico bajo (Fig. 11.1)' },
   { value: 'office_desk_lateral', label: 'Escritorio con monitor PVD' },
-  { value: 'work_desk_support', label: 'Mesa / banco de trabajo' },
   { value: 'chair', label: 'Silla de trabajo' },
-  { value: 'cold_room_high_shelf', label: 'Estantería alta con caja' },
   { value: 'cart_push_dynamo', label: 'Carro logístico de empuje' },
   { value: 'cart_pull_dynamo', label: 'Carro logístico de tracción' },
-  { value: 'pallet_jack_rack', label: 'Transpaleta + Estantería de almacén' },
   { value: 'hopper_sack_pour', label: 'Tolva inoxidable + Saco industrial' },
   { value: 'conveyor_veg_line', label: 'Cinta transportadora + Gaveta' },
   { value: 'trench_shovel', label: 'Pala manual' },
@@ -913,16 +913,35 @@ export const AvatarTesterWorkspace: React.FC<AvatarTesterWorkspaceProps> = ({
     );
   };
 
+  const [propVisibilityMode, setPropVisibilityMode] = useState<'always' | 'hidden' | 'final_photo_only'>('always');
+  const [previewFinalPhotoProp, setPreviewFinalPhotoProp] = useState<boolean>(false);
+
+  const resolveLiveProp = useCallback(
+    (p: PosturePose3D): ScenePropType => {
+      if (propVisibilityMode === 'hidden') return 'none';
+      if (propVisibilityMode === 'final_photo_only' && !previewFinalPhotoProp) return 'none';
+      return p.prop || 'none';
+    },
+    [propVisibilityMode, previewFinalPhotoProp],
+  );
+
+  const resolveExportProp = useCallback(
+    (p: PosturePose3D): ScenePropType => (propVisibilityMode === 'hidden' ? 'none' : p.prop || 'none'),
+    [propVisibilityMode],
+  );
+
   // Construcción de paneles 3D en tiempo real
-  const originPanelSpec: Panel3DSpec = useMemo(
-    () => ({
+  const originPanelSpec: Panel3DSpec = useMemo(() => {
+    const elbIntOrig = Math.max(30, Math.min(170, Math.round(180 - originPose.elbowRFlexionDeg)));
+    const livePropOrig = resolveLiveProp(originPose);
+    return {
       subTitle: dualViewMode
         ? `Origen · V=${vOrigCm} cm, H=${hOrigCm} cm`
         : `${customHeaderTitle} · V=${vOrigCm} cm, H=${hOrigCm} cm`,
       scoreBadge: dualViewMode ? `Origen V=${vOrigCm} cm` : `${selectedMethod}`,
       focusZone,
       cameraPreset,
-      pose: { ...originPose, loadKg: loadWeightKg },
+      pose: { ...originPose, prop: livePropOrig, loadKg: loadWeightKg },
       angleArcs: [
         {
           joint: 'l5s1',
@@ -930,6 +949,14 @@ export const AvatarTesterWorkspace: React.FC<AvatarTesterWorkspaceProps> = ({
           toJoint: 'c7',
           radiusPx: 38,
           label: `Tronco ${Math.round(originPose.trunkFlexionDeg)}°`,
+        },
+        {
+          joint: 'elbowR',
+          fromJoint: 'shoulderR',
+          refType: 'internal_segment',
+          toJoint: 'wristR',
+          radiusPx: 26,
+          label: `Codo ${elbIntOrig}°`,
         },
         {
           joint: 'kneeR',
@@ -940,9 +967,9 @@ export const AvatarTesterWorkspace: React.FC<AvatarTesterWorkspaceProps> = ({
         },
       ],
       forceVectors:
-        (originPose.prop === 'box_load' ||
-          originPose.prop === 'bin_to_cart' ||
-          originPose.prop === 'pallet_cooler') &&
+        (livePropOrig === 'box_load' ||
+          livePropOrig === 'bin_to_cart' ||
+          livePropOrig === 'pallet_cooler') &&
         loadWeightKg > 0
           ? [
               {
@@ -962,29 +989,31 @@ export const AvatarTesterWorkspace: React.FC<AvatarTesterWorkspaceProps> = ({
           label: `H = ${hOrigCm} cm`,
         },
       ],
-      noteBottom: `${customFooterNote} · Hombro ${Math.round(originPose.shoulderRFlexionDeg)}° · Codo ${Math.round(originPose.elbowRFlexionDeg)}°`,
-    }),
-    [
-      dualViewMode,
-      vOrigCm,
-      hOrigCm,
-      customHeaderTitle,
-      selectedMethod,
-      focusZone,
-      cameraPreset,
-      originPose,
-      loadWeightKg,
-      customFooterNote,
-    ],
-  );
+      noteBottom: `${customFooterNote} · Hombro ${Math.round(originPose.shoulderRFlexionDeg)}° · Codo (int.) ${elbIntOrig}°`,
+    };
+  }, [
+    dualViewMode,
+    vOrigCm,
+    hOrigCm,
+    customHeaderTitle,
+    selectedMethod,
+    focusZone,
+    cameraPreset,
+    originPose,
+    loadWeightKg,
+    customFooterNote,
+    resolveLiveProp,
+  ]);
 
-  const destPanelSpec: Panel3DSpec = useMemo(
-    () => ({
+  const destPanelSpec: Panel3DSpec = useMemo(() => {
+    const elbIntDest = Math.max(30, Math.min(170, Math.round(180 - destPose.elbowRFlexionDeg)));
+    const livePropDest = resolveLiveProp(destPose);
+    return {
       subTitle: `Destino · V=${vDestCm} cm, H=${hDestCm} cm`,
       scoreBadge: `Destino V=${vDestCm} cm`,
       focusZone,
       cameraPreset,
-      pose: { ...destPose, loadKg: loadWeightKg },
+      pose: { ...destPose, prop: livePropDest, loadKg: loadWeightKg },
       angleArcs: [
         {
           joint: 'l5s1',
@@ -992,6 +1021,14 @@ export const AvatarTesterWorkspace: React.FC<AvatarTesterWorkspaceProps> = ({
           toJoint: 'c7',
           radiusPx: 38,
           label: `Tronco ${Math.round(destPose.trunkFlexionDeg)}°`,
+        },
+        {
+          joint: 'elbowR',
+          fromJoint: 'shoulderR',
+          refType: 'internal_segment',
+          toJoint: 'wristR',
+          radiusPx: 26,
+          label: `Codo ${elbIntDest}°`,
         },
         {
           joint: 'kneeR',
@@ -1002,9 +1039,9 @@ export const AvatarTesterWorkspace: React.FC<AvatarTesterWorkspaceProps> = ({
         },
       ],
       forceVectors:
-        (destPose.prop === 'box_load' ||
-          destPose.prop === 'bin_to_cart' ||
-          destPose.prop === 'pallet_cooler') &&
+        (livePropDest === 'box_load' ||
+          livePropDest === 'bin_to_cart' ||
+          livePropDest === 'pallet_cooler') &&
         loadWeightKg > 0
           ? [
               {
@@ -1024,10 +1061,9 @@ export const AvatarTesterWorkspace: React.FC<AvatarTesterWorkspaceProps> = ({
           label: `H = ${hDestCm} cm`,
         },
       ],
-      noteBottom: `${customFooterNote} · Hombro ${Math.round(destPose.shoulderRFlexionDeg)}° · Codo ${Math.round(destPose.elbowRFlexionDeg)}°`,
-    }),
-    [vDestCm, hDestCm, focusZone, cameraPreset, destPose, loadWeightKg, customFooterNote],
-  );
+      noteBottom: `${customFooterNote} · Hombro ${Math.round(destPose.shoulderRFlexionDeg)}° · Codo (int.) ${elbIntDest}°`,
+    };
+  }, [vDestCm, hDestCm, focusZone, cameraPreset, destPose, loadWeightKg, customFooterNote, resolveLiveProp]);
 
   // Renderizado en demanda a los canvas interactivos (escala adaptativa móvil 1.35x vs escritorio 2x)
   useEffect(() => {
@@ -1155,13 +1191,21 @@ export const AvatarTesterWorkspace: React.FC<AvatarTesterWorkspaceProps> = ({
     }
   };
 
+  const renderFinalPhotoDataUrl = (baseSpec: Panel3DSpec, rawPose: PosturePose3D, w: number, h: number): string => {
+    const off = document.createElement('canvas');
+    const finalSpec: Panel3DSpec = {
+      ...baseSpec,
+      pose: { ...rawPose, prop: resolveExportProp(rawPose), loadKg: loadWeightKg },
+    };
+    renderInteractivePose3DToCanvas(finalSpec, off, w, h, orbit, 2, 'anatomical_skin', false);
+    return off.toDataURL('image/png');
+  };
+
   const handleDownloadSnapshotPng = () => {
-    const targetCanvas =
-      dualViewMode && activePhaseEdit === 'destination'
-        ? canvasDestRef.current
-        : canvasOriginRef.current;
-    if (!targetCanvas) return;
-    const url = targetCanvas.toDataURL('image/png');
+    const isDest = dualViewMode && activePhaseEdit === 'destination';
+    const url = isDest
+      ? renderFinalPhotoDataUrl(destPanelSpec, destPose, 720, 560)
+      : renderFinalPhotoDataUrl(originPanelSpec, originPose, 720, 560);
     const a = document.createElement('a');
     a.href = url;
     a.download = `avatar_3d_${selectedMethod.toLowerCase()}_${activePhaseEdit}.png`;
@@ -1171,21 +1215,23 @@ export const AvatarTesterWorkspace: React.FC<AvatarTesterWorkspaceProps> = ({
   const handleSendToStudyReport = () => {
     const builtTab = { ...evaluatedPreview.tab };
     const photos: StudyPhoto[] = [];
-    if (canvasOriginRef.current) {
-      photos.push({
-        id: `ph-test-orig-${Date.now()}`,
-        name: 'avatar_3d_origen.png',
-        dataUrl: canvasOriginRef.current.toDataURL('image/png'),
-        caption: `Simulación 3D (${selectedMethod}) · Origen V=${vOrigCm} cm, H=${hOrigCm} cm · Tronco ${Math.round(originPose.trunkFlexionDeg)}°, Rodillas ${Math.round(originPose.kneeRFlexionDeg)}°, Hombros ${Math.round(originPose.shoulderRFlexionDeg)}°, Codos ${Math.round(originPose.elbowRFlexionDeg)}°.`,
-        annotations: [],
-      });
-    }
-    if (dualViewMode && canvasDestRef.current) {
+    const elbIntOrig = Math.max(30, Math.min(170, Math.round(180 - originPose.elbowRFlexionDeg)));
+    const elbIntDest = Math.max(30, Math.min(170, Math.round(180 - destPose.elbowRFlexionDeg)));
+
+    photos.push({
+      id: `ph-test-orig-${Date.now()}`,
+      name: 'avatar_3d_origen.png',
+      dataUrl: renderFinalPhotoDataUrl(originPanelSpec, originPose, 680, 520),
+      caption: `Simulación 3D (${selectedMethod}) · Origen V=${vOrigCm} cm, H=${hOrigCm} cm · Tronco ${Math.round(originPose.trunkFlexionDeg)}°, Rodillas ${Math.round(originPose.kneeRFlexionDeg)}°, Hombros ${Math.round(originPose.shoulderRFlexionDeg)}°, Codos (int.) ${elbIntOrig}°.`,
+      annotations: [],
+    });
+
+    if (dualViewMode) {
       photos.push({
         id: `ph-test-dest-${Date.now() + 1}`,
         name: 'avatar_3d_destino.png',
-        dataUrl: canvasDestRef.current.toDataURL('image/png'),
-        caption: `Simulación 3D (${selectedMethod}) · Destino V=${vDestCm} cm, H=${hDestCm} cm · Tronco ${Math.round(destPose.trunkFlexionDeg)}°, Rodillas ${Math.round(destPose.kneeRFlexionDeg)}°, Hombros ${Math.round(destPose.shoulderRFlexionDeg)}°, Codos ${Math.round(destPose.elbowRFlexionDeg)}°.`,
+        dataUrl: renderFinalPhotoDataUrl(destPanelSpec, destPose, 680, 520),
+        caption: `Simulación 3D (${selectedMethod}) · Destino V=${vDestCm} cm, H=${hDestCm} cm · Tronco ${Math.round(destPose.trunkFlexionDeg)}°, Rodillas ${Math.round(destPose.kneeRFlexionDeg)}°, Hombros ${Math.round(destPose.shoulderRFlexionDeg)}°, Codos (int.) ${elbIntDest}°.`,
         annotations: [],
       });
     }
@@ -1829,10 +1875,16 @@ export const AvatarTesterWorkspace: React.FC<AvatarTesterWorkspaceProps> = ({
               </div>
 
               <label className="block space-y-1 text-xs pt-1">
-                <span className="font-medium text-slate-700">Objeto / Elemento 3D en Escena</span>
+                <span className="font-medium text-slate-700">Mobiliario / Estanterías 3D en Escena</span>
                 <select
                   value={currentPose.prop || 'none'}
-                  onChange={(e) => updatePoseField('prop', e.target.value as ScenePropType)}
+                  onChange={(e) => {
+                    const nextProp = e.target.value as ScenePropType;
+                    updatePoseField('prop', nextProp);
+                    if (nextProp !== 'none' && propVisibilityMode === 'hidden') {
+                      setPropVisibilityMode('always');
+                    }
+                  }}
                   className="w-full border border-slate-300 rounded px-2.5 py-1.5 bg-white text-xs"
                 >
                   {SCENE_PROP_OPTIONS.map((opt) => (
@@ -1842,6 +1894,88 @@ export const AvatarTesterWorkspace: React.FC<AvatarTesterWorkspaceProps> = ({
                   ))}
                 </select>
               </label>
+
+              {currentPose.prop && currentPose.prop !== 'none' && (
+                <div className="rounded-md border border-slate-200 bg-slate-50 p-2.5 space-y-2">
+                  <div className="text-[11px] font-semibold text-slate-800">
+                    Visibilidad y posición del mueble / estantería
+                  </div>
+                  <div className="grid grid-cols-3 gap-1 bg-slate-200/70 p-0.5 rounded">
+                    {(
+                      [
+                        { id: 'always', label: 'Siempre visible' },
+                        { id: 'hidden', label: 'Quitar mueble' },
+                        { id: 'final_photo_only', label: 'Solo foto final' },
+                      ] as const
+                    ).map((mode) => (
+                      <button
+                        key={mode.id}
+                        type="button"
+                        onClick={() => setPropVisibilityMode(mode.id)}
+                        className={`min-h-[28px] px-2 py-1 rounded text-[11px] font-semibold cursor-pointer transition-colors ${
+                          propVisibilityMode === mode.id
+                            ? 'bg-white text-slate-900 shadow-2xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        {mode.label}
+                      </button>
+                    ))}
+                  </div>
+                  {propVisibilityMode === 'final_photo_only' && (
+                    <label className="flex items-center justify-between gap-2 text-[11px] text-slate-700 cursor-pointer select-none">
+                      <span>Se oculta al calibrar y aparece al descargar PNG o enviar al estudio.</span>
+                      <span className="inline-flex items-center gap-1 font-semibold text-sky-800 shrink-0">
+                        <input
+                          type="checkbox"
+                          checked={previewFinalPhotoProp}
+                          onChange={(e) => setPreviewFinalPhotoProp(e.target.checked)}
+                          className="rounded border-slate-400 text-sky-700"
+                        />
+                        Mostrar para acomodar
+                      </span>
+                    </label>
+                  )}
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <DualNumericSlider
+                      label="Posición X (lateral)"
+                      unit=" m"
+                      value={Number((currentPose.propOffsetX ?? 0).toFixed(2))}
+                      min={-1.4}
+                      max={1.4}
+                      step={0.02}
+                      onChange={(v) => updatePoseField('propOffsetX', v)}
+                    />
+                    <DualNumericSlider
+                      label="Altura Y"
+                      unit=" m"
+                      value={Number((currentPose.propOffsetY ?? 0).toFixed(2))}
+                      min={-0.6}
+                      max={0.8}
+                      step={0.02}
+                      onChange={(v) => updatePoseField('propOffsetY', v)}
+                    />
+                    <DualNumericSlider
+                      label="Profundidad Z"
+                      unit=" m"
+                      value={Number((currentPose.propOffsetZ ?? 0).toFixed(2))}
+                      min={-1.4}
+                      max={1.4}
+                      step={0.02}
+                      onChange={(v) => updatePoseField('propOffsetZ', v)}
+                    />
+                    <DualNumericSlider
+                      label="Giro Horizontal"
+                      unit="°"
+                      value={Math.round(currentPose.propRotYDeg ?? 0)}
+                      min={-180}
+                      max={180}
+                      step={1}
+                      onChange={(v) => updatePoseField('propRotYDeg', v)}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -1917,12 +2051,12 @@ export const AvatarTesterWorkspace: React.FC<AvatarTesterWorkspaceProps> = ({
                 onChange={(v) => updatePoseField('shoulderRAbductionDeg', v)}
               />
               <DualNumericSlider
-                label="Flexión Codo Derecho (0° = recto, 90° = L)"
+                label="Ángulo Interno Codo Derecho (30° flex. máx. – 170° ext. sana)"
                 unit="°"
-                value={currentPose.elbowRFlexionDeg}
-                min={0}
-                max={145}
-                onChange={(v) => updatePoseField('elbowRFlexionDeg', v)}
+                value={Math.max(30, Math.min(170, Math.round(180 - currentPose.elbowRFlexionDeg)))}
+                min={30}
+                max={170}
+                onChange={(v) => updatePoseField('elbowRFlexionDeg', 180 - v)}
               />
               <DualNumericSlider
                 label="Pronación (+) / Supinación (-) Antebrazo"
@@ -1968,12 +2102,12 @@ export const AvatarTesterWorkspace: React.FC<AvatarTesterWorkspaceProps> = ({
                     onChange={(v) => updatePoseField('shoulderLAbductionDeg', v)}
                   />
                   <DualNumericSlider
-                    label="Flexión Codo Izquierdo"
+                    label="Ángulo Interno Codo Izquierdo (30°–170° ext. sana)"
                     unit="°"
-                    value={currentPose.elbowLFlexionDeg}
-                    min={0}
-                    max={145}
-                    onChange={(v) => updatePoseField('elbowLFlexionDeg', v)}
+                    value={Math.max(30, Math.min(170, Math.round(180 - currentPose.elbowLFlexionDeg)))}
+                    min={30}
+                    max={170}
+                    onChange={(v) => updatePoseField('elbowLFlexionDeg', 180 - v)}
                   />
                 </>
               )}

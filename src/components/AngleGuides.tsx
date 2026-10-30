@@ -322,20 +322,32 @@ export const REBA_UPPER_ARM_OPTIONS: AngleOption<1 | 2 | 3 | 4>[] = [
   },
 ];
 
-function ForearmSvg({ deg, active }: { deg: number; active: boolean }) {
-  const rad = (deg * Math.PI) / 180;
-  const fx = 38 + Math.sin(rad) * 36;
-  const fy = 54 + Math.cos(rad) * 36;
+function ForearmSvg({ internalDeg, active }: { internalDeg: number; active: boolean }) {
+  const rad = (internalDeg * Math.PI) / 180;
+  // Brazo vertical superior (38,20)->(38,54); antebrazo rotado en sentido horario desde brazo superior según ángulo interno
+  const fx = 38 + Math.sin(rad) * 34;
+  const fy = 54 - Math.cos(rad) * 34;
+  const arcR = 13.5;
+  const ax = 38 + Math.sin(rad) * arcR;
+  const ay = 54 - Math.cos(rad) * arcR;
   const strokeMain = active ? '#0284c7' : '#334155';
 
   return (
     <svg viewBox="0 0 110 92" className="w-28 h-22">
-      <circle cx="38" cy="13" r="6.5" fill="#e2e8f0" stroke="#64748b" strokeWidth="1.5" />
-      <line x1="38" y1="20" x2="38" y2="78" stroke="#cbd5e1" strokeWidth="5.5" strokeLinecap="round" />
-      <line x1="38" y1="24" x2="38" y2="54" stroke="#475569" strokeWidth="4" strokeLinecap="round" />
-      <line x1="38" y1="54" x2="72" y2="54" stroke="#94a3b8" strokeWidth="1.2" strokeDasharray="2 2" />
+      <circle cx="38" cy="12" r="6" fill="#e2e8f0" stroke="#64748b" strokeWidth="1.5" />
+      <line x1="38" y1="19" x2="38" y2="78" stroke="#cbd5e1" strokeWidth="5.5" strokeLinecap="round" />
+      <line x1="38" y1="22" x2="38" y2="54" stroke="#475569" strokeWidth="4" strokeLinecap="round" />
+      <path
+        d={`M 38 ${54 - arcR} A ${arcR} ${arcR} 0 0 1 ${ax.toFixed(1)} ${ay.toFixed(1)}`}
+        fill="none"
+        stroke="#d97706"
+        strokeWidth="1.8"
+      />
       <line x1="38" y1="54" x2={fx} y2={fy} stroke={strokeMain} strokeWidth="4" strokeLinecap="round" />
       <circle cx="38" cy="54" r="3" fill="#0284c7" />
+      <text x="58" y="42" className="text-[8.5px] font-mono font-bold fill-amber-700">
+        {internalDeg}°
+      </text>
     </svg>
   );
 }
@@ -343,38 +355,38 @@ function ForearmSvg({ deg, active }: { deg: number; active: boolean }) {
 export const LOWER_ARM_OPTIONS: AngleOption<1 | 2>[] = [
   {
     value: 1,
-    angleText: '60° a 100°',
-    title: 'Flexión óptima de codo',
-    subtitle: 'Rango funcional cercano a 90°',
+    angleText: '80° a 120° (int.)',
+    title: 'Flexión funcional de codo',
+    subtitle: 'Ángulo interno cercano a 90° (equiv. 60°–100° flex.)',
     photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-07'], totalCols: 2, colIndex: 0, figCode: 'Fig. 4.7 (1)' },
-    renderSvg: (a) => <ForearmSvg deg={82} active={a} />,
+    renderSvg: (a) => <ForearmSvg internalDeg={95} active={a} />,
   },
   {
     value: 2,
-    angleText: '< 60° ó > 100°',
-    title: 'Fuera de rango neutro',
-    subtitle: 'Codo muy extendido o muy cerrado',
+    angleText: '30°–80° ó 120°–170°',
+    title: 'Extendido o muy cerrado',
+    subtitle: 'Extensión sana hasta 170° (>120°) o flexión cerrada (<80°)',
     photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-07'], totalCols: 2, colIndex: 1, figCode: 'Fig. 4.7 (2)' },
-    renderSvg: (a) => <ForearmSvg deg={125} active={a} />,
+    renderSvg: (a) => <ForearmSvg internalDeg={162} active={a} />,
   },
 ];
 
 export const REBA_LOWER_ARM_OPTIONS: AngleOption<1 | 2>[] = [
   {
     value: 1,
-    angleText: '60° a 100°',
-    title: 'Flexión óptima de codo',
-    subtitle: 'Rango funcional cercano a 90°',
+    angleText: '80° a 120° (int.)',
+    title: 'Flexión funcional de codo',
+    subtitle: 'Ángulo interno cercano a 90° (equiv. 60°–100° flex.)',
     photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-23'], totalCols: 2, colIndex: 0, figCode: 'Fig. 4.23 (1)' },
-    renderSvg: (a) => <ForearmSvg deg={82} active={a} />,
+    renderSvg: (a) => <ForearmSvg internalDeg={95} active={a} />,
   },
   {
     value: 2,
-    angleText: '< 60° ó > 100°',
-    title: 'Fuera de rango neutro',
-    subtitle: 'Codo muy extendido o muy cerrado',
+    angleText: '30°–80° ó 120°–170°',
+    title: 'Extendido o muy cerrado',
+    subtitle: 'Extensión sana hasta 170° (>120°) o flexión cerrada (<80°)',
     photoSlice: { url: ASSIGNED_CHAPTER4_PHOTOS['fig-4-23'], totalCols: 2, colIndex: 1, figCode: 'Fig. 4.23 (2)' },
-    renderSvg: (a) => <ForearmSvg deg={125} active={a} />,
+    renderSvg: (a) => <ForearmSvg internalDeg={162} active={a} />,
   },
 ];
 

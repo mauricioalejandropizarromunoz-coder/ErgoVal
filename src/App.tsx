@@ -9,9 +9,11 @@ import {
   ChevronLeft,
   ChevronRight,
   ClipboardList,
+  Compass,
   FileDown,
   FileSpreadsheet,
   Film,
+  Hand,
   Info,
   Layers,
   Menu,
@@ -47,6 +49,9 @@ import { VideoBiomechExtractor } from './components/VideoBiomechExtractor';
 import { TwinAvatarVideoStudio } from './components/TwinAvatarVideoStudio';
 import { AvatarTesterWorkspace } from './components/AvatarTesterWorkspace';
 import { FreeAvatarStudioWorkspace } from './components/FreeAvatarStudioWorkspace';
+import { OnionSkinAvatarWorkspace } from './components/OnionSkinAvatarWorkspace';
+import { QuickAngleMeterWorkspace } from './components/QuickAngleMeterWorkspace';
+import { HandRepetitionTesterWorkspace } from './components/HandRepetitionTesterWorkspace';
 import {
   EnvironmentalMethodId,
   EnvironmentalMethodsWorkspace,
@@ -169,7 +174,10 @@ export default function App() {
     | 'evaluador'
     | 'video_ia'
     | 'video_mellizo'
+    | 'medidor_angulos'
+    | 'testeo_repetitividad'
     | 'avatar_libre'
+    | 'avatar_cebolla'
     | 'testeo_avatar'
     | 'figuras3d'
     | 'ambiente_fisico'
@@ -505,7 +513,10 @@ export default function App() {
     evaluador: 'Estudio Multipestaña',
     video_ia: 'Video IA · Informe',
     video_mellizo: 'Vídeo Mellizo 3D',
+    medidor_angulos: 'Medidor de Ángulos · Testeo',
+    testeo_repetitividad: 'Repetitividad Manos · Testeo',
     avatar_libre: 'Avatar Libre 3D',
+    avatar_cebolla: 'Cáscara de Cebolla · Foto',
     testeo_avatar: 'Testeo Avatar 3D',
     figuras3d: 'Motor 3D · Figuras',
     ambiente_fisico: 'Confort Térmico · Planillas',
@@ -745,6 +756,48 @@ export default function App() {
 
             <button
               type="button"
+              onClick={() => setActiveWorkspace('avatar_cebolla')}
+              className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
+                activeWorkspace === 'avatar_cebolla'
+                  ? 'bg-fuchsia-600 text-white border-fuchsia-400 shadow-xs'
+                  : 'bg-fuchsia-950/80 text-fuchsia-200 border-fuchsia-700/80 hover:bg-fuchsia-900 hover:text-white'
+              }`}
+              title="Avatar 3D en Cáscara de Cebolla para Subir Foto (Posición Cero: Brazo Izq. Extendido Mano Abierta · Brazo Der. Relajado)"
+            >
+              <Layers className="w-3.5 h-3.5" />
+              <span>Cáscara de Cebolla · Foto</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveWorkspace('medidor_angulos')}
+              className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
+                activeWorkspace === 'medidor_angulos'
+                  ? 'bg-orange-600 text-white border-orange-300 shadow-xs'
+                  : 'bg-orange-950/80 text-orange-200 border-orange-700/80 hover:bg-orange-900 hover:text-white'
+              }`}
+              title="Testeo y Medición Rápida de Ángulos sobre Video o Foto (RULA · REBA · OWAS con arco anatómico corregido)"
+            >
+              <Compass className="w-3.5 h-3.5" />
+              <span>Medidor de Ángulos · Testeo</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveWorkspace('testeo_repetitividad')}
+              className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
+                activeWorkspace === 'testeo_repetitividad'
+                  ? 'bg-rose-600 text-white border-rose-300 shadow-xs'
+                  : 'bg-rose-950/80 text-rose-200 border-rose-700/80 hover:bg-rose-900 hover:text-white'
+              }`}
+              title="Pestaña de Prueba para Deducir Movimientos Repetitivos centrada en el Movimiento de las Manos (21 puntos)"
+            >
+              <Hand className="w-3.5 h-3.5" />
+              <span>Repetitividad Manos · Testeo</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setActiveWorkspace('testeo_avatar')}
               className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
                 activeWorkspace === 'testeo_avatar'
@@ -965,6 +1018,34 @@ export default function App() {
             <FreeAvatarStudioWorkspace
               onBackToEvaluator={() => setActiveWorkspace('evaluador')}
               onAddPoseTabToStudy={handleAddTestedTabToStudy}
+            />
+          </ErrorBoundary>
+        </main>
+      ) : activeWorkspace === 'avatar_cebolla' ? (
+        <main className="flex-1 max-w-[1440px] w-full mx-auto px-3 sm:px-6 py-3 sm:py-6 overflow-x-hidden">
+          <ErrorBoundary>
+            <OnionSkinAvatarWorkspace
+              onBackToEvaluator={() => setActiveWorkspace('evaluador')}
+              onAddPoseTabToStudy={handleAddTestedTabToStudy}
+            />
+          </ErrorBoundary>
+        </main>
+      ) : activeWorkspace === 'medidor_angulos' ? (
+        <main className="flex-1 max-w-[1440px] w-full mx-auto px-3 sm:px-6 py-3 sm:py-6 overflow-x-hidden">
+          <ErrorBoundary>
+            <QuickAngleMeterWorkspace
+              onBackToEvaluator={() => setActiveWorkspace('evaluador')}
+              onAddMeasuredTabToStudy={handleAddTestedTabToStudy}
+            />
+          </ErrorBoundary>
+        </main>
+      ) : activeWorkspace === 'testeo_repetitividad' ? (
+        <main className="flex-1 max-w-[1440px] w-full mx-auto px-3 sm:px-6 py-3 sm:py-6 overflow-x-hidden">
+          <ErrorBoundary>
+            <HandRepetitionTesterWorkspace
+              general={general}
+              onBackToEvaluator={() => setActiveWorkspace('evaluador')}
+              onAddRepetitionTabToStudy={handleAddTestedTabToStudy}
             />
           </ErrorBoundary>
         </main>
@@ -1332,6 +1413,54 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => {
+                  setActiveWorkspace('avatar_cebolla');
+                  setIsMobileMoreOpen(false);
+                }}
+                className={`min-h-[48px] px-3 py-2 rounded-md border text-left text-xs font-semibold flex items-center gap-2 ${
+                  activeWorkspace === 'avatar_cebolla'
+                    ? 'bg-fuchsia-700 text-white border-fuchsia-800'
+                    : 'bg-fuchsia-50 text-fuchsia-950 border-fuchsia-300'
+                }`}
+              >
+                <Layers className="w-4 h-4 shrink-0" />
+                <span>Cáscara de Cebolla</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveWorkspace('medidor_angulos');
+                  setIsMobileMoreOpen(false);
+                }}
+                className={`min-h-[48px] px-3 py-2 rounded-md border text-left text-xs font-semibold flex items-center gap-2 ${
+                  activeWorkspace === 'medidor_angulos'
+                    ? 'bg-orange-700 text-white border-orange-800'
+                    : 'bg-orange-50 text-orange-950 border-orange-300'
+                }`}
+              >
+                <Compass className="w-4 h-4 shrink-0" />
+                <span>Medidor de Ángulos</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveWorkspace('testeo_repetitividad');
+                  setIsMobileMoreOpen(false);
+                }}
+                className={`min-h-[48px] px-3 py-2 rounded-md border text-left text-xs font-semibold flex items-center gap-2 ${
+                  activeWorkspace === 'testeo_repetitividad'
+                    ? 'bg-rose-700 text-white border-rose-800'
+                    : 'bg-rose-50 text-rose-950 border-rose-300'
+                }`}
+              >
+                <Hand className="w-4 h-4 shrink-0" />
+                <span>Repetitividad Manos</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
                   setActiveWorkspace('testeo_avatar');
                   setIsMobileMoreOpen(false);
                 }}
@@ -1527,6 +1656,8 @@ export default function App() {
             className={`flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold whitespace-nowrap transition-colors ${
               isMobileMoreOpen ||
               activeWorkspace === 'video_mellizo' ||
+              activeWorkspace === 'medidor_angulos' ||
+              activeWorkspace === 'avatar_cebolla' ||
               activeWorkspace === 'testeo_avatar' ||
               activeWorkspace === 'figuras3d' ||
               activeWorkspace === 'formulas'

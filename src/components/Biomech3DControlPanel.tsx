@@ -4,13 +4,14 @@ import {
   ChevronDown,
   ChevronUp,
   Crosshair,
+  Download,
   Eye,
   Image as ImageIcon,
   RotateCcw,
   Sliders,
 } from 'lucide-react';
 import { RebaData, RebaSideInput, RulaData, RulaSideInput } from '../types/ergonomics';
-import { AngleArcAnnotation, CameraPreset, FocusZone, Panel3DSpec } from '../types/figurePlan';
+import { AngleArcAnnotation, CameraPreset, FocusZone, Panel3DSpec, ScenePropType } from '../types/figurePlan';
 import {
   BiomechSegmentCategory,
   BOOK_FIGURE_CATALOG,
@@ -91,11 +92,12 @@ function canonicalArmDeg(score: 1 | 2 | 3 | 4): number {
 }
 
 function mapForearmDegToScore(deg: number): 1 | 2 {
-  return deg >= 60 && deg <= 100 ? 1 : 2;
+  const internalDeg = 180 - deg;
+  return internalDeg >= 80 && internalDeg <= 120 ? 1 : 2;
 }
 
 function canonicalForearmDeg(score: 1 | 2): number {
-  return score === 1 ? 82 : 122;
+  return score === 1 ? 85 : 18;
 }
 
 function mapRulaWristDegToScore(deg: number): 1 | 2 | 3 {
@@ -278,11 +280,20 @@ export const Biomech3DControlPanel: React.FC<Biomech3DControlProps> = (props) =>
 
   // Continuous kinematic state (degrees) synced bidirectionally with discrete form scores
   const [armFlexDeg, setArmFlexDeg] = useState<number>(34);
-  const [elbowFlexDeg, setElbowFlexDeg] = useState<number>(82);
+  const [elbowFlexDeg, setElbowFlexDeg] = useState<number>(85);
   const [wristFlexDeg, setWristFlexDeg] = useState<number>(11);
   const [neckFlexDeg, setNeckFlexDeg] = useState<number>(16);
   const [trunkFlexDeg, setTrunkFlexDeg] = useState<number>(36);
   const [kneeFlexDeg, setKneeFlexDeg] = useState<number>(12);
+
+  // Mobiliario / Estanterías movibles o solo para la foto final
+  const [propOverride, setPropOverride] = useState<'auto' | ScenePropType>('auto');
+  const [propVisibilityMode, setPropVisibilityMode] = useState<'always' | 'hidden' | 'final_photo_only'>('always');
+  const [previewFinalPhotoProp, setPreviewFinalPhotoProp] = useState<boolean>(false);
+  const [propOffsetX, setPropOffsetX] = useState<number>(0);
+  const [propOffsetY, setPropOffsetY] = useState<number>(0);
+  const [propOffsetZ, setPropOffsetZ] = useState<number>(0);
+  const [propRotYDeg, setPropRotYDeg] = useState<number>(0);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const dragRef = useRef<{ startX: number; startY: number; az0: number; el0: number } | null>(null);
@@ -630,8 +641,11 @@ export const Biomech3DControlPanel: React.FC<Biomech3DControlProps> = (props) =>
   // Apply goniometer angle directly to active segment
   const handleApplyGoniometerAngle = (measuredDeg: number) => {
     if (activeSegment === 'upper_arm') applyArmDegChange(measuredDeg);
-    else if (activeSegment === 'lower_arm') applyElbowDegChange(measuredDeg);
-    else if (activeSegment === 'wrist') applyWristDegChange(measuredDeg);
+    else if (activeSegment === 'lower_arm') {
+      // El goniómetro 3 puntos (hombro-codo-muñeca) mide el ángulo interno incluido (30°–170° sano)
+      const clampedInternal = Math.max(30, Math.min(170, Math.round(measuredDeg)));
+      applyElbowDegChange(180 - clampedInternal);
+    } else if (activeSegment === 'wrist') applyWristDegChange(measuredDeg);
     else if (activeSegment === 'neck') applyNeckDegChange(measuredDeg);
     else if (activeSegment === 'trunk') applyTrunkDegChange(measuredDeg);
     else if (activeSegment === 'legs') applyKneeDegChange(measuredDeg);
@@ -795,6 +809,29 @@ export const Biomech3DControlPanel: React.FC<Biomech3DControlProps> = (props) =>
       badgeText = `Código OWAS: ${back}-${arms}-${legs}-${load}`;
     }
 
+    // Mobiliario / Estanterías: opción de mover, quitar o mostrar solo en foto final
+    const baseSelectedProp: ScenePropType =
+      propOverride === 'auto' ? (pose.prop ?? 'none') : propOverride;
+    const effectiveLiveProp: ScenePropType =
+      propVisibilityMode === 'hidden'
+        ? 'none'
+        : propVisibilityMode === 'final_photo_only' && !previewFinalPhotoProp
+          ? 'none'
+          : baseSelectedProp;
+
+    pose.prop = effectiveLiveProp;
+    pose.propOffsetX = propOffsetX;
+    pose.propOffsetY = propOffsetY;
+    pose.propOffsetZ = propOffsetZ;
+    pose.propRotYDeg = propRotYDeg;
+    if (
+      (effectiveLiveProp === 'cold_room_high_shelf' || effectiveLiveProp === 'pallet_jack_rack') &&
+      propOverride !== 'auto'
+    ) {
+      pose.loadKg = 0;
+      pose.loadDetachedPhase = 'dest_rest';
+    }
+
     // Active segment focus & angle arc overlay
     let focusZone: FocusZone = 'full_body';
     if (focusIsolated) {
@@ -811,6 +848,7 @@ export const Biomech3DControlPanel: React.FC<Biomech3DControlProps> = (props) =>
     const elJoint = isLeftEvaluated ? 'elbowL' : 'elbowR';
     const wrJoint = isLeftEvaluated ? 'wristL' : 'wristR';
     const hdJoint = isLeftEvaluated ? 'handL' : 'handR';
+    const elbowInternalDeg = Math.max(30, Math.min(170, Math.round(180 - elbowFlexDeg)));
 
     if (activeSegment === 'upper_arm') {
       angleArcs.push({
@@ -822,9 +860,10 @@ export const Biomech3DControlPanel: React.FC<Biomech3DControlProps> = (props) =>
     } else if (activeSegment === 'lower_arm') {
       angleArcs.push({
         joint: elJoint,
-        refType: 'vertical_down',
+        refType: 'internal_segment',
+        parentJoint: shJoint,
         toJoint: wrJoint,
-        label: `Codo ${elbowFlexDeg}°`,
+        label: `Codo ${elbowInternalDeg}°`,
       });
     } else if (activeSegment === 'wrist') {
       angleArcs.push({
@@ -877,7 +916,58 @@ export const Biomech3DControlPanel: React.FC<Biomech3DControlProps> = (props) =>
     focusIsolated,
     cameraPreset,
     showAngleGuides,
+    propOverride,
+    propVisibilityMode,
+    previewFinalPhotoProp,
+    propOffsetX,
+    propOffsetY,
+    propOffsetZ,
+    propRotYDeg,
   ]);
+
+  const handleDownloadFinalAvatarPhoto = () => {
+    const outCanvas = document.createElement('canvas');
+    const finalProp: ScenePropType =
+      propVisibilityMode === 'hidden'
+        ? 'none'
+        : propOverride === 'auto'
+          ? (livePanelSpec.pose.prop && livePanelSpec.pose.prop !== 'none'
+              ? livePanelSpec.pose.prop
+              : 'cold_room_high_shelf')
+          : propOverride;
+    const finalPose = {
+      ...livePanelSpec.pose,
+      prop: finalProp,
+      propOffsetX,
+      propOffsetY,
+      propOffsetZ,
+      propRotYDeg,
+      loadKg:
+        (finalProp === 'cold_room_high_shelf' || finalProp === 'pallet_jack_rack') &&
+        propOverride !== 'auto'
+          ? 0
+          : livePanelSpec.pose.loadKg,
+      loadDetachedPhase:
+        (finalProp === 'cold_room_high_shelf' || finalProp === 'pallet_jack_rack') &&
+        propOverride !== 'auto'
+          ? ('dest_rest' as const)
+          : livePanelSpec.pose.loadDetachedPhase,
+    };
+    renderInteractivePose3DToCanvas(
+      { ...livePanelSpec, pose: finalPose },
+      outCanvas,
+      900,
+      620,
+      orbit,
+      2,
+      'anatomical_skin',
+      false,
+    );
+    const a = document.createElement('a');
+    a.href = outCanvas.toDataURL('image/png');
+    a.download = `avatar_3d_${method.toLowerCase()}_foto_final.png`;
+    a.click();
+  };
 
   // Render interactive 3D canvas whenever pose/orbit/mode/GLB state changes
   useEffect(() => {
@@ -1272,7 +1362,7 @@ export const Biomech3DControlPanel: React.FC<Biomech3DControlProps> = (props) =>
                 />
               </div>
 
-              {/* Deslizador 2: Antebrazo */}
+              {/* Deslizador 2: Antebrazo / Codo (Ángulo Interno 30°–170°) */}
               {method !== 'OWAS' && (
                 <div
                   onClick={() => handleSelectSegment('lower_arm')}
@@ -1283,19 +1373,23 @@ export const Biomech3DControlPanel: React.FC<Biomech3DControlProps> = (props) =>
                   }`}
                 >
                   <div className="flex items-center justify-between mb-1">
-                    <span className="font-semibold text-slate-800">Flexión de Codo</span>
+                    <span className="font-semibold text-slate-800">Ángulo Interno Codo</span>
                     <span className="font-mono font-bold text-sky-800 tabular-nums">
-                      {elbowFlexDeg}° → +{mapForearmDegToScore(elbowFlexDeg)} pt
+                      {Math.max(30, Math.min(170, Math.round(180 - elbowFlexDeg)))}° → +
+                      {mapForearmDegToScore(elbowFlexDeg)} pt
                     </span>
                   </div>
                   <input
                     type="range"
-                    min={10}
-                    max={145}
-                    value={elbowFlexDeg}
-                    onChange={(e) => applyElbowDegChange(Number(e.target.value))}
+                    min={30}
+                    max={170}
+                    value={Math.max(30, Math.min(170, Math.round(180 - elbowFlexDeg)))}
+                    onChange={(e) => applyElbowDegChange(180 - Number(e.target.value))}
                     className="w-full accent-sky-700"
                   />
+                  <div className="text-[10px] text-slate-500 mt-0.5 font-mono tabular-nums">
+                    80°–120° = +1 pt · 30°–80° ó 120°–170° (ext. sana) = +2 pt
+                  </div>
                 </div>
               )}
 
@@ -1460,6 +1554,152 @@ export const Biomech3DControlPanel: React.FC<Biomech3DControlProps> = (props) =>
                   </div>
                 </div>
               )}
+
+              {/* Mobiliario / Estanterías: Mover, Quitar o Acomodar Solo para Foto Final */}
+              <div className="p-2.5 rounded border border-slate-200 bg-white space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-slate-900">Mobiliario / Estanterías</span>
+                  {(propOffsetX !== 0 || propOffsetY !== 0 || propOffsetZ !== 0 || propRotYDeg !== 0) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPropOffsetX(0);
+                        setPropOffsetY(0);
+                        setPropOffsetZ(0);
+                        setPropRotYDeg(0);
+                      }}
+                      className="text-[10px] font-medium text-sky-700 hover:text-sky-900 cursor-pointer"
+                    >
+                      Centrar mueble
+                    </button>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 gap-1.5">
+                  <select
+                    value={propOverride}
+                    onChange={(e) => setPropOverride(e.target.value as 'auto' | ScenePropType)}
+                    className="w-full px-2 py-1.5 rounded border border-slate-300 bg-white text-xs text-slate-800"
+                  >
+                    <option value="auto">Automático según postura</option>
+                    <option value="none">Sin muebles (Quitar todo)</option>
+                    <option value="cold_room_high_shelf">Estantería regulable (4 niveles)</option>
+                    <option value="pallet_jack_rack">Estantería industrial + tarima</option>
+                    <option value="work_desk_support">Mesa / Banco de trabajo</option>
+                    <option value="box_load">Caja en manos</option>
+                    <option value="chair">Silla de trabajo</option>
+                  </select>
+
+                  <div className="flex items-center gap-1 p-0.5 bg-slate-100 rounded border border-slate-200">
+                    {(
+                      [
+                        ['always', 'Siempre'],
+                        ['hidden', 'Quitar'],
+                        ['final_photo_only', 'Solo foto final'],
+                      ] as const
+                    ).map(([visKey, visLbl]) => (
+                      <button
+                        key={visKey}
+                        type="button"
+                        onClick={() => setPropVisibilityMode(visKey)}
+                        className={`flex-1 py-1 px-1.5 rounded text-[11px] font-medium cursor-pointer transition-colors ${
+                          propVisibilityMode === visKey
+                            ? 'bg-white text-slate-900 font-semibold shadow-2xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        {visLbl}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {propVisibilityMode === 'final_photo_only' && (
+                  <label className="flex items-center gap-1.5 text-[11px] text-amber-900 bg-amber-50 border border-amber-200 rounded px-2 py-1 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={previewFinalPhotoProp}
+                      onChange={(e) => setPreviewFinalPhotoProp(e.target.checked)}
+                    />
+                    <span>Mostrar mueble ahora para acomodarlo</span>
+                  </label>
+                )}
+
+                {propVisibilityMode !== 'hidden' &&
+                  (propVisibilityMode === 'always' || previewFinalPhotoProp) && (
+                    <div className="grid grid-cols-2 gap-2 pt-0.5 text-[11px]">
+                      <label className="space-y-0.5">
+                        <span className="flex justify-between text-slate-600">
+                          <span>Lateral X</span>
+                          <span className="font-mono tabular-nums">{propOffsetX.toFixed(2)}m</span>
+                        </span>
+                        <input
+                          type="range"
+                          min={-1.2}
+                          max={1.2}
+                          step={0.04}
+                          value={propOffsetX}
+                          onChange={(e) => setPropOffsetX(Number(e.target.value))}
+                          className="w-full accent-sky-700"
+                        />
+                      </label>
+                      <label className="space-y-0.5">
+                        <span className="flex justify-between text-slate-600">
+                          <span>Profund. Z</span>
+                          <span className="font-mono tabular-nums">{propOffsetZ.toFixed(2)}m</span>
+                        </span>
+                        <input
+                          type="range"
+                          min={-0.8}
+                          max={1.2}
+                          step={0.04}
+                          value={propOffsetZ}
+                          onChange={(e) => setPropOffsetZ(Number(e.target.value))}
+                          className="w-full accent-sky-700"
+                        />
+                      </label>
+                      <label className="space-y-0.5">
+                        <span className="flex justify-between text-slate-600">
+                          <span>Altura Y</span>
+                          <span className="font-mono tabular-nums">{propOffsetY.toFixed(2)}m</span>
+                        </span>
+                        <input
+                          type="range"
+                          min={-0.4}
+                          max={0.8}
+                          step={0.03}
+                          value={propOffsetY}
+                          onChange={(e) => setPropOffsetY(Number(e.target.value))}
+                          className="w-full accent-sky-700"
+                        />
+                      </label>
+                      <label className="space-y-0.5">
+                        <span className="flex justify-between text-slate-600">
+                          <span>Giro °</span>
+                          <span className="font-mono tabular-nums">{propRotYDeg}°</span>
+                        </span>
+                        <input
+                          type="range"
+                          min={-180}
+                          max={180}
+                          step={5}
+                          value={propRotYDeg}
+                          onChange={(e) => setPropRotYDeg(Number(e.target.value))}
+                          className="w-full accent-sky-700"
+                        />
+                      </label>
+                    </div>
+                  )}
+
+                <button
+                  type="button"
+                  onClick={handleDownloadFinalAvatarPhoto}
+                  className="w-full min-h-[34px] inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded bg-slate-900 hover:bg-slate-800 text-white text-[11px] font-semibold cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Descargar Foto Final PNG
+                </button>
+              </div>
             </div>
           </div>
 

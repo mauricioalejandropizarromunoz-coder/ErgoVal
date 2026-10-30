@@ -40,6 +40,10 @@ import {
   subscribeAvatarGlbLoaded,
 } from '../utils/biomech3dRenderer';
 import { exportCanvasToHighQualityPng } from '../utils/pngOptimizer';
+import {
+  clampPoseToNormativeWorkAgeLimits,
+  NORMATIVE_JOINT_LIMITS,
+} from '../utils/normativeJointLimits';
 import { getSeverityStyles } from './StudyTabWorkspace';
 
 interface FreeAvatarStudioWorkspaceProps {
@@ -95,12 +99,13 @@ const JOINT_LABELS_ES: Record<JointKey, string> = {
 
 const PROP_OPTIONS: { value: ScenePropType; label: string }[] = [
   { value: 'none', label: 'Sin mobiliario (Espacio libre)' },
+  { value: 'cold_room_high_shelf', label: 'Estantería regulable de 4 niveles (Almacén)' },
+  { value: 'pallet_jack_rack', label: 'Transpaleta con pallet + Estantería industrial' },
   { value: 'work_desk_support', label: 'Mesa / Apoyo bajo Codo y Antebrazo (Fig. 4.6b)' },
+  { value: 'box_load', label: 'Caja industrial en manos (Bimanual)' },
+  { value: 'chair', label: 'Silla de trabajo regulable' },
   { value: 'iron_tamper_low', label: 'Pisón de tierra bajo (Compactación manual)' },
   { value: 'iron_tamper_high', label: 'Pisón de tierra elevado (Impacto vertical)' },
-  { value: 'chair', label: 'Silla de trabajo regulable' },
-  { value: 'box_load', label: 'Caja industrial en manos (Bimanual)' },
-  { value: 'pallet_jack_rack', label: 'Transpaleta con pallet + Estantería fija' },
   { value: 'bus_driver_seat', label: 'Puesto Chofer de Ómnibus / Colectivo (Ø 430 mm)' },
   { value: 'trench_shovel', label: 'Pala de zanjeo (Agarre bimanual)' },
   { value: 'crane_levers', label: 'Banco de palancas de hidrogrúa' },
@@ -120,6 +125,8 @@ interface AngleFieldSpec {
   key: keyof PosturePose3D;
   mirrorKey?: keyof PosturePose3D;
   mirrorInvertSign?: boolean;
+  invertAsInternal180?: boolean;
+  defaultValue?: number;
   label: string;
   min: number;
   max: number;
@@ -129,11 +136,18 @@ interface AngleFieldSpec {
 }
 
 const ANGLE_FIELDS: AngleFieldSpec[] = [
-  // Tronco y Cuello
+  // Tronco y Cuello (McKay et al., Neurology 2017, 20–59 años · (P50+P95)/2)
   { key: 'trunkFlexionDeg', label: 'Flexión / Extensión de Tronco', min: -30, max: 95, unit: '°', group: 'spine_head' },
   { key: 'trunkLateralDeg', label: 'Inclinación Lateral de Tronco', min: -35, max: 35, unit: '°', group: 'spine_head' },
   { key: 'trunkTwistDeg', label: 'Giro / Torsión Axial de Tronco', min: -55, max: 55, unit: '°', group: 'spine_head' },
-  { key: 'neckFlexionDeg', label: 'Flexión / Extensión de Cuello', min: -35, max: 45, unit: '°', group: 'spine_head' },
+  {
+    key: 'neckFlexionDeg',
+    label: 'Flexión(+) / Extensión(-) de Cuello',
+    min: NORMATIVE_JOINT_LIMITS.cervicalAndShoulder.neckExtensionMinDeg,
+    max: NORMATIVE_JOINT_LIMITS.cervicalAndShoulder.neckFlexionMaxDeg,
+    unit: '°',
+    group: 'spine_head',
+  },
   { key: 'neckLateralDeg', label: 'Inclinación Lateral de Cuello', min: -30, max: 30, unit: '°', group: 'spine_head' },
   { key: 'neckTwistDeg', label: 'Rotación Cervical (Cabeza)', min: -60, max: 60, unit: '°', group: 'spine_head' },
 
@@ -159,9 +173,11 @@ const ANGLE_FIELDS: AngleFieldSpec[] = [
   {
     key: 'elbowRFlexionDeg',
     mirrorKey: 'elbowLFlexionDeg',
-    label: 'Codo Der. · Flexión',
-    min: 0,
-    max: 145,
+    invertAsInternal180: true,
+    label: 'Codo Der. · Ángulo Interno (30.5°–171.5°)',
+    min: NORMATIVE_JOINT_LIMITS.elbow.kinoveaFlexMinDeg,
+    max: NORMATIVE_JOINT_LIMITS.elbow.kinoveaExtMaxDeg,
+    step: 0.5,
     unit: '°',
     group: 'right_arm',
   },
@@ -179,8 +195,8 @@ const ANGLE_FIELDS: AngleFieldSpec[] = [
     key: 'wristRFlexionDeg',
     mirrorKey: 'wristLFlexionDeg',
     label: 'Muñeca Der. · Flexión(+) / Extensión(-)',
-    min: -55,
-    max: 60,
+    min: NORMATIVE_JOINT_LIMITS.wrist.dorsalExtensionMinDeg,
+    max: NORMATIVE_JOINT_LIMITS.wrist.palmarFlexionMaxDeg,
     unit: '°',
     group: 'right_arm',
   },
@@ -188,8 +204,8 @@ const ANGLE_FIELDS: AngleFieldSpec[] = [
     key: 'wristRDeviationDeg',
     mirrorKey: 'wristLDeviationDeg',
     label: 'Muñeca Der. · Desviación Cubital/Radial',
-    min: -25,
-    max: 30,
+    min: NORMATIVE_JOINT_LIMITS.wrist.radialDeviationMinDeg,
+    max: NORMATIVE_JOINT_LIMITS.wrist.ulnarDeviationMaxDeg,
     unit: '°',
     group: 'right_arm',
   },
@@ -216,9 +232,11 @@ const ANGLE_FIELDS: AngleFieldSpec[] = [
   {
     key: 'elbowLFlexionDeg',
     mirrorKey: 'elbowRFlexionDeg',
-    label: 'Codo Izq. · Flexión',
-    min: 0,
-    max: 145,
+    invertAsInternal180: true,
+    label: 'Codo Izq. · Ángulo Interno (30.5°–171.5°)',
+    min: NORMATIVE_JOINT_LIMITS.elbow.kinoveaFlexMinDeg,
+    max: NORMATIVE_JOINT_LIMITS.elbow.kinoveaExtMaxDeg,
+    step: 0.5,
     unit: '°',
     group: 'left_arm',
   },
@@ -236,8 +254,8 @@ const ANGLE_FIELDS: AngleFieldSpec[] = [
     key: 'wristLFlexionDeg',
     mirrorKey: 'wristRFlexionDeg',
     label: 'Muñeca Izq. · Flexión(+) / Extensión(-)',
-    min: -55,
-    max: 60,
+    min: NORMATIVE_JOINT_LIMITS.wrist.dorsalExtensionMinDeg,
+    max: NORMATIVE_JOINT_LIMITS.wrist.palmarFlexionMaxDeg,
     unit: '°',
     group: 'left_arm',
   },
@@ -245,28 +263,29 @@ const ANGLE_FIELDS: AngleFieldSpec[] = [
     key: 'wristLDeviationDeg',
     mirrorKey: 'wristRDeviationDeg',
     label: 'Muñeca Izq. · Desviación Cubital/Radial',
-    min: -25,
-    max: 30,
+    min: NORMATIVE_JOINT_LIMITS.wrist.radialDeviationMinDeg,
+    max: NORMATIVE_JOINT_LIMITS.wrist.ulnarDeviationMaxDeg,
     unit: '°',
     group: 'left_arm',
   },
 
-  // Piernas y Pies
+  // Piernas y Pies (20–59 años · (P50+P95)/2)
   {
     key: 'hipRFlexionDeg',
     mirrorKey: 'hipLFlexionDeg',
     label: 'Cadera Der. · Flexión(+) / Extensión(-)',
-    min: -25,
-    max: 120,
+    min: NORMATIVE_JOINT_LIMITS.hip.extensionMaxDeg,
+    max: NORMATIVE_JOINT_LIMITS.hip.flexionMaxDeg,
     unit: '°',
     group: 'legs_feet',
   },
   {
     key: 'kneeRFlexionDeg',
     mirrorKey: 'kneeLFlexionDeg',
-    label: 'Rodilla Der. · Flexión',
-    min: 0,
-    max: 135,
+    label: 'Rodilla Der. · Flexión (1.5°–141.5°)',
+    min: NORMATIVE_JOINT_LIMITS.knee.flexionMinDeg,
+    max: NORMATIVE_JOINT_LIMITS.knee.flexionMaxDeg,
+    step: 0.5,
     unit: '°',
     group: 'legs_feet',
   },
@@ -274,8 +293,9 @@ const ANGLE_FIELDS: AngleFieldSpec[] = [
     key: 'ankleRDorsiflexionDeg',
     mirrorKey: 'ankleLDorsiflexionDeg',
     label: 'Tobillo Der. · Dorsiflex.(+) / Plantar(-)',
-    min: -45,
-    max: 40,
+    min: NORMATIVE_JOINT_LIMITS.ankle.plantarflexionMinDeg,
+    max: NORMATIVE_JOINT_LIMITS.ankle.dorsiflexionMaxDeg,
+    step: 0.5,
     unit: '°',
     group: 'legs_feet',
   },
@@ -283,17 +303,18 @@ const ANGLE_FIELDS: AngleFieldSpec[] = [
     key: 'hipLFlexionDeg',
     mirrorKey: 'hipRFlexionDeg',
     label: 'Cadera Izq. · Flexión(+) / Extensión(-)',
-    min: -25,
-    max: 120,
+    min: NORMATIVE_JOINT_LIMITS.hip.extensionMaxDeg,
+    max: NORMATIVE_JOINT_LIMITS.hip.flexionMaxDeg,
     unit: '°',
     group: 'legs_feet',
   },
   {
     key: 'kneeLFlexionDeg',
     mirrorKey: 'kneeRFlexionDeg',
-    label: 'Rodilla Izq. · Flexión',
-    min: 0,
-    max: 135,
+    label: 'Rodilla Izq. · Flexión (1.5°–141.5°)',
+    min: NORMATIVE_JOINT_LIMITS.knee.flexionMinDeg,
+    max: NORMATIVE_JOINT_LIMITS.knee.flexionMaxDeg,
+    step: 0.5,
     unit: '°',
     group: 'legs_feet',
   },
@@ -301,8 +322,9 @@ const ANGLE_FIELDS: AngleFieldSpec[] = [
     key: 'ankleLDorsiflexionDeg',
     mirrorKey: 'ankleRDorsiflexionDeg',
     label: 'Tobillo Izq. · Dorsiflex.(+) / Plantar(-)',
-    min: -45,
-    max: 40,
+    min: NORMATIVE_JOINT_LIMITS.ankle.plantarflexionMinDeg,
+    max: NORMATIVE_JOINT_LIMITS.ankle.dorsiflexionMaxDeg,
+    step: 0.5,
     unit: '°',
     group: 'legs_feet',
   },
@@ -337,38 +359,48 @@ const ANGLE_FIELDS: AngleFieldSpec[] = [
   },
   {
     key: 'propOffsetX',
-    label: 'Objeto / Mesa · Posición Lateral X',
-    min: -1.0,
-    max: 1.0,
+    label: 'Mueble / Estantería · Posición Lateral X',
+    min: -1.4,
+    max: 1.4,
     step: 0.02,
     unit: ' m',
     group: 'space_props',
   },
   {
     key: 'propOffsetY',
-    label: 'Objeto / Mesa · Regulación Altura Y',
+    label: 'Mueble / Estantería · Regulación Altura Y',
     min: -0.6,
-    max: 0.6,
+    max: 0.8,
     step: 0.02,
     unit: ' m',
     group: 'space_props',
   },
   {
     key: 'propOffsetZ',
-    label: 'Objeto / Mesa · Profundidad Z',
-    min: -1.0,
-    max: 1.0,
+    label: 'Mueble / Estantería · Profundidad Z',
+    min: -1.4,
+    max: 1.4,
     step: 0.02,
     unit: ' m',
     group: 'space_props',
   },
   {
     key: 'propRotYDeg',
-    label: 'Objeto / Mesa · Giro Horizontal',
+    label: 'Mueble / Estantería · Giro Horizontal',
     min: -180,
     max: 180,
     step: 1,
     unit: '°',
+    group: 'space_props',
+  },
+  {
+    key: 'propScale',
+    defaultValue: 1,
+    label: 'Mueble / Estantería · Escala Global',
+    min: 0.65,
+    max: 1.45,
+    step: 0.05,
+    unit: '×',
     group: 'space_props',
   },
 ];
@@ -482,7 +514,13 @@ const AngleNumericRow: React.FC<{
   onChange: (nextVal: number) => void;
 }> = ({ spec, value, onChange }) => {
   const step = spec.step ?? 1;
-  const displayVal = step < 1 ? Number(value.toFixed(2)) : Math.round(value);
+  const uiValue = spec.invertAsInternal180 ? clampNum(180 - value, spec.min, spec.max) : value;
+  const displayVal = step < 1 ? Number(uiValue.toFixed(2)) : Math.round(uiValue);
+
+  const emitChange = (nextUiVal: number) => {
+    const clamped = clampNum(nextUiVal, spec.min, spec.max);
+    onChange(spec.invertAsInternal180 ? 180 - clamped : clamped);
+  };
 
   return (
     <div className="bg-slate-50/80 border border-slate-200 rounded-md px-3 py-2 space-y-1.5">
@@ -498,7 +536,7 @@ const AngleNumericRow: React.FC<{
             onChange={(e) => {
               const parsed = parseFloat(e.target.value);
               if (Number.isFinite(parsed)) {
-                onChange(clampNum(parsed, spec.min, spec.max));
+                emitChange(parsed);
               }
             }}
             className="w-20 min-h-[34px] rounded border border-slate-300 bg-white px-2 py-1 text-right text-xs font-mono font-bold text-slate-900 tabular-nums focus:outline-none focus:border-sky-600"
@@ -511,8 +549,8 @@ const AngleNumericRow: React.FC<{
         min={spec.min}
         max={spec.max}
         step={step}
-        value={value}
-        onChange={(e) => onChange(parseFloat(e.target.value))}
+        value={uiValue}
+        onChange={(e) => emitChange(parseFloat(e.target.value))}
         className="w-full h-2 accent-sky-700 cursor-pointer"
       />
     </div>
@@ -567,6 +605,8 @@ export const FreeAvatarStudioWorkspace: React.FC<FreeAvatarStudioWorkspaceProps>
   const [glbReadyTick, setGlbReadyTick] = useState<number>(0);
   const [taskTitle, setTaskTitle] = useState<string>('Simulación biomecánica libre en Avatar 3D');
   const [statusFeedback, setStatusFeedback] = useState<string>('');
+  const [propVisibilityMode, setPropVisibilityMode] = useState<'always' | 'hidden' | 'final_photo_only'>('always');
+  const [previewFinalPhotoProp, setPreviewFinalPhotoProp] = useState<boolean>(false);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const projectedJointsRef = useRef<Record<JointKey, { x: number; y: number }> | null>(null);
@@ -594,17 +634,25 @@ export const FreeAvatarStudioWorkspace: React.FC<FreeAvatarStudioWorkspaceProps>
     return unsub;
   }, []);
 
+  const liveProp: ScenePropType =
+    propVisibilityMode === 'hidden'
+      ? 'none'
+      : propVisibilityMode === 'final_photo_only' && !previewFinalPhotoProp
+        ? 'none'
+        : pose.prop || 'none';
+  const exportProp: ScenePropType = propVisibilityMode === 'hidden' ? 'none' : pose.prop || 'none';
+
   const panelSpec: Panel3DSpec = useMemo(
     () => ({
       subTitle: taskTitle,
       scoreBadge: 'Movimiento Libre 3D',
       focusZone: 'full_body',
       cameraPreset,
-      pose,
+      pose: { ...pose, prop: liveProp },
       angleArcs: [],
       forceVectors: [],
     }),
-    [taskTitle, cameraPreset, pose],
+    [taskTitle, cameraPreset, pose, liveProp],
   );
 
   // Renderizado en tiempo real + captura de coordenadas 2D de articulaciones para el ratón/táctil
@@ -649,25 +697,49 @@ export const FreeAvatarStudioWorkspace: React.FC<FreeAvatarStudioWorkspaceProps>
         next.stanceMode !== 'walking'
       ) {
         if ('kneeRFlexionDeg' in updates && !('hipRFlexionDeg' in updates)) {
-          next.ankleRDorsiflexionDeg = clampNum(Math.round(next.kneeRFlexionDeg * 0.28), -20, 32);
-          next.hipRFlexionDeg = clampNum(next.kneeRFlexionDeg - next.ankleRDorsiflexionDeg, -15, 115);
+          next.ankleRDorsiflexionDeg = clampNum(
+            Math.round(next.kneeRFlexionDeg * 0.28),
+            -20,
+            NORMATIVE_JOINT_LIMITS.ankle.dorsiflexionMaxDeg,
+          );
+          next.hipRFlexionDeg = clampNum(
+            next.kneeRFlexionDeg - next.ankleRDorsiflexionDeg,
+            NORMATIVE_JOINT_LIMITS.hip.extensionMaxDeg,
+            NORMATIVE_JOINT_LIMITS.hip.flexionMaxDeg,
+          );
           if (symmetryLocked) {
             next.ankleLDorsiflexionDeg = next.ankleRDorsiflexionDeg;
             next.hipLFlexionDeg = next.hipRFlexionDeg;
           }
         } else if ('hipRFlexionDeg' in updates && !('ankleRDorsiflexionDeg' in updates)) {
-          next.ankleRDorsiflexionDeg = clampNum(next.kneeRFlexionDeg - next.hipRFlexionDeg, -25, 34);
+          next.ankleRDorsiflexionDeg = clampNum(
+            next.kneeRFlexionDeg - next.hipRFlexionDeg,
+            NORMATIVE_JOINT_LIMITS.ankle.plantarflexionMinDeg,
+            NORMATIVE_JOINT_LIMITS.ankle.dorsiflexionMaxDeg,
+          );
           if (symmetryLocked) next.ankleLDorsiflexionDeg = next.ankleRDorsiflexionDeg;
         }
         if ('kneeLFlexionDeg' in updates && !('hipLFlexionDeg' in updates)) {
-          next.ankleLDorsiflexionDeg = clampNum(Math.round(next.kneeLFlexionDeg * 0.28), -20, 32);
-          next.hipLFlexionDeg = clampNum(next.kneeLFlexionDeg - next.ankleLDorsiflexionDeg, -15, 115);
+          next.ankleLDorsiflexionDeg = clampNum(
+            Math.round(next.kneeLFlexionDeg * 0.28),
+            -20,
+            NORMATIVE_JOINT_LIMITS.ankle.dorsiflexionMaxDeg,
+          );
+          next.hipLFlexionDeg = clampNum(
+            next.kneeLFlexionDeg - next.ankleLDorsiflexionDeg,
+            NORMATIVE_JOINT_LIMITS.hip.extensionMaxDeg,
+            NORMATIVE_JOINT_LIMITS.hip.flexionMaxDeg,
+          );
         } else if ('hipLFlexionDeg' in updates && !('ankleLDorsiflexionDeg' in updates)) {
-          next.ankleLDorsiflexionDeg = clampNum(next.kneeLFlexionDeg - next.hipLFlexionDeg, -25, 34);
+          next.ankleLDorsiflexionDeg = clampNum(
+            next.kneeLFlexionDeg - next.hipLFlexionDeg,
+            NORMATIVE_JOINT_LIMITS.ankle.plantarflexionMinDeg,
+            NORMATIVE_JOINT_LIMITS.ankle.dorsiflexionMaxDeg,
+          );
         }
       }
 
-      return next;
+      return clampPoseToNormativeWorkAgeLimits(next);
     },
     [symmetryLocked, autoFlatFoot],
   );
@@ -773,13 +845,21 @@ export const FreeAvatarStudioWorkspace: React.FC<FreeAvatarStudioWorkspaceProps>
     switch (session.joint) {
       case 'head':
         patch = {
-          neckFlexionDeg: clampNum(Math.round(sp.neckFlexionDeg + dy * sens), -35, 45),
+          neckFlexionDeg: clampNum(
+            Math.round(sp.neckFlexionDeg + dy * sens),
+            NORMATIVE_JOINT_LIMITS.cervicalAndShoulder.neckExtensionMinDeg,
+            NORMATIVE_JOINT_LIMITS.cervicalAndShoulder.neckFlexionMaxDeg,
+          ),
           neckTwistDeg: clampNum(Math.round(sp.neckTwistDeg + dx * sens), -60, 60),
         };
         break;
       case 'c7':
         patch = {
-          neckFlexionDeg: clampNum(Math.round(sp.neckFlexionDeg + dy * sens), -35, 45),
+          neckFlexionDeg: clampNum(
+            Math.round(sp.neckFlexionDeg + dy * sens),
+            NORMATIVE_JOINT_LIMITS.cervicalAndShoulder.neckExtensionMinDeg,
+            NORMATIVE_JOINT_LIMITS.cervicalAndShoulder.neckFlexionMaxDeg,
+          ),
           neckLateralDeg: clampNum(Math.round(sp.neckLateralDeg + dx * 0.45), -30, 30),
         };
         break;
@@ -815,14 +895,26 @@ export const FreeAvatarStudioWorkspace: React.FC<FreeAvatarStudioWorkspaceProps>
         break;
       case 'elbowR':
         patch = {
-          elbowRFlexionDeg: clampNum(Math.round(sp.elbowRFlexionDeg - dy * 0.65), 0, 145),
+          elbowRFlexionDeg: clampNum(
+            Math.round((sp.elbowRFlexionDeg - dy * 0.65) * 2) / 2,
+            NORMATIVE_JOINT_LIMITS.elbow.flexionMinDeg,
+            NORMATIVE_JOINT_LIMITS.elbow.flexionMaxDeg,
+          ),
           forearmRPronationDeg: clampNum(Math.round(sp.forearmRPronationDeg + dx * 0.6), -85, 85),
         };
         break;
       case 'wristR':
         patch = {
-          wristRFlexionDeg: clampNum(Math.round(sp.wristRFlexionDeg + dy * 0.55), -55, 60),
-          wristRDeviationDeg: clampNum(Math.round(sp.wristRDeviationDeg + dx * 0.45), -25, 30),
+          wristRFlexionDeg: clampNum(
+            Math.round(sp.wristRFlexionDeg + dy * 0.55),
+            NORMATIVE_JOINT_LIMITS.wrist.dorsalExtensionMinDeg,
+            NORMATIVE_JOINT_LIMITS.wrist.palmarFlexionMaxDeg,
+          ),
+          wristRDeviationDeg: clampNum(
+            Math.round(sp.wristRDeviationDeg + dx * 0.45),
+            NORMATIVE_JOINT_LIMITS.wrist.radialDeviationMinDeg,
+            NORMATIVE_JOINT_LIMITS.wrist.ulnarDeviationMaxDeg,
+          ),
         };
         break;
       case 'shoulderL':
@@ -833,44 +925,84 @@ export const FreeAvatarStudioWorkspace: React.FC<FreeAvatarStudioWorkspaceProps>
         break;
       case 'elbowL':
         patch = {
-          elbowLFlexionDeg: clampNum(Math.round(sp.elbowLFlexionDeg - dy * 0.65), 0, 145),
+          elbowLFlexionDeg: clampNum(
+            Math.round((sp.elbowLFlexionDeg - dy * 0.65) * 2) / 2,
+            NORMATIVE_JOINT_LIMITS.elbow.flexionMinDeg,
+            NORMATIVE_JOINT_LIMITS.elbow.flexionMaxDeg,
+          ),
           forearmLPronationDeg: clampNum(Math.round((sp.forearmLPronationDeg ?? 0) + dx * 0.6), -85, 85),
         };
         break;
       case 'wristL':
         patch = {
-          wristLFlexionDeg: clampNum(Math.round((sp.wristLFlexionDeg ?? 0) + dy * 0.55), -55, 60),
-          wristLDeviationDeg: clampNum(Math.round((sp.wristLDeviationDeg ?? 0) - dx * 0.45), -25, 30),
+          wristLFlexionDeg: clampNum(
+            Math.round((sp.wristLFlexionDeg ?? 0) + dy * 0.55),
+            NORMATIVE_JOINT_LIMITS.wrist.dorsalExtensionMinDeg,
+            NORMATIVE_JOINT_LIMITS.wrist.palmarFlexionMaxDeg,
+          ),
+          wristLDeviationDeg: clampNum(
+            Math.round((sp.wristLDeviationDeg ?? 0) - dx * 0.45),
+            NORMATIVE_JOINT_LIMITS.wrist.radialDeviationMinDeg,
+            NORMATIVE_JOINT_LIMITS.wrist.ulnarDeviationMaxDeg,
+          ),
         };
         break;
       case 'hipR':
         patch = {
-          hipRFlexionDeg: clampNum(Math.round(sp.hipRFlexionDeg - dy * 0.6), -25, 120),
+          hipRFlexionDeg: clampNum(
+            Math.round(sp.hipRFlexionDeg - dy * 0.6),
+            NORMATIVE_JOINT_LIMITS.hip.extensionMaxDeg,
+            NORMATIVE_JOINT_LIMITS.hip.flexionMaxDeg,
+          ),
         };
         break;
       case 'kneeR':
         patch = {
-          kneeRFlexionDeg: clampNum(Math.round(sp.kneeRFlexionDeg + dy * 0.65), 0, 135),
+          kneeRFlexionDeg: clampNum(
+            Math.round((sp.kneeRFlexionDeg + dy * 0.65) * 2) / 2,
+            sp.stanceMode === 'seated' || sp.stanceMode === 'kneeling'
+              ? 0
+              : NORMATIVE_JOINT_LIMITS.knee.flexionMinDeg,
+            NORMATIVE_JOINT_LIMITS.knee.flexionMaxDeg,
+          ),
         };
         break;
       case 'ankleR':
         patch = {
-          ankleRDorsiflexionDeg: clampNum(Math.round(sp.ankleRDorsiflexionDeg - dy * 0.5), -45, 40),
+          ankleRDorsiflexionDeg: clampNum(
+            Math.round((sp.ankleRDorsiflexionDeg - dy * 0.5) * 2) / 2,
+            NORMATIVE_JOINT_LIMITS.ankle.plantarflexionMinDeg,
+            NORMATIVE_JOINT_LIMITS.ankle.dorsiflexionMaxDeg,
+          ),
         };
         break;
       case 'hipL':
         patch = {
-          hipLFlexionDeg: clampNum(Math.round(sp.hipLFlexionDeg - dy * 0.6), -25, 120),
+          hipLFlexionDeg: clampNum(
+            Math.round(sp.hipLFlexionDeg - dy * 0.6),
+            NORMATIVE_JOINT_LIMITS.hip.extensionMaxDeg,
+            NORMATIVE_JOINT_LIMITS.hip.flexionMaxDeg,
+          ),
         };
         break;
       case 'kneeL':
         patch = {
-          kneeLFlexionDeg: clampNum(Math.round(sp.kneeLFlexionDeg + dy * 0.65), 0, 135),
+          kneeLFlexionDeg: clampNum(
+            Math.round((sp.kneeLFlexionDeg + dy * 0.65) * 2) / 2,
+            sp.stanceMode === 'seated' || sp.stanceMode === 'kneeling'
+              ? 0
+              : NORMATIVE_JOINT_LIMITS.knee.flexionMinDeg,
+            NORMATIVE_JOINT_LIMITS.knee.flexionMaxDeg,
+          ),
         };
         break;
       case 'ankleL':
         patch = {
-          ankleLDorsiflexionDeg: clampNum(Math.round(sp.ankleLDorsiflexionDeg - dy * 0.5), -45, 40),
+          ankleLDorsiflexionDeg: clampNum(
+            Math.round((sp.ankleLDorsiflexionDeg - dy * 0.5) * 2) / 2,
+            NORMATIVE_JOINT_LIMITS.ankle.plantarflexionMinDeg,
+            NORMATIVE_JOINT_LIMITS.ankle.dorsiflexionMaxDeg,
+          ),
         };
         break;
       default:
@@ -957,12 +1089,16 @@ export const FreeAvatarStudioWorkspace: React.FC<FreeAvatarStudioWorkspaceProps>
   const handleDownloadCleanPng = async () => {
     await ensureAvatarGlbLoaded();
     const off = document.createElement('canvas');
-    renderInteractivePose3DToCanvas(panelSpec, off, 800, 680, orbit, 2, 'anatomical_skin', false);
+    const finalSpec: Panel3DSpec = {
+      ...panelSpec,
+      pose: { ...pose, prop: exportProp },
+    };
+    renderInteractivePose3DToCanvas(finalSpec, off, 800, 680, orbit, 2, 'anatomical_skin', false);
     const png = await exportCanvasToHighQualityPng(off);
     const url = URL.createObjectURL(png.blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'avatar_libre_postura_3d.png';
+    a.download = 'avatar_libre_foto_final_3d.png';
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -970,7 +1106,11 @@ export const FreeAvatarStudioWorkspace: React.FC<FreeAvatarStudioWorkspaceProps>
   const handleSendToStudy = async (targetMethod: MethodId.RULA | MethodId.REBA) => {
     await ensureAvatarGlbLoaded();
     const off = document.createElement('canvas');
-    renderInteractivePose3DToCanvas(panelSpec, off, 800, 640, orbit, 2, 'anatomical_skin', false);
+    const finalSpec: Panel3DSpec = {
+      ...panelSpec,
+      pose: { ...pose, prop: exportProp },
+    };
+    renderInteractivePose3DToCanvas(finalSpec, off, 800, 640, orbit, 2, 'anatomical_skin', false);
     const dataUrl = off.toDataURL('image/png');
 
     const newTab = createNewStudyTab(1, targetMethod, taskTitle);
@@ -981,8 +1121,10 @@ export const FreeAvatarStudioWorkspace: React.FC<FreeAvatarStudioWorkspaceProps>
       [MethodId.REBA]: buildRebaFromPose(pose),
     };
     const evalRes = targetMethod === MethodId.RULA ? rulaEval : rebaEval;
+    const elbIntR = clampNum(Math.round(180 - pose.elbowRFlexionDeg), 30, 170);
+    const elbIntL = clampNum(Math.round(180 - pose.elbowLFlexionDeg), 30, 170);
     newTab.implementationDeadline = evalRes.recommendedDeadline;
-    newTab.evaluatorObservations = `Simulación cinemática libre con ángulos específicos: Tronco ${pose.trunkFlexionDeg}° (giro ${pose.trunkTwistDeg}°), Cuello ${pose.neckFlexionDeg}°, Hombros D/I ${pose.shoulderRFlexionDeg}°/${pose.shoulderLFlexionDeg}°, Codos D/I ${pose.elbowRFlexionDeg}°/${pose.elbowLFlexionDeg}°, Rodillas D/I ${pose.kneeRFlexionDeg}°/${pose.kneeLFlexionDeg}°. Resultado: ${evalRes.primaryScoreText} (${evalRes.riskLabel}).`;
+    newTab.evaluatorObservations = `Simulación cinemática libre con ángulos específicos: Tronco ${pose.trunkFlexionDeg}° (giro ${pose.trunkTwistDeg}°), Cuello ${pose.neckFlexionDeg}°, Hombros D/I ${pose.shoulderRFlexionDeg}°/${pose.shoulderLFlexionDeg}°, Codos int. D/I ${elbIntR}°/${elbIntL}°, Rodillas D/I ${pose.kneeRFlexionDeg}°/${pose.kneeLFlexionDeg}°. Resultado: ${evalRes.primaryScoreText} (${evalRes.riskLabel}).`;
     newTab.correctiveMeasures = evalRes.suggestedMeasures.map((m, i) => `${i + 1}. ${m}`).join('\n');
 
     const photo: StudyPhoto = {
@@ -1256,10 +1398,16 @@ export const FreeAvatarStudioWorkspace: React.FC<FreeAvatarStudioWorkspaceProps>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">Objeto / Mobiliario 3D</label>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Mobiliario / Estantería 3D</label>
                 <select
                   value={pose.prop || 'none'}
-                  onChange={(e) => setPose((p) => ({ ...p, prop: e.target.value as ScenePropType }))}
+                  onChange={(e) => {
+                    const nextProp = e.target.value as ScenePropType;
+                    setPose((p) => ({ ...p, prop: nextProp }));
+                    if (nextProp !== 'none' && propVisibilityMode === 'hidden') {
+                      setPropVisibilityMode('always');
+                    }
+                  }}
                   className="w-full min-h-[40px] rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900"
                 >
                   {PROP_OPTIONS.map((opt) => (
@@ -1291,6 +1439,61 @@ export const FreeAvatarStudioWorkspace: React.FC<FreeAvatarStudioWorkspaceProps>
                 </select>
               </div>
             </div>
+
+            {pose.prop && pose.prop !== 'none' && (
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-2.5 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-[11px] font-semibold text-slate-800">
+                    Visibilidad y acomodo del mueble / estantería
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setActiveGroup('space_props')}
+                    className="text-[11px] font-semibold text-sky-700 hover:text-sky-900 underline cursor-pointer"
+                  >
+                    Mover X/Y/Z y giro →
+                  </button>
+                </div>
+                <div className="grid grid-cols-3 gap-1 bg-slate-200/70 p-0.5 rounded">
+                  {(
+                    [
+                      { id: 'always', label: 'Siempre visible' },
+                      { id: 'hidden', label: 'Quitar mueble' },
+                      { id: 'final_photo_only', label: 'Solo foto final' },
+                    ] as const
+                  ).map((mode) => (
+                    <button
+                      key={mode.id}
+                      type="button"
+                      onClick={() => setPropVisibilityMode(mode.id)}
+                      className={`min-h-[30px] px-2 py-1 rounded text-[11px] font-semibold cursor-pointer transition-colors ${
+                        propVisibilityMode === mode.id
+                          ? 'bg-white text-slate-900 shadow-2xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      {mode.label}
+                    </button>
+                  ))}
+                </div>
+                {propVisibilityMode === 'final_photo_only' && (
+                  <label className="flex items-center justify-between gap-2 text-[11px] text-slate-700 cursor-pointer select-none pt-0.5">
+                    <span>
+                      Oculto al articular; se incluye automáticamente al <strong>Descargar PNG HD</strong> o enviar al estudio.
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 font-semibold text-sky-800 shrink-0">
+                      <input
+                        type="checkbox"
+                        checked={previewFinalPhotoProp}
+                        onChange={(e) => setPreviewFinalPhotoProp(e.target.checked)}
+                        className="rounded border-slate-400 text-sky-700"
+                      />
+                      Mostrar para acomodar
+                    </span>
+                  </label>
+                )}
+              </div>
+            )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               <div>
@@ -1339,8 +1542,8 @@ export const FreeAvatarStudioWorkspace: React.FC<FreeAvatarStudioWorkspaceProps>
                   { id: 'right_arm', label: 'Brazo Der.' },
                   { id: 'left_arm', label: 'Brazo Izq.' },
                   { id: 'legs_feet', label: 'Piernas y Pies' },
-                  { id: 'space_props', label: 'Giro y Planta' },
-                  { id: 'all', label: 'Todos (27)' },
+                  { id: 'space_props', label: 'Muebles y Planta' },
+                  { id: 'all', label: 'Todos (28)' },
                 ] as { id: JointControlGroup; label: string }[]
               ).map((grp) => (
                 <button
@@ -1360,7 +1563,7 @@ export const FreeAvatarStudioWorkspace: React.FC<FreeAvatarStudioWorkspaceProps>
 
             <div className="space-y-2 max-h-[520px] overflow-y-auto pr-1">
               {visibleFields.map((spec) => {
-                const rawVal = Number(pose[spec.key] ?? 0);
+                const rawVal = Number(pose[spec.key] ?? spec.defaultValue ?? 0);
                 return (
                   <AngleNumericRow
                     key={String(spec.key)}

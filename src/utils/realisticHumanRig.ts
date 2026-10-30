@@ -2030,10 +2030,18 @@ export function applyPoseToPhotorealRig(
   // Finger articulation (natural organic curvature)
   const applyHandFingerCurl = (
     arm: ArmOrganicRig,
-    mode: 'relaxed' | 'pinch' | 'power_grip' | 'box_cradle',
+    mode: 'open' | 'relaxed' | 'pinch' | 'power_grip' | 'box_cradle',
   ) => {
     const s = arm.side === 'r' ? 1 : -1;
-    if (mode === 'pinch') {
+    if (mode === 'open') {
+      arm.thumbPivot.rotation.set(-0.18, 0, s * 0.14);
+      arm.thumbDistal.rotation.set(0, 0, 0);
+      const spreads = [-0.14, -0.04, 0.05, 0.15];
+      arm.fingerMcps.forEach((g, idx) => g.rotation.set(spreads[idx], 0, 0));
+      arm.fingerPips.forEach((g) => g.rotation.set(0, 0, 0));
+      arm.fingerDips.forEach((g) => g.rotation.set(0, 0, 0));
+      arm.pinchObject.visible = false;
+    } else if (mode === 'pinch') {
       arm.thumbPivot.rotation.set(0.32, -s * 0.14, -s * 0.46);
       arm.thumbDistal.rotation.set(0, 0, -s * 0.36);
       const mcpCurls = [-0.58, -0.66, -1.04, -1.14];
@@ -2082,10 +2090,13 @@ export function applyPoseToPhotorealRig(
       ? 'power_grip'
       : 'relaxed');
 
-  applyHandFingerCurl(def.armR, gripMode);
+  applyHandFingerCurl(def.armR, pose.handRGripMode ?? gripMode);
   applyHandFingerCurl(
     def.armL,
-    gripMode === 'power_grip' || gripMode === 'box_cradle' ? gripMode : 'relaxed',
+    pose.handLGripMode ??
+      (gripMode === 'power_grip' || gripMode === 'box_cradle' || gripMode === 'open'
+        ? gripMode
+        : 'relaxed'),
   );
 
   j.hipR.rotation.set(-effHipR * DEG2RAD, 0, 0);

@@ -1,6 +1,11 @@
 import { FilesetResolver, PoseLandmarker } from '@mediapipe/tasks-vision';
 import { PosturePose3D } from '../types/figurePlan';
 import { makeNeutralPose } from './figurePlanCatalog';
+import {
+  clampPoseToNormativeWorkAgeLimits,
+  NORMATIVE_JOINT_LIMITS,
+  resolveTrunkThighMinAngleDeg,
+} from './normativeJointLimits';
 
 export interface MocapVec3 {
   x: number;
@@ -80,6 +85,11 @@ let heavyLandmarker: PoseLandmarker | null = null;
 let loadedModelTier: 'heavy' | 'full' | 'lite' = 'heavy';
 let heavyInitPromise: Promise<{ landmarker: PoseLandmarker; tier: 'heavy' | 'full' | 'lite' } | null> | null =
   null;
+/**
+ * Marca temporal global estrictamente creciente para `PoseLandmarker` en modo `VIDEO`.
+ * Impide colisiones `Packet timestamp mismatch` cuando se procesan varios vídeos seguidos.
+ */
+let lastGlobalMocapTimestampMs = 0;
 
 function clamp(v: number, min: number, max: number): number {
   if (!Number.isFinite(v)) return min;
@@ -220,6 +230,58 @@ export async function initHeavyPoseMoCap(): Promise<{
   return heavyInitPromise;
 }
 
+export async function resetHeavyPoseMoCap(preferCpuFallback = false): Promise<{
+  landmarker: PoseLandmarker;
+  tier: 'heavy' | 'full' | 'lite';
+} | null> {
+  if (heavyLandmarker) {
+    try {
+      heavyLandmarker.close();
+    } catch {
+      // Ignorar cierre de instancia previa
+    }
+  }
+  heavyLandmarker = null;
+  heavyInitPromise = null;
+  lastGlobalMocapTimestampMs = Math.max(
+    lastGlobalMocapTimestampMs + 5000,
+    Math.round(performance.now()) + 200,
+  );
+
+  if (!preferCpuFallback) {
+    return initHeavyPoseMoCap();
+  }
+
+  try {
+    const vision = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM_CDN);
+    for (const candidate of MODEL_URLS) {
+      for (const delegate of ['CPU', 'GPU'] as const) {
+        try {
+          const lm = await PoseLandmarker.createFromOptions(vision, {
+            baseOptions: {
+              modelAssetPath: candidate.url,
+              delegate,
+            },
+            runningMode: 'VIDEO',
+            numPoses: 1,
+            minPoseDetectionConfidence: 0.42,
+            minPosePresenceConfidence: 0.42,
+            minTrackingConfidence: 0.42,
+          });
+          heavyLandmarker = lm;
+          loadedModelTier = candidate.tier;
+          return { landmarker: lm, tier: candidate.tier };
+        } catch {
+          // Intentar siguiente modelo
+        }
+      }
+    }
+  } catch {
+    // Ignorar
+  }
+  return null;
+}
+
 function seekVideoExact(video: HTMLVideoElement, timeSec: number): Promise<void> {
   return new Promise((resolve) => {
     const safeMax = Math.max(0, (video.duration || 1) - 0.025);
@@ -308,19 +370,825 @@ function shortestAngleDiffRad(fromRad: number, toRad: number): number {
   return d;
 }
 
+interface CalibratedLimbLengths {
+  upperArm: number;
+  foreArm: number;
+  thigh: number;
+  shank: number;
+}
+
+function medianValue(arr: number[], fallback: number): number {
+  if (arr.length === 0) return fallback;
+  const sorted = [...arr].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) * 0.5;
+}
+
+/**
+ * Calibra las longitudes óseas métricas constantes del operario en los fotogramas nítidos
+ * para impedir que la estimación monocular acorte o estire fémur/tibia durante agachadas u oclusiones.
+ */
+function calibrateSubjectLimbLengths(seq: MocapVec3[][]): CalibratedLimbLengths {
+  const upperArms: number[] = [];
+  const foreArms: number[] = [];
+  const thighs: number[] = [];
+  const shanks: number[] = [];
+
+  for (const pts of seq) {
+    if (!pts || pts.length < 29) continue;
+    for (const [a, b] of [
+      [11, 13],
+      [12, 14],
+    ] as const) {
+      if (Math.min(pts[a].visibility, pts[b].visibility) >= 0.6) {
+        const d = vecLen(vecSub(pts[b], pts[a]));
+        if (d > 0.16 && d < 0.45) upperArms.push(d);
+      }
+    }
+    for (const [a, b] of [
+      [13, 15],
+      [14, 16],
+    ] as const) {
+      if (Math.min(pts[a].visibility, pts[b].visibility) >= 0.6) {
+        const d = vecLen(vecSub(pts[b], pts[a]));
+        if (d > 0.15 && d < 0.42) foreArms.push(d);
+      }
+    }
+    for (const [a, b] of [
+      [23, 25],
+      [24, 26],
+    ] as const) {
+      if (Math.min(pts[a].visibility, pts[b].visibility) >= 0.6) {
+        const d = vecLen(vecSub(pts[b], pts[a]));
+        if (d > 0.25 && d < 0.62) thighs.push(d);
+      }
+    }
+    for (const [a, b] of [
+      [25, 27],
+      [26, 28],
+    ] as const) {
+      if (Math.min(pts[a].visibility, pts[b].visibility) >= 0.6) {
+        const d = vecLen(vecSub(pts[b], pts[a]));
+        if (d > 0.24 && d < 0.60) shanks.push(d);
+      }
+    }
+  }
+
+  return {
+    upperArm: clamp(medianValue(upperArms, 0.29), 0.22, 0.38),
+    foreArm: clamp(medianValue(foreArms, 0.26), 0.20, 0.36),
+    thigh: clamp(medianValue(thighs, 0.42), 0.32, 0.54),
+    shank: clamp(medianValue(shanks, 0.41), 0.30, 0.52),
+  };
+}
+
+function pointToSegmentDist2D(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+): number {
+  const vx = bx - ax;
+  const vy = by - ay;
+  const lenSq = vx * vx + vy * vy;
+  if (lenSq < 1e-8) return Math.hypot(px - ax, py - ay);
+  const t = clamp(((px - ax) * vx + (py - ay) * vy) / lenSq, 0, 1);
+  return Math.hypot(px - (ax + t * vx), py - (ay + t * vy));
+}
+
+function solveAnatomicalKnee2BoneIK(
+  hipPos: MocapVec3,
+  ankTarget: { x: number; y: number; z: number },
+  lThigh: number,
+  lShank: number,
+  bendFwdHint: { x: number; y: number; z: number },
+  kneeVis: number,
+): { knee: MocapVec3; ankle: { x: number; y: number; z: number } } {
+  const deg2rad = Math.PI / 180;
+  // Rango fisiológico laboral (20–59 años, (P50+P95)/2): 178.5° internos (1.5° flex) a 38.5° internos (141.5° flex máx)
+  const kFlexMinDeg = NORMATIVE_JOINT_LIMITS.knee.kinoveaFlexMinDeg;
+  const kExtMaxDeg = NORMATIVE_JOINT_LIMITS.knee.kinoveaExtMaxDeg;
+  const dMin = Math.sqrt(
+    Math.max(0.01, lThigh * lThigh + lShank * lShank - 2 * lThigh * lShank * Math.cos(kFlexMinDeg * deg2rad)),
+  );
+  const dMax = Math.sqrt(
+    Math.max(0.04, lThigh * lThigh + lShank * lShank - 2 * lThigh * lShank * Math.cos(kExtMaxDeg * deg2rad)),
+  );
+
+  const rawDx = ankTarget.x - hipPos.x;
+  const rawDy = ankTarget.y - hipPos.y;
+  const rawDz = ankTarget.z - hipPos.z;
+  const rawDist = Math.hypot(rawDx, rawDy, rawDz);
+  const d = clamp(rawDist, dMin, dMax);
+  const uHA =
+    rawDist > 1e-5
+      ? { x: rawDx / rawDist, y: rawDy / rawDist, z: rawDz / rawDist }
+      : { x: 0, y: -1, z: 0 };
+
+  const ankClamped = {
+    x: hipPos.x + uHA.x * d,
+    y: hipPos.y + uHA.y * d,
+    z: hipPos.z + uHA.z * d,
+  };
+
+  const a = (lThigh * lThigh - lShank * lShank + d * d) / (2 * d);
+  const h = Math.sqrt(Math.max(0, lThigh * lThigh - a * a));
+
+  const dotHint = vecDot(bendFwdHint, uHA);
+  let perp = {
+    x: bendFwdHint.x - uHA.x * dotHint,
+    y: bendFwdHint.y - uHA.y * dotHint,
+    z: bendFwdHint.z - uHA.z * dotHint,
+  };
+  if (vecLen(perp) < 1e-4) {
+    perp = { x: 0, y: 0, z: 1 };
+  } else {
+    perp = vecNorm(perp);
+  }
+
+  return {
+    knee: {
+      x: hipPos.x + uHA.x * a + perp.x * h,
+      y: hipPos.y + uHA.y * a + perp.y * h,
+      z: hipPos.z + uHA.z * a + perp.z * h,
+      visibility: kneeVis,
+    },
+    ankle: ankClamped,
+  };
+}
+
+/**
+ * Estabiliza miembros inferiores y superiores imponiendo:
+ * 1) Detección de oclusión brazo–rodilla (cuando codo/antebrazo/muñeca cruzan delante de la rodilla en 2D).
+ * 2) Coherencia bilateral en agachadas (si una rodilla/tobillo pierde referencia detrás de la otra pierna, acompaña la agachada).
+ * 3) Cinemática cerrada de 2 huesos (Cadera–Rodilla–Tobillo) y topes articulares anatómicos humanos:
+ *    - Codo: 30° flexión máx. a 170° extensión sana (10°–150° de flexión).
+ *    - Rodilla: 35° flexión máx. a 176° extensión sana (4°–145° únicamente hacia atrás).
+ *    - Cadera: extensión máx. 28°, flexión máx. 102° y ángulo interno tronco–muslo >= 40° (impide que la rodilla suba al pecho).
+ */
+function enforceAnatomicalLimitsAndLegCoherence(
+  alignedWorld: MocapVec3[],
+  rawWorld: MocapVec3[],
+  norm2D: MocapVec3[],
+  videoAspect: number,
+  limbs: CalibratedLimbLengths,
+  refScale: number,
+): MocapVec3[] {
+  const out = alignedWorld.map((p) => ({ ...p }));
+  const deg2rad = Math.PI / 180;
+  const upY = { x: 0, y: 1, z: 0 };
+
+  const shL = out[11];
+  const shR = out[12];
+  const hipL = out[23];
+  const hipR = out[24];
+  if (!shL || !shR || !hipL || !hipR) return out;
+
+  const midHip = vecMid(hipL, hipR);
+  const midSh = vecMid(shL, shR);
+  const trunkUp = vecNorm(vecSub(midSh, midHip));
+  const shLeft = vecNorm(vecSub(shL, shR));
+  const hipLeftRaw = vecNorm(vecSub(hipL, hipR));
+  const minHipVis = Math.min(rawWorld[23]?.visibility ?? 0.5, rawWorld[24]?.visibility ?? 0.5);
+  const hipTrust = clamp((minHipVis - 0.35) / 0.35, 0.28, 0.72);
+  const pelvisLeftBlend = vecNorm({
+    x: hipLeftRaw.x * hipTrust + shLeft.x * (1 - hipTrust),
+    y: hipLeftRaw.y * hipTrust + shLeft.y * (1 - hipTrust),
+    z: hipLeftRaw.z * hipTrust + shLeft.z * (1 - hipTrust),
+  });
+  const pelvisUp = vecNorm({
+    x: upY.x * 0.58 + trunkUp.x * 0.42,
+    y: upY.y * 0.58 + trunkUp.y * 0.42,
+    z: upY.z * 0.58 + trunkUp.z * 0.42,
+  });
+  let pelvisFwd = vecCross(pelvisLeftBlend, pelvisUp);
+  if (vecLen(pelvisFwd) < 1e-5) pelvisFwd = { x: 0, y: 0, z: 1 };
+  else pelvisFwd = vecNorm(pelvisFwd);
+  const pelvisLeft = vecNorm(vecCross(pelvisUp, pelvisFwd));
+
+  // Escala instantánea tronco 2D/3D (inmune a oclusión de rodillas)
+  let localScale = refScale;
+  {
+    let s2 = 0;
+    let s3 = 0;
+    for (const [a, b] of [
+      [11, 23],
+      [12, 24],
+    ] as const) {
+      if (Math.min(rawWorld[a].visibility, rawWorld[b].visibility) >= 0.45) {
+        const d2 = Math.hypot((norm2D[b].x - norm2D[a].x) * videoAspect, norm2D[b].y - norm2D[a].y);
+        const d3 = Math.hypot(out[b].x - out[a].x, out[b].y - out[a].y);
+        if (d3 > 0.14 && d2 > 0.03) {
+          s2 += d2;
+          s3 += d3;
+        }
+      }
+    }
+    if (s3 > 0.14) {
+      localScale = clamp(s2 / s3, refScale * 0.68, refScale * 1.42);
+    }
+  }
+
+  // Distancia 2D mínima desde una articulación (ej. rodilla) a los 4 segmentos de brazos
+  const minDistToArmSegments2D = (ptIdx: number): number => {
+    const pt = norm2D[ptIdx];
+    if (!pt) return 1;
+    const px = pt.x * videoAspect;
+    const py = pt.y;
+    const armSegs: Array<[number, number]> = [
+      [12, 14],
+      [14, 16],
+      [11, 13],
+      [13, 15],
+    ];
+    let best = 10;
+    for (const [a, b] of armSegs) {
+      const pa = norm2D[a];
+      const pb = norm2D[b];
+      if (!pa || !pb) continue;
+      if (Math.min(rawWorld[a]?.visibility ?? 0, rawWorld[b]?.visibility ?? 0) < 0.2) continue;
+      const d = pointToSegmentDist2D(px, py, pa.x * videoAspect, pa.y, pb.x * videoAspect, pb.y);
+      if (d < best) best = d;
+    }
+    return best;
+  };
+
+  // Paso A: Asistencia bilateral en agachadas cuando una pierna pierde referencia (< 0.48) y la otra es visible
+  const legConfR = Math.min(rawWorld[26]?.visibility ?? 0, rawWorld[28]?.visibility ?? 0);
+  const legConfL = Math.min(rawWorld[25]?.visibility ?? 0, rawWorld[27]?.visibility ?? 0);
+  const fullLegSpan = limbs.thigh + limbs.shank;
+  const mirrorRelAcrossPelvis = (v: { x: number; y: number; z: number }) => {
+    const compLeft = vecDot(v, pelvisLeft);
+    return {
+      x: v.x - 2 * compLeft * pelvisLeft.x,
+      y: v.y - 2 * compLeft * pelvisLeft.y,
+      z: v.z - 2 * compLeft * pelvisLeft.z,
+    };
+  };
+
+  if (legConfL < 0.48 && legConfR >= 0.52) {
+    const haR = vecSub(out[28], out[24]);
+    if (vecLen(haR) < 0.86 * fullLegSpan) {
+      const wMirror = clamp((0.50 - legConfL) / 0.28, 0.35, 0.95);
+      const mKnee = mirrorRelAcrossPelvis(vecSub(out[26], out[24]));
+      const mAnk = mirrorRelAcrossPelvis(haR);
+      const mToe = mirrorRelAcrossPelvis(vecSub(out[32], out[28]));
+      out[25] = {
+        x: out[23].x + (out[25].x - out[23].x) * (1 - wMirror) + mKnee.x * wMirror,
+        y: out[23].y + (out[25].y - out[23].y) * (1 - wMirror) + mKnee.y * wMirror,
+        z: out[23].z + (out[25].z - out[23].z) * (1 - wMirror) + mKnee.z * wMirror,
+        visibility: Math.max(out[25].visibility, legConfR * 0.8),
+      };
+      const prevAnkL = { ...out[27] };
+      out[27] = {
+        x: out[23].x + (out[27].x - out[23].x) * (1 - wMirror) + mAnk.x * wMirror,
+        y: out[23].y + (out[27].y - out[23].y) * (1 - wMirror) + mAnk.y * wMirror,
+        z: out[23].z + (out[27].z - out[23].z) * (1 - wMirror) + mAnk.z * wMirror,
+        visibility: Math.max(out[27].visibility, legConfR * 0.8),
+      };
+      const dAnkX = out[27].x - prevAnkL.x;
+      const dAnkY = out[27].y - prevAnkL.y;
+      const dAnkZ = out[27].z - prevAnkL.z;
+      out[29] = { ...out[29], x: out[29].x + dAnkX, y: out[29].y + dAnkY, z: out[29].z + dAnkZ };
+      out[31] = {
+        x: out[27].x + mToe.x * wMirror + (out[31].x - prevAnkL.x) * (1 - wMirror),
+        y: out[27].y + mToe.y * wMirror + (out[31].y - prevAnkL.y) * (1 - wMirror),
+        z: out[27].z + mToe.z * wMirror + (out[31].z - prevAnkL.z) * (1 - wMirror),
+        visibility: out[31].visibility,
+      };
+    }
+  } else if (legConfR < 0.48 && legConfL >= 0.52) {
+    const haL = vecSub(out[27], out[23]);
+    if (vecLen(haL) < 0.86 * fullLegSpan) {
+      const wMirror = clamp((0.50 - legConfR) / 0.28, 0.35, 0.95);
+      const mKnee = mirrorRelAcrossPelvis(vecSub(out[25], out[23]));
+      const mAnk = mirrorRelAcrossPelvis(haL);
+      const mToe = mirrorRelAcrossPelvis(vecSub(out[31], out[27]));
+      out[26] = {
+        x: out[24].x + (out[26].x - out[24].x) * (1 - wMirror) + mKnee.x * wMirror,
+        y: out[24].y + (out[26].y - out[24].y) * (1 - wMirror) + mKnee.y * wMirror,
+        z: out[24].z + (out[26].z - out[24].z) * (1 - wMirror) + mKnee.z * wMirror,
+        visibility: Math.max(out[26].visibility, legConfL * 0.8),
+      };
+      const prevAnkR = { ...out[28] };
+      out[28] = {
+        x: out[24].x + (out[28].x - out[24].x) * (1 - wMirror) + mAnk.x * wMirror,
+        y: out[24].y + (out[28].y - out[24].y) * (1 - wMirror) + mAnk.y * wMirror,
+        z: out[24].z + (out[28].z - out[24].z) * (1 - wMirror) + mAnk.z * wMirror,
+        visibility: Math.max(out[28].visibility, legConfL * 0.8),
+      };
+      const dAnkX = out[28].x - prevAnkR.x;
+      const dAnkY = out[28].y - prevAnkR.y;
+      const dAnkZ = out[28].z - prevAnkR.z;
+      out[30] = { ...out[30], x: out[30].x + dAnkX, y: out[30].y + dAnkY, z: out[30].z + dAnkZ };
+      out[32] = {
+        x: out[28].x + mToe.x * wMirror + (out[32].x - prevAnkR.x) * (1 - wMirror),
+        y: out[28].y + mToe.y * wMirror + (out[32].y - prevAnkR.y) * (1 - wMirror),
+        z: out[28].z + mToe.z * wMirror + (out[32].z - prevAnkR.z) * (1 - wMirror),
+        visibility: out[32].visibility,
+      };
+    }
+  }
+
+  // Paso B: Protección contra oclusión brazo–rodilla + Límites Anatómicos de Cadera y Rodilla
+  const stabilizeSingleLeg = (
+    side: 'R' | 'L',
+    hipIdx: number,
+    kneeIdx: number,
+    ankIdx: number,
+    heelIdx: number,
+    toeIdx: number,
+  ) => {
+    const H = out[hipIdx];
+    const K = out[kneeIdx];
+    const A = out[ankIdx];
+    const rawKneeVis = rawWorld[kneeIdx]?.visibility ?? K.visibility;
+    const rawAnkVis = rawWorld[ankIdx]?.visibility ?? A.visibility;
+    const rawHipVis = rawWorld[hipIdx]?.visibility ?? H.visibility;
+
+    const armDist2D = minDistToArmSegments2D(kneeIdx);
+    const thighVec = vecSub(K, H);
+    const shankVec = vecSub(A, K);
+    const thighUnit = vecNorm(thighVec);
+
+    const sagHipDeg =
+      (Math.atan2(vecDot(thighUnit, pelvisFwd), -vecDot(thighUnit, pelvisUp)) * 180) / Math.PI;
+    const trunkThighDeg = angleDeg(trunkUp, thighUnit);
+    const kneeBendDeg = angleDeg(thighVec, shankVec);
+    // Verificar también que la rodilla no hiperextienda hacia adelante (flexión normal -> cross apunta a +pelvisLeft)
+    const refPosteriorHinge = vecNorm(vecCross(pelvisUp, pelvisFwd));
+    const kneeHingeSign = vecDot(
+      vecCross(thighUnit, vecNorm(shankVec)),
+      refPosteriorHinge,
+    );
+    const isHyperextendedForward = kneeBendDeg > 6 && kneeHingeSign < -0.12;
+
+    const visW = clamp((0.56 - rawKneeVis) / 0.26, 0, 1);
+    const armOccW = clamp((0.105 - armDist2D) / 0.060, 0, 1);
+    const kMinFlex = NORMATIVE_JOINT_LIMITS.knee.flexionMinDeg; // 1.5° (178.5° Kinovea)
+    const kMaxFlex = NORMATIVE_JOINT_LIMITS.knee.flexionMaxDeg; // 141.5° (38.5° Kinovea)
+    const ttSoftMin = NORMATIVE_JOINT_LIMITS.hip.kinoveaTrunkThighSoftMinDeg; // 62.0°
+    const ttHardMin = NORMATIVE_JOINT_LIMITS.hip.kinoveaTrunkThighHardMinDeg; // 58.0°
+    const hipExtMin = NORMATIVE_JOINT_LIMITS.hip.extensionMaxDeg; // -28°
+    const hipFlexMax = NORMATIVE_JOINT_LIMITS.hip.flexionMaxDeg; // 118°
+
+    let limitW = 0;
+    if (
+      trunkThighDeg < ttHardMin ||
+      sagHipDeg > hipFlexMax ||
+      sagHipDeg < hipExtMin ||
+      kneeBendDeg < kMinFlex ||
+      kneeBendDeg > kMaxFlex ||
+      isHyperextendedForward
+    ) {
+      limitW = 1;
+    } else if (trunkThighDeg < ttSoftMin + 4 || sagHipDeg > hipFlexMax - 8) {
+      limitW = Math.max(
+        clamp((ttSoftMin + 4 - trunkThighDeg) / 6, 0, 1),
+        clamp((sagHipDeg - (hipFlexMax - 8)) / 8, 0, 1),
+      );
+    }
+
+    const wIK = clamp(Math.max(visW, armOccW, limitW), 0, 1);
+    if (wIK <= 0.01) return;
+
+    // Anclar el tobillo directamente desde el vector 2D Cadera->Tobillo (inmune al desvío de la rodilla tapada)
+    let ankTarget = { x: A.x, y: A.y, z: A.z };
+    if (Math.min(rawHipVis, rawAnkVis) >= 0.42 && localScale > 0.12) {
+      const dx2D = ((norm2D[ankIdx].x - norm2D[hipIdx].x) * videoAspect) / localScale;
+      const dy2D = -(norm2D[ankIdx].y - norm2D[hipIdx].y) / localScale;
+      const rawDz = clamp((rawWorld[ankIdx].z - rawWorld[hipIdx].z) * 0.65, -0.34, 0.34);
+      ankTarget = {
+        x: H.x + dx2D,
+        y: H.y + dy2D,
+        z: H.z + rawDz,
+      };
+    }
+
+    const lateralSign = side === 'R' ? -0.05 : 0.05;
+    const bendHint = vecNorm({
+      x: pelvisFwd.x + pelvisLeft.x * lateralSign,
+      y: pelvisFwd.y + pelvisLeft.y * lateralSign,
+      z: pelvisFwd.z + pelvisLeft.z * lateralSign,
+    });
+
+    const solved = solveAnatomicalKnee2BoneIK(
+      H,
+      ankTarget,
+      limbs.thigh,
+      limbs.shank,
+      bendHint,
+      K.visibility,
+    );
+
+    // Aplicar tope anatómico sobre el muslo resultante (tronco–muslo >= 40°, cadera [-28°, +102°])
+    let candThigh = vecNorm({
+      x: K.x * (1 - wIK) + solved.knee.x * wIK - H.x,
+      y: K.y * (1 - wIK) + solved.knee.y * wIK - H.y,
+      z: K.z * (1 - wIK) + solved.knee.z * wIK - H.z,
+    });
+
+    const cLeft = vecDot(candThigh, pelvisLeft);
+    const cUp = vecDot(candThigh, pelvisUp);
+    const cFwd = vecDot(candThigh, pelvisFwd);
+    const rawLatOut = side === 'R' ? -cLeft : cLeft;
+    const clampedLatRad = clamp(Math.asin(clamp(rawLatOut, -1, 1)), -15 * deg2rad, 42 * deg2rad);
+    const clampedSagRad = clamp(Math.atan2(cFwd, -cUp), hipExtMin * deg2rad, hipFlexMax * deg2rad);
+    const cosL = Math.cos(clampedLatRad);
+    const sinL = Math.sin(clampedLatRad);
+    const effLeft = side === 'R' ? -sinL : sinL;
+    const effDown = Math.cos(clampedSagRad) * cosL;
+    const effFwd = Math.sin(clampedSagRad) * cosL;
+    candThigh = vecNorm({
+      x: pelvisLeft.x * effLeft - pelvisUp.x * effDown + pelvisFwd.x * effFwd,
+      y: pelvisLeft.y * effLeft - pelvisUp.y * effDown + pelvisFwd.y * effFwd,
+      z: pelvisLeft.z * effLeft - pelvisUp.z * effDown + pelvisFwd.z * effFwd,
+    });
+
+    // Freno mecánico muslo-abdomen Hombro–Cadera–Rodilla: amortiguador 62° -> 58° (y 62° estricto bajo oclusión brazo-rodilla)
+    const curTTDeg = angleDeg(trunkUp, candThigh);
+    const occStrength = Math.max(visW, armOccW);
+    const minAllowedTTDeg = resolveTrunkThighMinAngleDeg(curTTDeg, occStrength);
+    if (curTTDeg < minAllowedTTDeg - 0.05) {
+      let pushAxis = vecCross(trunkUp, candThigh);
+      if (vecLen(pushAxis) < 1e-5) pushAxis = { x: -pelvisLeft.x, y: -pelvisLeft.y, z: -pelvisLeft.z };
+      else pushAxis = vecNorm(pushAxis);
+      const rotPt = rotatePointAroundAxis(
+        { x: trunkUp.x, y: trunkUp.y, z: trunkUp.z, visibility: 1 },
+        { x: 0, y: 0, z: 0 },
+        pushAxis,
+        minAllowedTTDeg * deg2rad,
+      );
+      candThigh = vecNorm(rotPt);
+    }
+
+    const newKnee: MocapVec3 = {
+      x: H.x + candThigh.x * limbs.thigh,
+      y: H.y + candThigh.y * limbs.thigh,
+      z: H.z + candThigh.z * limbs.thigh,
+      visibility: K.visibility,
+    };
+
+    const blendedAnkTarget = {
+      x: A.x * (1 - wIK) + solved.ankle.x * wIK,
+      y: A.y * (1 - wIK) + solved.ankle.y * wIK,
+      z: A.z * (1 - wIK) + solved.ankle.z * wIK,
+    };
+    let candShank = vecNorm({
+      x: blendedAnkTarget.x - newKnee.x,
+      y: blendedAnkTarget.y - newKnee.y,
+      z: blendedAnkTarget.z - newKnee.z,
+    });
+
+    // Asegurar límite de flexión/extensión de rodilla [1.5°, 141.5°] siempre en sentido posterior (+pelvisLeft)
+    const curKneeBend = angleDeg(candThigh, candShank);
+    const candHingeRaw = vecCross(candThigh, candShank);
+    const isCandHyperextended = curKneeBend > kMinFlex && vecDot(candHingeRaw, refPosteriorHinge) < -0.10;
+    if (curKneeBend < kMinFlex || curKneeBend > kMaxFlex || isCandHyperextended) {
+      const targetBendRad = (isCandHyperextended ? kMinFlex : clamp(curKneeBend, kMinFlex, kMaxFlex)) * deg2rad;
+      let hingeAxis = candHingeRaw;
+      if (vecLen(hingeAxis) < 1e-4 || vecDot(hingeAxis, refPosteriorHinge) <= 0) {
+        hingeAxis = refPosteriorHinge;
+      } else {
+        hingeAxis = vecNorm(hingeAxis);
+      }
+      const rotShank = rotatePointAroundAxis(
+        { x: candThigh.x, y: candThigh.y, z: candThigh.z, visibility: 1 },
+        { x: 0, y: 0, z: 0 },
+        hingeAxis,
+        targetBendRad,
+      );
+      candShank = vecNorm(rotShank);
+    }
+
+    const prevAnk = { ...out[ankIdx] };
+    out[kneeIdx] = newKnee;
+    out[ankIdx] = {
+      x: newKnee.x + candShank.x * limbs.shank,
+      y: newKnee.y + candShank.y * limbs.shank,
+      z: newKnee.z + candShank.z * limbs.shank,
+      visibility: A.visibility,
+    };
+
+    const shiftAnkX = out[ankIdx].x - prevAnk.x;
+    const shiftAnkY = out[ankIdx].y - prevAnk.y;
+    const shiftAnkZ = out[ankIdx].z - prevAnk.z;
+    if (out[heelIdx]) {
+      out[heelIdx] = {
+        ...out[heelIdx],
+        x: out[heelIdx].x + shiftAnkX,
+        y: out[heelIdx].y + shiftAnkY,
+        z: out[heelIdx].z + shiftAnkZ,
+      };
+    }
+    if (out[toeIdx]) {
+      out[toeIdx] = {
+        ...out[toeIdx],
+        x: out[toeIdx].x + shiftAnkX,
+        y: out[toeIdx].y + shiftAnkY,
+        z: out[toeIdx].z + shiftAnkZ,
+      };
+    }
+  };
+
+  stabilizeSingleLeg('R', 24, 26, 28, 30, 32);
+  stabilizeSingleLeg('L', 23, 25, 27, 29, 31);
+
+  // Paso C: Topes anatómicos de codo [8.5°..149.5° flex = 171.5°..30.5° Kinovea] y muñeca [-62° dorsal .. +74° palmar]
+  const elbMinFlex = NORMATIVE_JOINT_LIMITS.elbow.flexionMinDeg; // 8.5°
+  const elbMaxFlex = NORMATIVE_JOINT_LIMITS.elbow.flexionMaxDeg; // 149.5°
+  const wrMaxPalmar = NORMATIVE_JOINT_LIMITS.wrist.palmarFlexionMaxDeg; // 74°
+  const wrMaxDorsal = Math.abs(NORMATIVE_JOINT_LIMITS.wrist.dorsalExtensionMinDeg); // 62°
+
+  const clampArmChain = (
+    shIdx: number,
+    elbIdx: number,
+    wrIdx: number,
+    pinkyIdx: number,
+    idxFingerIdx: number,
+  ) => {
+    const S = out[shIdx];
+    const E = out[elbIdx];
+    const W = out[wrIdx];
+    if (!S || !E || !W) return;
+    const uVec = vecSub(E, S);
+    const fVec = vecSub(W, E);
+    const fLen = Math.max(0.16, vecLen(fVec));
+    const curBend = angleDeg(uVec, fVec);
+    let foreUnit = vecNorm(fVec);
+    const uUnit = vecNorm(uVec);
+
+    let elbowHinge = vecCross(uUnit, foreUnit);
+    if (vecLen(elbowHinge) < 1e-4) {
+      elbowHinge = vecNorm(vecCross(uUnit, pelvisFwd));
+    } else {
+      elbowHinge = vecNorm(elbowHinge);
+    }
+
+    if (curBend < elbMinFlex || curBend > elbMaxFlex) {
+      const targetRad = clamp(curBend, elbMinFlex, elbMaxFlex) * deg2rad;
+      const rotFore = rotatePointAroundAxis(
+        { x: uUnit.x, y: uUnit.y, z: uUnit.z, visibility: 1 },
+        { x: 0, y: 0, z: 0 },
+        elbowHinge,
+        targetRad,
+      );
+      foreUnit = vecNorm(rotFore);
+      const newW = {
+        x: E.x + foreUnit.x * fLen,
+        y: E.y + foreUnit.y * fLen,
+        z: E.z + foreUnit.z * fLen,
+        visibility: W.visibility,
+      };
+      const dx = newW.x - W.x;
+      const dy = newW.y - W.y;
+      const dz = newW.z - W.z;
+      out[wrIdx] = newW;
+      if (out[pinkyIdx]) {
+        out[pinkyIdx] = {
+          ...out[pinkyIdx],
+          x: out[pinkyIdx].x + dx,
+          y: out[pinkyIdx].y + dy,
+          z: out[pinkyIdx].z + dz,
+        };
+      }
+      if (out[idxFingerIdx]) {
+        out[idxFingerIdx] = {
+          ...out[idxFingerIdx],
+          x: out[idxFingerIdx].x + dx,
+          y: out[idxFingerIdx].y + dy,
+          z: out[idxFingerIdx].z + dz,
+        };
+      }
+    }
+
+    // Freno capsular de muñeca sobre los segmentos distales (MUN_EXT = 242° [-62°], MUN_FLE = 106° [+74°])
+    const Wcur = out[wrIdx];
+    const Pcur = out[pinkyIdx];
+    const Icur = out[idxFingerIdx];
+    if (Wcur && Pcur && Icur) {
+      const midHand = vecMid(Pcur, Icur);
+      const hVec = vecSub(midHand, Wcur);
+      const hLen = vecLen(hVec);
+      if (hLen > 0.02) {
+        const hUnit = vecNorm(hVec);
+        const wrAng = angleDeg(foreUnit, hUnit);
+        // Sentido palmar (+) cuando el carpo cierra en el mismo semiespacio flexor del codo
+        const wrCross = vecCross(foreUnit, hUnit);
+        const isPalmarSide = vecDot(wrCross, elbowHinge) >= 0;
+        const maxWrAllowed = isPalmarSide ? wrMaxPalmar : wrMaxDorsal;
+        if (wrAng > maxWrAllowed && vecLen(wrCross) > 1e-4) {
+          const wrAxis = vecNorm(wrCross);
+          const corrRad = (maxWrAllowed - wrAng) * deg2rad;
+          out[pinkyIdx] = rotatePointAroundAxis(Pcur, Wcur, wrAxis, corrRad);
+          out[idxFingerIdx] = rotatePointAroundAxis(Icur, Wcur, wrAxis, corrRad);
+        }
+      }
+    }
+  };
+
+  clampArmChain(12, 14, 16, 18, 20);
+  clampArmChain(11, 13, 15, 17, 19);
+
+  // Paso D: Articulación de Tobillo y Pie — apoyo plantígrado al piso y tope máximo <= 20° respecto al suelo
+  const horizFwd = vecNorm({ x: pelvisFwd.x, y: 0, z: pelvisFwd.z });
+  const horizLeft = vecNorm(vecCross(upY, horizFwd));
+  const lowAnkY = Math.min(out[27]?.y ?? 0, out[28]?.y ?? 0);
+  const bothFeetPlanted = Math.abs((out[27]?.y ?? 0) - (out[28]?.y ?? 0)) < 0.04;
+
+  const stabilizeFootAndAnkle = (
+    side: 'R' | 'L',
+    kneeIdx: number,
+    ankIdx: number,
+    heelIdx: number,
+    toeIdx: number,
+  ) => {
+    const K = out[kneeIdx];
+    const A = out[ankIdx];
+    const He = out[heelIdx];
+    const To = out[toeIdx];
+    if (!K || !A || !He || !To) return;
+
+    const visFoot = Math.min(rawWorld[heelIdx]?.visibility ?? 0, rawWorld[toeIdx]?.visibility ?? 0);
+    const soleRaw = vecSub(To, He);
+    const soleLen = clamp(vecLen(soleRaw), 0.15, 0.27);
+    const soleHorizLen = Math.hypot(soleRaw.x, soleRaw.z);
+
+    // 1. Orientación horizontal del pie acotada al ángulo fisiológico de progresión podal (-20° int .. +36° ext)
+    const defaultToeOutRad = (side === 'R' ? -5 : 5) * deg2rad;
+    let targetYawFromFwd = defaultToeOutRad;
+    if (soleHorizLen > 0.03 && visFoot >= 0.42) {
+      const cFwd = (soleRaw.x * horizFwd.x + soleRaw.z * horizFwd.z) / soleHorizLen;
+      const cLeft = (soleRaw.x * horizLeft.x + soleRaw.z * horizLeft.z) / soleHorizLen;
+      const rawYawLeft = Math.atan2(cLeft, cFwd);
+      const minYawLeft = (side === 'R' ? -36 : -20) * deg2rad;
+      const maxYawLeft = (side === 'R' ? 20 : 36) * deg2rad;
+      const clampedYawLeft = clamp(rawYawLeft, minYawLeft, maxYawLeft);
+      const trustHoriz = clamp((visFoot - 0.40) / 0.30, 0.25, 1);
+      targetYawFromFwd = defaultToeOutRad * (1 - trustHoriz) + clampedYawLeft * trustHoriz;
+    }
+
+    const cosYaw = Math.cos(targetYawFromFwd);
+    const sinYaw = Math.sin(targetYawFromFwd);
+    const footHorizDir = vecNorm({
+      x: horizFwd.x * cosYaw + horizLeft.x * sinYaw,
+      y: 0,
+      z: horizFwd.z * cosYaw + horizLeft.z * sinYaw,
+    });
+
+    // 2. Ángulo de la suela respecto al piso: apoyado plano (~0°) en soporte y NUNCA mayor a 20°
+    const rawSolePitchDeg =
+      soleHorizLen > 0.025 ? (Math.atan2(soleRaw.y, soleHorizLen) * 180) / Math.PI : 0;
+    const ankLift = Math.max(0, A.y - lowAnkY);
+
+    let solePitchDeg = 0;
+    if (ankLift < 0.05) {
+      if (visFoot < 0.58) {
+        // Puntos naranjas / baja confianza estando en el piso: pie 100% apoyado horizontal (0°)
+        solePitchDeg = 0;
+      } else if (bothFeetPlanted) {
+        // Bipedestación / alcance / agachada simétrica: amortiguar ruido monocular manteniendo apoyo plano
+        solePitchDeg = clamp(rawSolePitchDeg * 0.22, -8, 5);
+      } else {
+        // Inicio/fin de apoyo durante caminata: permitir rodadura suave sin superar jamás 18°
+        solePitchDeg = clamp(rawSolePitchDeg * 0.65, -18, 12);
+      }
+    } else {
+      // Fase de balanceo / despegue al caminar: respetar gesto real acotado estrictamente < 20° respecto al piso
+      solePitchDeg = visFoot >= 0.45 ? clamp(rawSolePitchDeg, -19, 15) : clamp(rawSolePitchDeg * 0.4, -12, 8);
+    }
+
+    // 3. Límite anatómico tibiotarsiano edad laboral 20–59 años ((P50+P95)/2: dorsiflexión +31.5°, plantar -40.5°) + suela <= 20° al piso
+    const shankDown = vecNorm(vecSub(A, K));
+    const shinFwdPitchDeg =
+      (Math.atan2(
+        shankDown.x * footHorizDir.x + shankDown.z * footHorizDir.z,
+        Math.max(0.1, -shankDown.y),
+      ) *
+        180) /
+      Math.PI;
+    // solePitchDeg relativo a tobillo neutro = solePitchDeg + shinFwdPitchDeg (dorsiflexión +)
+    const minSoleByPlantar = NORMATIVE_JOINT_LIMITS.ankle.plantarflexionMinDeg - shinFwdPitchDeg;
+    const maxSoleByDorsi = NORMATIVE_JOINT_LIMITS.ankle.dorsiflexionMaxDeg - shinFwdPitchDeg;
+    solePitchDeg = clamp(clamp(solePitchDeg, minSoleByPlantar, maxSoleByDorsi), -19, 15);
+
+    const pitchRad = solePitchDeg * deg2rad;
+    const cosP = Math.cos(pitchRad);
+    const sinP = Math.sin(pitchRad);
+    const soleDir = vecNorm({
+      x: footHorizDir.x * cosP,
+      y: sinP,
+      z: footHorizDir.z * cosP,
+    });
+
+    // Posicionar talón y punta coherentemente respecto al tobillo conservando la dirección estabilizada de suela
+    const ankleHeightOverSole = 0.045;
+    const heelBackDist = soleLen * 0.28;
+    const newHeel: MocapVec3 = {
+      x: A.x - soleDir.x * heelBackDist,
+      y: A.y - ankleHeightOverSole - soleDir.y * heelBackDist,
+      z: A.z - soleDir.z * heelBackDist,
+      visibility: He.visibility,
+    };
+    const newToe: MocapVec3 = {
+      x: newHeel.x + soleDir.x * soleLen,
+      y: newHeel.y + soleDir.y * soleLen,
+      z: newHeel.z + soleDir.z * soleLen,
+      visibility: To.visibility,
+    };
+
+    out[heelIdx] = newHeel;
+    out[toeIdx] = newToe;
+  };
+
+  stabilizeFootAndAnkle('R', 26, 28, 30, 32);
+  stabilizeFootAndAnkle('L', 25, 27, 29, 31);
+
+  return out;
+}
+
 /**
  * Fusiona la dirección 2D exacta de los píxeles del vídeo (corregida por relación de aspecto)
- * con las longitudes óseas y profundidad 3D de `worldLandmarks`, para que la silueta proyectada
- * del Avatar 3D coincida visualmente 1:1 con los brazos, tronco y piernas del operario en vídeo.
+ * con las longitudes óseas constantes y profundidad 3D de `worldLandmarks`, para que la silueta
+ * proyectada del Avatar 3D coincida visualmente 1:1 con los brazos, tronco y piernas del operario.
  */
 function alignWorldChainToScreen2D(
   world3D: MocapVec3[],
   norm2D: MocapVec3[],
   videoAspect: number,
+  calibratedLimbs?: CalibratedLimbLengths,
 ): MocapVec3[] {
   const out = world3D.map((p) => ({ ...p }));
 
-  const alignSegment = (parentIdx: number, childIdx: number, blendWeight: number) => {
+  // 0. Alinear inclinación de Tronco (midHip -> midSh) y Cabeza con los píxeles reales 2D del vídeo
+  // conservando la envergadura inter-escapular 3D (giro axial / yaw) y longitud anatómica del torso.
+  const hipLOrig = world3D[23];
+  const hipROrig = world3D[24];
+  const shLOrig = world3D[11];
+  const shROrig = world3D[12];
+  if (hipLOrig && hipROrig && shLOrig && shROrig && norm2D[11] && norm2D[12] && norm2D[23] && norm2D[24]) {
+    const trunkVis = Math.min(
+      hipLOrig.visibility,
+      hipROrig.visibility,
+      shLOrig.visibility,
+      shROrig.visibility,
+    );
+    if (trunkVis >= 0.45) {
+      const midHipW = vecMid(hipLOrig, hipROrig);
+      const midShW = vecMid(shLOrig, shROrig);
+      const tDxW = midShW.x - midHipW.x;
+      const tDyW = midShW.y - midHipW.y;
+      const tDzW = midShW.z - midHipW.z;
+      const lenTrunk3D = Math.hypot(tDxW, tDyW, tDzW);
+
+      const midHipScrX = (norm2D[23].x + norm2D[24].x) * 0.5 * videoAspect;
+      const midHipScrY = (norm2D[23].y + norm2D[24].y) * 0.5;
+      const midShScrX = (norm2D[11].x + norm2D[12].x) * 0.5 * videoAspect;
+      const midShScrY = (norm2D[11].y + norm2D[12].y) * 0.5;
+      const dxTrunkScr = midShScrX - midHipScrX;
+      const dyTrunkScr = -(midShScrY - midHipScrY);
+      const lenTrunkScr = Math.hypot(dxTrunkScr, dyTrunkScr);
+
+      if (lenTrunk3D > 0.16 && lenTrunkScr > 0.03) {
+        const dampedTrunkDz = clamp(tDzW * 0.65, -lenTrunk3D * 0.68, lenTrunk3D * 0.68);
+        const targetTrunkXY = Math.sqrt(
+          Math.max(0.01, lenTrunk3D * lenTrunk3D - dampedTrunkDz * dampedTrunkDz),
+        );
+        const angTrunkW = Math.atan2(tDyW, tDxW);
+        const angTrunkScr = Math.atan2(dyTrunkScr, dxTrunkScr);
+        const wTrunk = 0.80 * clamp((trunkVis - 0.42) / 0.4, 0.35, 1);
+        const angAlignedTrunk = angTrunkW + shortestAngleDiffRad(angTrunkW, angTrunkScr) * wTrunk;
+
+        const newMidShX = midHipW.x + Math.cos(angAlignedTrunk) * targetTrunkXY;
+        const newMidShY = midHipW.y + Math.sin(angAlignedTrunk) * targetTrunkXY;
+        const newMidShZ = midHipW.z + dampedTrunkDz;
+
+        const shiftX = newMidShX - midShW.x;
+        const shiftY = newMidShY - midShW.y;
+        const shiftZ = newMidShZ - midShW.z;
+
+        for (const upperIdx of [0, 7, 8, 11, 12]) {
+          if (out[upperIdx]) {
+            out[upperIdx] = {
+              x: out[upperIdx].x + shiftX,
+              y: out[upperIdx].y + shiftY,
+              z: out[upperIdx].z + shiftZ,
+              visibility: out[upperIdx].visibility,
+            };
+          }
+        }
+      }
+    }
+  }
+
+  const alignSegment = (
+    parentIdx: number,
+    childIdx: number,
+    blendWeight: number,
+    fixedBoneLen?: number,
+  ) => {
     const pW = out[parentIdx];
     const cW = world3D[childIdx];
     const pOrigW = world3D[parentIdx];
@@ -328,36 +1196,40 @@ function alignWorldChainToScreen2D(
     const cN = norm2D[childIdx];
     if (!pW || !cW || !pOrigW || !pN || !cN) return;
 
+    const dxW = cW.x - pOrigW.x;
+    const dyW = cW.y - pOrigW.y;
+    const dzW = cW.z - pOrigW.z;
+    const rawLen3D = Math.hypot(dxW, dyW, dzW);
+    const len3D = fixedBoneLen ?? rawLen3D;
+
     const minVis = Math.min(pW.visibility, cW.visibility);
-    if (minVis < 0.48) {
-      // Con baja visibilidad conservar el desplazamiento relativo 3D puro desde el padre actualizado
+    if (minVis < 0.46) {
+      const scaleRel = rawLen3D > 0.03 && fixedBoneLen ? fixedBoneLen / rawLen3D : 1;
       out[childIdx] = {
-        x: pW.x + (cW.x - pOrigW.x),
-        y: pW.y + (cW.y - pOrigW.y),
-        z: pW.z + (cW.z - pOrigW.z),
+        x: pW.x + dxW * scaleRel,
+        y: pW.y + dyW * scaleRel,
+        z: pW.z + dzW * scaleRel,
         visibility: cW.visibility,
       };
       return;
     }
 
-    const dxW = cW.x - pOrigW.x;
-    const dyW = cW.y - pOrigW.y;
-    const dzW = cW.z - pOrigW.z;
     const lenXY = Math.hypot(dxW, dyW);
-
     const dxScreen = (cN.x - pN.x) * videoAspect;
     const dyScreen = -(cN.y - pN.y);
     const lenScreen = Math.hypot(dxScreen, dyScreen);
 
-    if (lenXY > 0.035 && lenScreen > 0.015) {
-      const angW = Math.atan2(dyW, dxW);
+    if (len3D > 0.035 && lenScreen > 0.014) {
+      const dampedDz = clamp(dzW * 0.70, -len3D * 0.76, len3D * 0.76);
+      const targetLenXY = Math.sqrt(Math.max(0.0004, len3D * len3D - dampedDz * dampedDz));
       const angScreen = Math.atan2(dyScreen, dxScreen);
-      const effWeight = blendWeight * clamp((minVis - 0.45) / 0.4, 0.25, 1);
+      const angW = lenXY > 0.02 ? Math.atan2(dyW, dxW) : angScreen;
+      const effWeight = blendWeight * clamp((minVis - 0.42) / 0.4, 0.3, 1);
       const angAligned = angW + shortestAngleDiffRad(angW, angScreen) * effWeight;
       out[childIdx] = {
-        x: pW.x + Math.cos(angAligned) * lenXY,
-        y: pW.y + Math.sin(angAligned) * lenXY,
-        z: pW.z + dzW,
+        x: pW.x + Math.cos(angAligned) * targetLenXY,
+        y: pW.y + Math.sin(angAligned) * targetLenXY,
+        z: pW.z + dampedDz,
         visibility: cW.visibility,
       };
     } else {
@@ -370,24 +1242,26 @@ function alignWorldChainToScreen2D(
     }
   };
 
-  // Alinear cadenas cinemáticas desde hombros y caderas hacia extremos distales
-  alignSegment(12, 14, 0.72); // Hombro Der -> Codo Der
-  alignSegment(14, 16, 0.76); // Codo Der -> Muñeca Der
-  alignSegment(16, 20, 0.65); // Muñeca Der -> Índice Der
-  alignSegment(16, 18, 0.65); // Muñeca Der -> Meñique Der
+  // Alinear cadenas cinemáticas desde hombros y caderas hacia extremos distales con longitud ósea constante
+  alignSegment(12, 14, 0.84, calibratedLimbs?.upperArm); // Hombro Der -> Codo Der
+  alignSegment(14, 16, 0.86, calibratedLimbs?.foreArm); // Codo Der -> Muñeca Der
+  alignSegment(16, 20, 0.68); // Muñeca Der -> Índice Der
+  alignSegment(16, 18, 0.68); // Muñeca Der -> Meñique Der
 
-  alignSegment(11, 13, 0.72); // Hombro Izq -> Codo Izq
-  alignSegment(13, 15, 0.76); // Codo Izq -> Muñeca Izq
-  alignSegment(15, 19, 0.65); // Muñeca Izq -> Índice Izq
-  alignSegment(15, 17, 0.65); // Muñeca Izq -> Meñique Izq
+  alignSegment(11, 13, 0.84, calibratedLimbs?.upperArm); // Hombro Izq -> Codo Izq
+  alignSegment(13, 15, 0.86, calibratedLimbs?.foreArm); // Codo Izq -> Muñeca Izq
+  alignSegment(15, 19, 0.68); // Muñeca Izq -> Índice Izq
+  alignSegment(15, 17, 0.68); // Muñeca Izq -> Meñique Izq
 
-  alignSegment(24, 26, 0.68); // Cadera Der -> Rodilla Der
-  alignSegment(26, 28, 0.72); // Rodilla Der -> Tobillo Der
-  alignSegment(28, 32, 0.60); // Tobillo Der -> Punta Pie Der
+  alignSegment(24, 26, 0.82, calibratedLimbs?.thigh); // Cadera Der -> Rodilla Der
+  alignSegment(26, 28, 0.84, calibratedLimbs?.shank); // Rodilla Der -> Tobillo Der
+  alignSegment(28, 30, 0.55); // Tobillo Der -> Talón Der
+  alignSegment(28, 32, 0.65); // Tobillo Der -> Punta Pie Der
 
-  alignSegment(23, 25, 0.68); // Cadera Izq -> Rodilla Izq
-  alignSegment(25, 27, 0.72); // Rodilla Izq -> Tobillo Izq
-  alignSegment(27, 31, 0.60); // Tobillo Izq -> Punta Pie Izq
+  alignSegment(23, 25, 0.82, calibratedLimbs?.thigh); // Cadera Izq -> Rodilla Izq
+  alignSegment(25, 27, 0.84, calibratedLimbs?.shank); // Rodilla Izq -> Tobillo Izq
+  alignSegment(27, 29, 0.55); // Tobillo Izq -> Talón Izq
+  alignSegment(27, 31, 0.65); // Tobillo Izq -> Punta Pie Izq
 
   return out;
 }
@@ -444,7 +1318,13 @@ export function computeErgonomicPoseFromWorld3D(
   const rootYawDeg = round1((Math.atan2(pelvisFwdHoriz.x, pelvisFwdHoriz.z) * 180) / Math.PI);
 
   const neckUp = vecNorm(vecSub(midEar, midSh));
-  const neckFlexionDeg = clamp(round1(angleDeg(neckUp, trunkUp) - 6), -35, 45);
+  const neckTiltMag = angleDeg(neckUp, trunkUp);
+  const neckFwdSign = vecDot(neckUp, subjectFwd) >= vecDot(trunkUp, subjectFwd) - 0.04 ? 1 : -1;
+  const neckFlexionDeg = clamp(
+    round1(neckFwdSign * Math.max(0, neckTiltMag - 6)),
+    NORMATIVE_JOINT_LIMITS.cervicalAndShoulder.neckExtensionMinDeg,
+    NORMATIVE_JOINT_LIMITS.cervicalAndShoulder.neckFlexionMaxDeg,
+  );
 
   const trunkDown = { x: -trunkUp.x, y: -trunkUp.y, z: -trunkUp.z };
   const humR = vecSub(elbR, shR);
@@ -480,18 +1360,74 @@ export function computeErgonomicPoseFromWorld3D(
     135,
   );
 
-  const elbowRFlexionDeg = clamp(round1(angleDeg(humR, foreR)), 0, 160);
-  const elbowLFlexionDeg = clamp(round1(angleDeg(humL, foreL)), 0, 160);
+  // Límites normativos edad laboral 20–59 años ((P50+P95)/2): CODO_EXT = 171.5° (8.5° flex), CODO_FLE = 30.5° (149.5° flex)
+  const elbowRFlexionDeg = clamp(
+    round1(angleDeg(humR, foreR)),
+    NORMATIVE_JOINT_LIMITS.elbow.flexionMinDeg,
+    NORMATIVE_JOINT_LIMITS.elbow.flexionMaxDeg,
+  );
+  const elbowLFlexionDeg = clamp(
+    round1(angleDeg(humL, foreL)),
+    NORMATIVE_JOINT_LIMITS.elbow.flexionMinDeg,
+    NORMATIVE_JOINT_LIMITS.elbow.flexionMaxDeg,
+  );
+
+  // Muñeca real 3D con signo palmar (+) / dorsal (-), acotada a [-62.0°, +74.0°] (242°..106° Kinovea)
+  const computeSignedWristFlex = (
+    side: 'R' | 'L',
+    foreVec: MocapVec3,
+    wrPt: MocapVec3,
+    pinkyPt: MocapVec3 | undefined,
+    indexPt: MocapVec3 | undefined,
+  ): number => {
+    if (!pinkyPt || !indexPt || Math.min(wrPt.visibility, pinkyPt.visibility, indexPt.visibility) < 0.34) {
+      return 0;
+    }
+    const fDir = vecNorm(foreVec);
+    const pVec = vecSub(pinkyPt, wrPt);
+    const iVec = vecSub(indexPt, wrPt);
+    const handMid = vecMid(pinkyPt, indexPt);
+    const hDir = vecNorm(vecSub(handMid, wrPt));
+    const magDeg = angleDeg(fDir, hDir);
+    if (magDeg < 1.5) return 0;
+    const rawPalmNormal = side === 'R' ? vecCross(iVec, pVec) : vecCross(pVec, iVec);
+    const nLen = vecLen(rawPalmNormal);
+    const sign = nLen > 1e-4 ? (vecDot(hDir, vecScale(rawPalmNormal, 1 / nLen)) >= 0 ? 1 : -1) : 1;
+    return clamp(
+      round1(sign * magDeg),
+      NORMATIVE_JOINT_LIMITS.wrist.dorsalExtensionMinDeg,
+      NORMATIVE_JOINT_LIMITS.wrist.palmarFlexionMaxDeg,
+    );
+  };
+
+  const wristRFlexionDeg = computeSignedWristFlex('R', foreR, wrR, world3D[18], world3D[20]);
+  const wristLFlexionDeg = computeSignedWristFlex('L', foreL, wrL, world3D[17], world3D[19]);
 
   const thighR = vecSub(kneeR, hipR);
   const shankR = vecSub(ankR, kneeR);
   const thighL = vecSub(kneeL, hipL);
   const shankL = vecSub(ankL, kneeL);
 
-  const kneeRFlexionDeg = clamp(round1(angleDeg(thighR, shankR)), 0, 155);
-  const kneeLFlexionDeg = clamp(round1(angleDeg(thighL, shankL)), 0, 155);
-  const hipRFlexionDeg = clamp(round1(angleDeg(thighR, downY)), -25, 130);
-  const hipLFlexionDeg = clamp(round1(angleDeg(thighL, downY)), -25, 130);
+  const kneeRFlexionDeg = clamp(
+    round1(angleDeg(thighR, shankR)),
+    NORMATIVE_JOINT_LIMITS.knee.flexionMinDeg,
+    NORMATIVE_JOINT_LIMITS.knee.flexionMaxDeg,
+  );
+  const kneeLFlexionDeg = clamp(
+    round1(angleDeg(thighL, shankL)),
+    NORMATIVE_JOINT_LIMITS.knee.flexionMinDeg,
+    NORMATIVE_JOINT_LIMITS.knee.flexionMaxDeg,
+  );
+  const hipRFlexionDeg = clamp(
+    round1(angleDeg(thighR, downY)),
+    NORMATIVE_JOINT_LIMITS.hip.extensionMaxDeg,
+    NORMATIVE_JOINT_LIMITS.hip.flexionMaxDeg,
+  );
+  const hipLFlexionDeg = clamp(
+    round1(angleDeg(thighL, downY)),
+    NORMATIVE_JOINT_LIMITS.hip.extensionMaxDeg,
+    NORMATIVE_JOINT_LIMITS.hip.flexionMaxDeg,
+  );
 
   const stanceMode: NonNullable<PosturePose3D['stanceMode']> =
     Math.max(kneeRFlexionDeg, kneeLFlexionDeg) >= 72
@@ -500,28 +1436,40 @@ export function computeErgonomicPoseFromWorld3D(
         ? 'one_leg'
         : 'standing';
 
-  return makeNeutralPose({
-    trunkFlexionDeg,
-    trunkLateralDeg,
-    trunkTwistDeg,
-    neckFlexionDeg,
-    shoulderRFlexionDeg,
-    shoulderRAbductionDeg,
-    shoulderLFlexionDeg,
-    shoulderLAbductionDeg,
-    elbowRFlexionDeg,
-    elbowLFlexionDeg,
-    hipRFlexionDeg,
-    kneeRFlexionDeg,
-    ankleRDorsiflexionDeg: clamp(round1(kneeRFlexionDeg - hipRFlexionDeg), -24, 34),
-    hipLFlexionDeg,
-    kneeLFlexionDeg,
-    ankleLDorsiflexionDeg: clamp(round1(kneeLFlexionDeg - hipLFlexionDeg), -24, 34),
-    rootYawDeg,
-    rootOffsetX: round1(rootTranslation.x * 100) / 100,
-    rootOffsetZ: round1(rootTranslation.z * 100) / 100,
-    stanceMode,
-  });
+  return clampPoseToNormativeWorkAgeLimits(
+    makeNeutralPose({
+      trunkFlexionDeg,
+      trunkLateralDeg,
+      trunkTwistDeg,
+      neckFlexionDeg,
+      shoulderRFlexionDeg,
+      shoulderRAbductionDeg,
+      shoulderLFlexionDeg,
+      shoulderLAbductionDeg,
+      elbowRFlexionDeg,
+      elbowLFlexionDeg,
+      wristRFlexionDeg,
+      wristLFlexionDeg,
+      hipRFlexionDeg,
+      kneeRFlexionDeg,
+      ankleRDorsiflexionDeg: clamp(
+        round1(kneeRFlexionDeg - hipRFlexionDeg),
+        NORMATIVE_JOINT_LIMITS.ankle.plantarflexionMinDeg,
+        NORMATIVE_JOINT_LIMITS.ankle.dorsiflexionMaxDeg,
+      ),
+      hipLFlexionDeg,
+      kneeLFlexionDeg,
+      ankleLDorsiflexionDeg: clamp(
+        round1(kneeLFlexionDeg - hipLFlexionDeg),
+        NORMATIVE_JOINT_LIMITS.ankle.plantarflexionMinDeg,
+        NORMATIVE_JOINT_LIMITS.ankle.dorsiflexionMaxDeg,
+      ),
+      rootYawDeg,
+      rootOffsetX: round1(rootTranslation.x * 100) / 100,
+      rootOffsetZ: round1(rootTranslation.z * 100) / 100,
+      stanceMode,
+    }),
+  );
 }
 
 /**
@@ -842,10 +1790,10 @@ export async function extractTrueMocapTimeline(
     onProgress?: (pct: number, phaseText?: string) => void;
   },
 ): Promise<MocapTimelineResult | null> {
-  const loaded = await initHeavyPoseMoCap();
-  if (!loaded) return null;
+  let activeLoaded = await initHeavyPoseMoCap();
+  if (!activeLoaded) return null;
 
-  const { landmarker, tier } = loaded;
+  let { landmarker, tier } = activeLoaded;
   const duration =
     Number.isFinite(videoElement.duration) && videoElement.duration > 0.15
       ? videoElement.duration
@@ -854,16 +1802,30 @@ export async function extractTrueMocapTimeline(
   const vh = videoElement.videoHeight || 720;
   const videoAspect = vw / Math.max(1, vh);
 
+  // Lienzo 2D RGBA intermedio: normaliza rotación MP4/MOV de móviles y evita fallos de texturas de vídeo GPU en Windows
+  const maxDetectDim = 960;
+  const detectScale = Math.min(1, maxDetectDim / Math.max(vw, vh, 1));
+  const frameCanvas = document.createElement('canvas');
+  frameCanvas.width = Math.max(64, Math.round(vw * detectScale));
+  frameCanvas.height = Math.max(64, Math.round(vh * detectScale));
+  const frameCtx = frameCanvas.getContext('2d', { willReadFrequently: false });
+
   const requestedFps = clamp(options?.targetFps ?? 24, 12, 30);
   // Hasta 480 fotogramas (~20 s a 24 fps); para vídeos más largos ajusta el paso suavemente
   const totalSamples = Math.max(16, Math.min(480, Math.ceil(duration * requestedFps)));
   const effectiveFps = totalSamples / Math.max(0.2, duration);
+  const stepMs = Math.max(20, Math.round(1000 / effectiveFps));
 
   const rawTimes: number[] = [];
   const rawWorld3D: MocapVec3[][] = [];
   const rawNorm2D: MocapVec3[][] = [];
 
-  let monotonicMs = Math.round(performance.now()) + 100;
+  // Salto >= 5000 ms respecto al último vídeo procesado: garantiza monotonía estricta y reinicia el ROI interno de MediaPipe
+  lastGlobalMocapTimestampMs = Math.max(
+    lastGlobalMocapTimestampMs + 5000,
+    Math.round(performance.now()) + 150,
+  );
+  let didAttemptRecovery = false;
 
   for (let i = 0; i < totalSamples; i++) {
     const tSec =
@@ -871,10 +1833,39 @@ export async function extractTrueMocapTimeline(
         ? 0
         : (i / (totalSamples - 1)) * Math.max(0.05, duration - 0.03);
     await seekVideoExact(videoElement, tSec);
-    monotonicMs += Math.max(16, Math.round(1000 / effectiveFps));
+    lastGlobalMocapTimestampMs += stepMs;
+
+    let detectInput: HTMLCanvasElement | HTMLVideoElement = videoElement;
+    if (frameCtx && videoElement.videoWidth > 0 && videoElement.videoHeight > 0) {
+      try {
+        frameCtx.drawImage(videoElement, 0, 0, frameCanvas.width, frameCanvas.height);
+        detectInput = frameCanvas;
+      } catch {
+        detectInput = videoElement;
+      }
+    }
+
+    const runSingleFrameDetect = () => landmarker.detectForVideo(detectInput, lastGlobalMocapTimestampMs);
 
     try {
-      const res = landmarker.detectForVideo(videoElement, monotonicMs);
+      let res = runSingleFrameDetect();
+      // Si en los primeros fotogramas no detecta nada tras cambiar de vídeo, reiniciar instancia una vez
+      if (
+        !didAttemptRecovery &&
+        i === 3 &&
+        rawWorld3D.length === 0 &&
+        (!res.worldLandmarks || res.worldLandmarks.length === 0)
+      ) {
+        didAttemptRecovery = true;
+        const recovered = await resetHeavyPoseMoCap(false);
+        if (recovered) {
+          landmarker = recovered.landmarker;
+          tier = recovered.tier;
+          lastGlobalMocapTimestampMs += stepMs;
+          res = runSingleFrameDetect();
+        }
+      }
+
       if (
         res.worldLandmarks &&
         res.worldLandmarks.length > 0 &&
@@ -906,7 +1897,47 @@ export async function extractTrueMocapTimeline(
         rawWorld3D.push(rawWorld3D[rawWorld3D.length - 1].map((p) => ({ ...p, visibility: p.visibility * 0.7 })));
         rawNorm2D.push(rawNorm2D[rawNorm2D.length - 1].map((p) => ({ ...p })));
       }
-    } catch {
+    } catch (frameErr) {
+      if (!didAttemptRecovery) {
+        didAttemptRecovery = true;
+        console.warn('[mocapRetargeter] Re-inicializando PoseLandmarker tras excepción:', frameErr);
+        const recovered = await resetHeavyPoseMoCap(true);
+        if (recovered) {
+          landmarker = recovered.landmarker;
+          tier = recovered.tier;
+          lastGlobalMocapTimestampMs += stepMs;
+          try {
+            const retryRes = runSingleFrameDetect();
+            if (
+              retryRes.worldLandmarks &&
+              retryRes.worldLandmarks.length > 0 &&
+              retryRes.landmarks &&
+              retryRes.landmarks.length > 0
+            ) {
+              rawTimes.push(tSec);
+              rawWorld3D.push(
+                retryRes.worldLandmarks[0].map((p) => ({
+                  x: p.x,
+                  y: -p.y,
+                  z: -p.z,
+                  visibility: clamp(p.visibility ?? 0.85, 0, 1),
+                })),
+              );
+              rawNorm2D.push(
+                retryRes.landmarks[0].map((p) => ({
+                  x: p.x,
+                  y: p.y,
+                  z: p.z,
+                  visibility: clamp(p.visibility ?? 0.85, 0, 1),
+                })),
+              );
+              continue;
+            }
+          } catch {
+            // Continuar
+          }
+        }
+      }
       if (rawWorld3D.length > 0) {
         rawTimes.push(tSec);
         rawWorld3D.push(rawWorld3D[rawWorld3D.length - 1].map((p) => ({ ...p, visibility: p.visibility * 0.7 })));
@@ -925,13 +1956,14 @@ export async function extractTrueMocapTimeline(
   options?.onProgress?.(96, 'Aplicando reparación de oclusiones y filtro cinemático 1€...');
 
   // 1. Reparar huecos severos de oclusión temporal antes del filtrado
-  const repairedWorldSeq = repairSevereOcclusionsTemporal(rawWorld3D, 0.28);
+  const repairedWorldSeq = repairSevereOcclusionsTemporal(rawWorld3D, 0.36);
+  const calibratedLimbs = calibrateSubjectLimbLengths(rawWorld3D);
 
   // 2. Filtrar con banco One-Euro (1€) + estimar Root Motion métrico (caminata X/Z)
-  const worldBank = new Landmark33OneEuroBank(1.45, 0.42, 0.95, 0.25);
-  const normBank = new Landmark33OneEuroBank(1.8, 0.45, 1.2, 0.3);
-  const rootXFilter = new OneEuroScalarFilter(1.1, 0.3, 1.0);
-  const rootZFilter = new OneEuroScalarFilter(0.75, 0.18, 1.0);
+  const worldBank = new Landmark33OneEuroBank(1.08, 0.52, 0.68, 0.22);
+  const normBank = new Landmark33OneEuroBank(1.35, 0.55, 0.90, 0.25);
+  const rootXFilter = new OneEuroScalarFilter(0.95, 0.28, 1.0);
+  const rootZFilter = new OneEuroScalarFilter(0.65, 0.16, 1.0);
 
   // Calibrar escala píxel/metro invariante a flexión/cuclillas en los primeros fotogramas nítidos
   const measureScaleRatio = (wPts: MocapVec3[], nPts: MocapVec3[]): number => {
@@ -967,8 +1999,21 @@ export async function extractTrueMocapTimeline(
   for (let i = 0; i < repairedWorldSeq.length; i++) {
     const tSec = rawTimes[i];
     const filtNorm = normBank.filterLandmarks(rawNorm2D[i], tSec);
-    const alignedWorld = alignWorldChainToScreen2D(repairedWorldSeq[i], filtNorm, videoAspect);
-    const filtWorld = worldBank.filterLandmarks(alignedWorld, tSec);
+    const alignedWorld = alignWorldChainToScreen2D(
+      repairedWorldSeq[i],
+      filtNorm,
+      videoAspect,
+      calibratedLimbs,
+    );
+    const stabilizedWorld = enforceAnatomicalLimitsAndLegCoherence(
+      alignedWorld,
+      rawWorld3D[i],
+      filtNorm,
+      videoAspect,
+      calibratedLimbs,
+      refScale,
+    );
+    const filtWorld = worldBank.filterLandmarks(stabilizedWorld, tSec);
 
     const curHip2DX = (filtNorm[23].x + filtNorm[24].x) * 0.5 * videoAspect;
     const rawRootX = clamp((curHip2DX - refHip2DX) / Math.max(0.18, refScale), -1.8, 1.8);

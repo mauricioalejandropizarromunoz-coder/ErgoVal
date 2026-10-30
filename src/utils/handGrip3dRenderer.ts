@@ -5,6 +5,7 @@ import {
   drawEllipticalStudioShadow,
   setupMedicalStudioLighting,
 } from './realisticHumanRig';
+import { NORMATIVE_JOINT_LIMITS } from './normativeJointLimits';
 
 export type HandGripPresetId =
   | 'niosh_good_handle'
@@ -283,10 +284,12 @@ function addCrispPropEdges(mesh: THREE.Mesh, edgeHex = 0x334155, opacity = 0.55)
 }
 
 function getPresetPoseConfig(preset: HandGripPresetId): HandPoseConfig {
+  const FL = NORMATIVE_JOINT_LIMITS.fingers;
+  const clampDeg = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
   const makeFinger = (mcp: number, pip: number, dip: number, splay = 0): FingerJointAngles => ({
-    mcpFlexDeg: mcp,
-    pipFlexDeg: pip,
-    dipFlexDeg: dip,
+    mcpFlexDeg: clampDeg(mcp, FL.mcpExtensionMinDeg, FL.mcpFlexionMaxDeg),
+    pipFlexDeg: clampDeg(pip, FL.pipExtensionMinDeg, FL.pipFlexionMaxDeg),
+    dipFlexDeg: clampDeg(dip, FL.dipExtensionMinDeg, FL.dipFlexionMaxDeg),
     splayDeg: splay,
   });
 
@@ -298,17 +301,17 @@ function getPresetPoseConfig(preset: HandGripPresetId): HandPoseConfig {
         wristFlexDeg: -6,
         wristDevDeg: 0,
         fingers: [
-          makeFinger(70, 84, 58, -3),
-          makeFinger(74, 86, 60, 0),
-          makeFinger(76, 86, 60, 2),
-          makeFinger(78, 84, 58, 5),
+          makeFinger(68, 83, 56, -3),
+          makeFinger(71, 86, 60, 0),
+          makeFinger(73, 86, 61, 2),
+          makeFinger(75, 85, 62, 5),
         ],
         thumb: {
           cmcRadialDeg: 22,
-          cmcPalmarDeg: 38,
+          cmcPalmarDeg: 40,
           opposeRollDeg: 58,
-          mcpFlexDeg: 40,
-          ipFlexDeg: 44,
+          mcpFlexDeg: 42,
+          ipFlexDeg: 48,
         },
         cameraAzimuthDeg: 36,
         cameraElevationDeg: 22,
@@ -317,16 +320,16 @@ function getPresetPoseConfig(preset: HandGripPresetId): HandPoseConfig {
 
     case 'niosh_fair_hook90':
       return {
-        // Forearm enters from left; supinated palm cradles box underside while 4 fingers flex 90° up box wall!
+        // Forearm enters from left; supinated palm cradles box underside while 4 fingers flex ~90° (MCF 90.5° máx) up box wall!
         rootEulerDeg: [0, 0, -10],
         pronationDeg: -162,
         wristFlexDeg: 8,
         wristDevDeg: 0,
         fingers: [
-          makeFinger(88, 10, 6, -2),
-          makeFinger(90, 10, 6, 0),
-          makeFinger(90, 10, 6, 2),
-          makeFinger(88, 12, 8, 4),
+          makeFinger(88, 12, 8, -2),
+          makeFinger(90.5, 12, 8, 0),
+          makeFinger(90.5, 12, 8, 2),
+          makeFinger(89, 14, 10, 4),
         ],
         thumb: {
           cmcRadialDeg: 28,
@@ -767,19 +770,23 @@ function buildHandAndPropScene(
   // =========================================================================
   const cmcPos = palmLocalToHand(0.018, -0.008, 0.025);
   const th = cfg.thumb;
+  const TL = NORMATIVE_JOINT_LIMITS.thumb;
+  const clampedCmcPalmarDeg = Math.max(-20, Math.min(TL.cmcPalmarAbductionMaxDeg, th.cmcPalmarDeg));
+  const clampedThumbMcpDeg = Math.max(-15, Math.min(TL.mcpFlexionMaxDeg, th.mcpFlexDeg));
+  const clampedThumbIpDeg = Math.max(-10, Math.min(TL.ipFlexionMaxDeg, th.ipFlexDeg));
 
   const qThumbCmc = qWrist
     .clone()
     .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -th.cmcRadialDeg * DEG2RAD))
-    .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -th.cmcPalmarDeg * DEG2RAD))
+    .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -clampedCmcPalmarDeg * DEG2RAD))
     .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), th.opposeRollDeg * DEG2RAD));
 
   const qThumbMcp = qThumbCmc
     .clone()
-    .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -th.mcpFlexDeg * DEG2RAD));
+    .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -clampedThumbMcpDeg * DEG2RAD));
   const qThumbIp = qThumbMcp
     .clone()
-    .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -th.ipFlexDeg * DEG2RAD));
+    .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -clampedThumbIpDeg * DEG2RAD));
 
   const mc1Len = 0.043;
   const thProxLen = 0.032;
