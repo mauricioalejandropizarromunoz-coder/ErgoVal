@@ -6,7 +6,7 @@ import {
   InvisibleErgonizaParameters,
 } from './ergonizaBiomechEngine';
 import { makeNeutralPose } from './figurePlanCatalog';
-import { initHeavyPoseMoCap } from './mocapRetargeter';
+import { initHeavyPoseMoCap, nextMonotonicMocapTimestampMs } from './mocapRetargeter';
 import {
   clampPoseToNormativeWorkAgeLimits,
   NORMATIVE_JOINT_LIMITS,
@@ -159,14 +159,14 @@ function analyzeWorldLandmarksFrame(
   const trunkUpVec = sub3(midShoulder, midHip);
   const subjectForward = normalize3(cross3(lateralAxis, upGravity));
 
+  const minHipVis = Math.min(hipL?.visibility ?? 0.8, hipR?.visibility ?? 0.8);
   const trunkTiltTotalDeg = angleBetweenDeg(trunkUpVec, upGravity);
   const forwardProj = dot3(normalize3(trunkUpVec), subjectForward);
   const signFlex = forwardProj >= -0.08 ? 1 : -1;
-  const trunkFlexDeg = clamp(
-    round1(signFlex * trunkTiltTotalDeg + verticalCalibrationDeg),
-    -30,
-    130,
-  );
+  // Si las caderas están ocultas en sombra bajo mesa (< 0.40), acotar la flexión de tronco para evitar lecturas horizontales falsas
+  const rawTrunkFlex = round1(signFlex * trunkTiltTotalDeg + verticalCalibrationDeg);
+  const trunkFlexDeg =
+    minHipVis < 0.40 ? clamp(rawTrunkFlex * 0.45, -15, 42) : clamp(rawTrunkFlex, -30, 95);
 
   const latProj = dot3(normalize3(trunkUpVec), hipLateralAxis);
   const trunkLatDeg = clamp(round1(-(Math.asin(clamp(latProj, -1, 1)) * 180) / Math.PI), -35, 35);
@@ -262,41 +262,53 @@ function analyzeWorldLandmarksFrame(
   const thighL = sub3(kneeL, hipL);
   const shankL = sub3(ankL, kneeL);
 
-  const kneeRFlexDeg = clamp(
-    round1(angleBetweenDeg(thighR, shankR)),
-    NORMATIVE_JOINT_LIMITS.knee.flexionMinDeg,
-    NORMATIVE_JOINT_LIMITS.knee.flexionMaxDeg,
-  );
-  const kneeLFlexDeg = clamp(
-    round1(angleBetweenDeg(thighL, shankL)),
-    NORMATIVE_JOINT_LIMITS.knee.flexionMinDeg,
-    NORMATIVE_JOINT_LIMITS.knee.flexionMaxDeg,
-  );
-  const hipRFlexDeg = clamp(
-    round1(angleBetweenDeg(thighR, downGravity)),
-    NORMATIVE_JOINT_LIMITS.hip.extensionMaxDeg,
-    NORMATIVE_JOINT_LIMITS.hip.flexionMaxDeg,
-  );
-  const hipLFlexDeg = clamp(
-    round1(angleBetweenDeg(thighL, downGravity)),
-    NORMATIVE_JOINT_LIMITS.hip.extensionMaxDeg,
-    NORMATIVE_JOINT_LIMITS.hip.flexionMaxDeg,
-  );
+  const minLegVisR = Math.min(hipR?.visibility ?? 0.8, kneeR?.visibility ?? 0.8, ankR?.visibility ?? 0.8);
+  const minLegVisL = Math.min(hipL?.visibility ?? 0.8, kneeL?.visibility ?? 0.8, ankL?.visibility ?? 0.8);
+  const legsVisible = Math.max(minLegVisR, minLegVisL) >= 0.42;
 
-  const ankDiffY = Math.abs((ankR.y ?? 0) - (ankL.y ?? 0));
+  const kneeRFlexDeg = legsVisible
+    ? clamp(
+        round1(angleBetweenDeg(thighR, shankR)),
+        NORMATIVE_JOINT_LIMITS.knee.flexionMinDeg,
+        NORMATIVE_JOINT_LIMITS.knee.flexionMaxDeg,
+      )
+    : 6;
+  const kneeLFlexDeg = legsVisible
+    ? clamp(
+        round1(angleBetweenDeg(thighL, shankL)),
+        NORMATIVE_JOINT_LIMITS.knee.flexionMinDeg,
+        NORMATIVE_JOINT_LIMITS.knee.flexionMaxDeg,
+      )
+    : 6;
+  const hipRFlexDeg = legsVisible
+    ? clamp(
+        round1(angleBetweenDeg(thighR, downGravity)),
+        NORMATIVE_JOINT_LIMITS.hip.extensionMaxDeg,
+        NORMATIVE_JOINT_LIMITS.hip.flexionMaxDeg,
+      )
+    : Math.max(2, round1(trunkFlexDeg * 0.25));
+  const hipLFlexDeg = legsVisible
+    ? clamp(
+        round1(angleBetweenDeg(thighL, downGravity)),
+        NORMATIVE_JOINT_LIMITS.hip.extensionMaxDeg,
+        NORMATIVE_JOINT_LIMITS.hip.flexionMaxDeg,
+      )
+    : Math.max(2, round1(trunkFlexDeg * 0.25));
+
+  const ankDiffY = legsVisible ? Math.abs((ankR.y ?? 0) - (ankL.y ?? 0)) : 0;
   let supportCondition = 'Bipedestación bilateral';
   let stanceMode: NonNullable<PosturePose3D['stanceMode']> = 'standing';
 
-  if (hipRFlexDeg >= 68 && kneeRFlexDeg >= 68 && Math.abs(thighR.y) < 0.18 && trunkFlexDeg <= 28) {
+  if (legsVisible && hipRFlexDeg >= 68 && kneeRFlexDeg >= 68 && Math.abs(thighR.y) < 0.18 && trunkFlexDeg <= 28) {
     supportCondition = 'Sedestación (apoyo isquiático y podal)';
     stanceMode = 'seated';
-  } else if (ankDiffY > 0.14) {
+  } else if (legsVisible && ankDiffY > 0.14) {
     supportCondition = 'Monopedestación / Apoyo podal asimétrico';
     stanceMode = 'one_leg';
-  } else if (Math.max(kneeRFlexDeg, kneeLFlexDeg) >= 70) {
+  } else if (legsVisible && Math.max(kneeRFlexDeg, kneeLFlexDeg) >= 70) {
     supportCondition = 'Bipedestación bilateral con flexión profunda de rodillas (cuclillas)';
     stanceMode = 'squatting';
-  } else if (Math.abs(ankR.z - ankL.z) > 0.22) {
+  } else if (legsVisible && Math.abs(ankR.z - ankL.z) > 0.22) {
     supportCondition = 'Bipedestación asimétrica (paso adelantado)';
     stanceMode = 'standing';
   }
@@ -549,7 +561,16 @@ export async function trackVideoFrames(
       : 4;
   const sampleCount = Math.max(10, Math.min(options?.maxSamples ?? 22, Math.ceil(duration * 5)));
   const keyframes: SampledPoseKeyframe[] = [];
-  let monotonicTsMs = Math.round(performance.now());
+
+  const vw = videoElement.videoWidth || 1280;
+  const vh = videoElement.videoHeight || 720;
+  const scale = Math.min(1, 640 / Math.max(vw, vh, 1));
+  const frameCanvas = document.createElement('canvas');
+  frameCanvas.width = Math.max(64, Math.round(vw * scale));
+  frameCanvas.height = Math.max(64, Math.round(vh * scale));
+  const frameCtx = frameCanvas.getContext('2d', { willReadFrequently: false });
+
+  nextMonotonicMocapTimestampMs(42, true);
 
   for (let i = 0; i < sampleCount; i++) {
     const tSec =
@@ -558,9 +579,19 @@ export async function trackVideoFrames(
         : 0.04 * duration + (i / (sampleCount - 1)) * (duration * 0.92);
     await seekVideoSafe(videoElement, tSec);
 
-    monotonicTsMs += 42;
+    const monotonicTsMs = nextMonotonicMocapTimestampMs(42, false);
+    let detectInput: HTMLCanvasElement | HTMLVideoElement = videoElement;
+    if (frameCtx && videoElement.videoWidth > 0 && videoElement.videoHeight > 0) {
+      try {
+        frameCtx.drawImage(videoElement, 0, 0, frameCanvas.width, frameCanvas.height);
+        detectInput = frameCanvas;
+      } catch {
+        detectInput = videoElement;
+      }
+    }
+
     try {
-      const result = landmarker.detectForVideo(videoElement, monotonicTsMs);
+      const result = landmarker.detectForVideo(detectInput, monotonicTsMs);
       if (
         result.worldLandmarks &&
         result.worldLandmarks.length > 0 &&
@@ -579,6 +610,10 @@ export async function trackVideoFrames(
       }
     } catch {
       // Continuar con el siguiente fotograma
+    }
+
+    if (i % 4 === 3) {
+      await new Promise<void>((r) => window.setTimeout(r, 0));
     }
 
     options?.onProgress?.(Math.round(((i + 1) / sampleCount) * 100));

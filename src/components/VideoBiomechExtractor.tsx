@@ -62,6 +62,7 @@ import {
   sanitizeErgonizaAngles,
   syncAvatarPoseFromErgonizaJson,
 } from '../utils/ergonizaBiomechEngine';
+import { extractSingleMocapFrame } from '../utils/mocapRetargeter';
 import { RepetitiveVideoMetrics, trackVideoFrames } from '../utils/poseExtractor';
 import {
   CameraOrbitOverride,
@@ -354,23 +355,40 @@ export const VideoBiomechExtractor: React.FC<VideoBiomechExtractorProps> = ({
     userConfirmedInvisibleParams: true,
   });
 
-  // Geometría Toma de Carga (Origen) y Destino (en cm)
-  const [vOriginCm, setVOriginCm] = useState<number>(26);
-  const [vDestCm, setVDestCm] = useState<number>(112);
+  // Geometría Toma de Carga (Origen) y Destino (en cm) — inicializada en bipedestación neutra antes de comparar
+  const [vOriginCm, setVOriginCm] = useState<number>(75);
+  const [vDestCm, setVDestCm] = useState<number>(108);
   const [hDestCm, setHDestCm] = useState<number>(34);
 
-  // Postura 1: Toma de Carga (Origen) y Postura 2: Destino — sincronizadas simultáneamente
+  const buildUprightStandingNeutralTwin = (tSec = 0): ErgonizaDigitalTwinJson =>
+    buildErgonizaDigitalTwinJson({
+      analisisExitoso: true,
+      fotogramaCriticoSegundo: tSec,
+      condicionesApoyo: 'Bipedestación bilateral erguida (en espera de vídeo)',
+      planoReferencia: 'Sagital',
+      articulaciones: {
+        tronco: { flexion_extension_grados: 0, lateralizacion_grados: 0, rotacion_axial_grados: 0 },
+        hombro_derecho: {
+          flexion_anteroposterior_grados: 8,
+          abduccion_aduccion_grados: 4,
+          rotacion_humeral_grados: 0,
+        },
+        codo_derecho: { flexion_extension_grados: 14 },
+        cadera_derecha: { flexion_extension_grados: 2 },
+        rodilla_derecha: { flexion_extension_grados: 4 },
+      },
+      invisibleParams: {
+        loadMassKg: 18,
+        userConfirmedInvisibleParams: true,
+      },
+    });
+
+  // Postura 1: Toma de Carga (Origen) y Postura 2: Destino — erguidas de pie antes de cargar/comparar vídeo
   const [rawOriginTwinJson, setRawOriginTwinJson] = useState<ErgonizaDigitalTwinJson>(() =>
-    buildRoleJsonFromSample(CENEA_SAMPLE_VIDEOS_CATALOG[0], 'origin', {
-      loadMassKg: 18,
-      userConfirmedInvisibleParams: true,
-    }),
+    buildUprightStandingNeutralTwin(0),
   );
   const [rawDestTwinJson, setRawDestTwinJson] = useState<ErgonizaDigitalTwinJson>(() =>
-    buildRoleJsonFromSample(CENEA_SAMPLE_VIDEOS_CATALOG[0], 'dest', {
-      loadMassKg: 18,
-      userConfirmedInvisibleParams: true,
-    }),
+    buildUprightStandingNeutralTwin(0),
   );
 
   const effectiveOriginTwinJson = useMemo<ErgonizaDigitalTwinJson>(
@@ -456,7 +474,7 @@ export const VideoBiomechExtractor: React.FC<VideoBiomechExtractorProps> = ({
   const [show3DGoniometerOverlay, setShow3DGoniometerOverlay] = useState<boolean>(false);
   const [selectedJoint3D, setSelectedJoint3D] = useState<JointKey | null>('l5s1');
   const [hoveredJoint3D, setHoveredJoint3D] = useState<JointKey | null>(null);
-  const [activeProp3D, setActiveProp3D] = useState<ScenePropType>('box_load');
+  const [activeProp3D, setActiveProp3D] = useState<ScenePropType>('none');
   const [isPlayingCycle3D, setIsPlayingCycle3D] = useState<boolean>(false);
   const [cycleProgress, setCycleProgress] = useState<number>(0.2);
   const [hasEmittedTabs, setHasEmittedTabs] = useState<boolean>(false);
@@ -946,55 +964,102 @@ export const VideoBiomechExtractor: React.FC<VideoBiomechExtractorProps> = ({
     if (videoObjectUrl) URL.revokeObjectURL(videoObjectUrl);
     let workingUrl = URL.createObjectURL(file);
 
-    try {
-      const videoEl = document.createElement('video');
-      videoEl.src = workingUrl;
-      videoEl.muted = true;
-      videoEl.playsInline = true;
-      videoEl.preload = 'auto';
+    const videoEl = document.createElement('video');
+    videoEl.style.position = 'fixed';
+    videoEl.style.left = '0px';
+    videoEl.style.top = '0px';
+    videoEl.style.width = '2px';
+    videoEl.style.height = '2px';
+    videoEl.style.opacity = '0.01';
+    videoEl.style.zIndex = '-1';
+    videoEl.style.pointerEvents = 'none';
+    videoEl.muted = true;
+    videoEl.playsInline = true;
+    videoEl.setAttribute('playsinline', 'true');
+    videoEl.setAttribute('webkit-playsinline', 'true');
+    videoEl.preload = 'auto';
+    document.body.appendChild(videoEl);
 
+    try {
       let loadedOk = false;
       try {
         await new Promise<void>((resolve, reject) => {
-          const timer = window.setTimeout(() => reject(new Error('timeout')), 9000);
-          videoEl.onloadedmetadata = () => {
-            window.clearTimeout(timer);
-            resolve();
+          const timer = window.setTimeout(() => {
+            if (videoEl.videoWidth > 0 && videoEl.readyState >= 2) resolve();
+            else reject(new Error('timeout'));
+          }, 9000);
+          const onReady = () => {
+            if (videoEl.videoWidth > 0 && videoEl.readyState >= 2) {
+              window.clearTimeout(timer);
+              resolve();
+            }
           };
+          videoEl.onloadeddata = onReady;
+          videoEl.oncanplay = onReady;
           videoEl.onerror = () => {
             window.clearTimeout(timer);
             reject(new Error('codec'));
           };
+          videoEl.src = workingUrl;
+          videoEl.load();
         });
-        loadedOk = true;
+        loadedOk = videoEl.videoWidth > 0 && videoEl.readyState >= 2;
       } catch {
-        loadedOk = false;
+        loadedOk = videoEl.videoWidth > 0 && videoEl.readyState >= 1;
       }
 
       if (!loadedOk) {
-        setAnalysisProgressMsg('1/3 · Normalizando formato de cámara (.MOV / HEVC) a MP4 H.264...');
-        const b64 = await fileToBase64(file);
-        const normResp = await fetch('/api/biomech/normalize-video', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fileName: file.name, videoBase64: b64 }),
-        });
-        if (!normResp.ok) {
-          throw new Error('Formato de vídeo no compatible. Utilice MP4 (H.264) o WebM.');
+        setAnalysisProgressMsg('1/3 · Comprobando normalización de formato de vídeo a MP4 H.264...');
+        let transcodedOk = false;
+        try {
+          const b64 = await fileToBase64(file);
+          const normResp = await fetch('/api/biomech/normalize-video', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fileName: file.name, videoBase64: b64 }),
+          });
+          const ct = (normResp.headers.get('content-type') || '').toLowerCase();
+          if (normResp.ok && ct.includes('video')) {
+            const mp4Blob = await normResp.blob();
+            if (mp4Blob.size > 512) {
+              URL.revokeObjectURL(workingUrl);
+              workingUrl = URL.createObjectURL(mp4Blob);
+              transcodedOk = true;
+            }
+          } else if (normResp.ok) {
+            const normJson = await normResp.json().catch(() => null);
+            const rawB64 = typeof normJson?.mp4Base64 === 'string' ? normJson.mp4Base64 : '';
+            if (rawB64.length > 256) {
+              const binStr = atob(rawB64);
+              const bytes = new Uint8Array(binStr.length);
+              for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+              URL.revokeObjectURL(workingUrl);
+              workingUrl = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
+              transcodedOk = true;
+            }
+          }
+        } catch {
+          transcodedOk = false;
         }
-        const normJson = await normResp.json();
-        const binStr = atob(String(normJson.mp4Base64 || ''));
-        const bytes = new Uint8Array(binStr.length);
-        for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
-        URL.revokeObjectURL(workingUrl);
-        workingUrl = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
+
+        if (!transcodedOk) {
+          throw new Error(
+            'El navegador no pudo decodificar este códec de vídeo (ej. HEVC propietario). Utilice un archivo MP4 (H.264) o WebM.',
+          );
+        }
+
         videoEl.src = workingUrl;
+        videoEl.load();
         await new Promise<void>((resolve, reject) => {
           const timer = window.setTimeout(() => reject(new Error('Tiempo agotado al leer vídeo.')), 9000);
-          videoEl.onloadedmetadata = () => {
-            window.clearTimeout(timer);
-            resolve();
+          const onReady = () => {
+            if (videoEl.videoWidth > 0 && videoEl.readyState >= 2) {
+              window.clearTimeout(timer);
+              resolve();
+            }
           };
+          videoEl.onloadeddata = onReady;
+          videoEl.oncanplay = onReady;
           videoEl.onerror = () => {
             window.clearTimeout(timer);
             reject(new Error('No se pudo reproducir el archivo de vídeo.'));
@@ -1004,6 +1069,36 @@ export const VideoBiomechExtractor: React.FC<VideoBiomechExtractorProps> = ({
 
       setVideoObjectUrl(workingUrl);
       const dur = Number.isFinite(videoEl.duration) && videoEl.duration > 0.1 ? videoEl.duration : 4.0;
+
+      // Copiar de inmediato la postura real del primer fotograma (t = 0 s) en los avatares antes de completar la comparación
+      const frame0Sample = await extractSingleMocapFrame(videoEl, 0);
+      if (frame0Sample) {
+        const p0 = frame0Sample.ergonomicPose;
+        const f0Twin = buildErgonizaDigitalTwinJson({
+          analisisExitoso: true,
+          fotogramaCriticoSegundo: 0,
+          condicionesApoyo: 'Bipedestación bilateral (Fotograma inicial)',
+          planoReferencia: 'Sagital',
+          articulaciones: {
+            tronco: {
+              flexion_extension_grados: p0.trunkFlexionDeg,
+              lateralizacion_grados: p0.trunkLateralDeg,
+              rotacion_axial_grados: p0.trunkTwistDeg,
+            },
+            hombro_derecho: {
+              flexion_anteroposterior_grados: p0.shoulderRFlexionDeg,
+              abduccion_aduccion_grados: p0.shoulderRAbductionDeg,
+              rotacion_humeral_grados: 0,
+            },
+            codo_derecho: { flexion_extension_grados: p0.elbowRFlexionDeg },
+            cadera_derecha: { flexion_extension_grados: p0.hipRFlexionDeg },
+            rodilla_derecha: { flexion_extension_grados: p0.kneeRFlexionDeg },
+          },
+          invisibleParams,
+        });
+        setRawOriginTwinJson(f0Twin);
+        setRawDestTwinJson(f0Twin);
+      }
 
       const frameCount = 12;
       const offCanvas = document.createElement('canvas');
@@ -1022,10 +1117,10 @@ export const VideoBiomechExtractor: React.FC<VideoBiomechExtractorProps> = ({
         const tSec =
           frameCount <= 1 ? dur * 0.5 : 0.04 * dur + (i / (frameCount - 1)) * (dur * 0.92);
         await new Promise<void>((resSeek) => {
-          const tOut = window.setTimeout(resSeek, 400);
+          const tOut = window.setTimeout(resSeek, 300);
           videoEl.onseeked = () => {
             window.clearTimeout(tOut);
-            resSeek();
+            window.requestAnimationFrame(() => resSeek());
           };
           videoEl.currentTime = Math.min(Math.max(0, dur - 0.04), tSec);
         });
@@ -1055,10 +1150,11 @@ export const VideoBiomechExtractor: React.FC<VideoBiomechExtractorProps> = ({
         invisibleParams: { loadMassKg: invisibleParams.loadMassKg, userConfirmedInvisibleParams: true },
       });
 
-      // Paso 2B: Calibración multimodal servidor Gemini 3
+      // Paso 2B: Calibración multimodal servidor Gemini 3 (con protección ante respuesta fallback serverless)
       setAnalysisProgressMsg('3/3 · Calibrando cotas H/V de Toma y Destino y sincronizando Avatares 3D...');
       let serverData: Record<string, any> | null = null;
       try {
+        const critArt = localTracking?.criticalKeyframe.ergonizaAngles;
         const resp = await fetch('/api/biomech/extract-video', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1070,6 +1166,29 @@ export const VideoBiomechExtractor: React.FC<VideoBiomechExtractorProps> = ({
               mimeType: f.mimeType,
               dataBase64: f.dataBase64,
             })),
+            postural_angles_deg: critArt
+              ? {
+                  trunk_flexion: critArt.tronco.flexion_extension_grados,
+                  knee_flexion: critArt.rodilla_derecha.flexion_extension_grados,
+                  right_elbow: critArt.codo_derecho.flexion_extension_grados,
+                  left_elbow: localTracking?.criticalKeyframe.leftElbowDeg ?? 62,
+                  right_shoulder: critArt.hombro_derecho.flexion_anteroposterior_grados,
+                }
+              : null,
+            niosh_inputs: localTracking
+              ? {
+                  H_cm: localTracking.repetitiveMetrics.estimatedHOriginCm,
+                  V_cm: localTracking.repetitiveMetrics.estimatedVOriginCm,
+                  D_cm: Math.max(
+                    25,
+                    Math.abs(
+                      localTracking.repetitiveMetrics.estimatedVDestCm -
+                        localTracking.repetitiveMetrics.estimatedVOriginCm,
+                    ),
+                  ),
+                  A_deg: Math.abs(critArt?.tronco.rotacion_axial_grados ?? 0),
+                }
+              : null,
             workerHeightCm: invisibleParams.statureCm,
             videoDurationSec: dur,
             movementModeHint: 'auto',
@@ -1082,9 +1201,15 @@ export const VideoBiomechExtractor: React.FC<VideoBiomechExtractorProps> = ({
         serverData = null;
       }
 
-      // Selección de fotograma de Toma de Carga (Origen) y de Destino (siempre distintos cuando hay >=2 frames)
-      let origIdx = Number(serverData?.critical_events?.origen_frame_index ?? -1);
-      let dstIdx = Number(serverData?.critical_events?.destino_frame_index ?? -1);
+      const useVerifiedServerMetrics = Boolean(serverData && !serverData.isServerFallback);
+
+      // Selección de fotograma de Toma de Carga (Origen) y de Destino (siempre priorizando MediaPipe local si el servidor devolvió fallback)
+      let origIdx = useVerifiedServerMetrics
+        ? Number(serverData?.critical_events?.origen_frame_index ?? -1)
+        : -1;
+      let dstIdx = useVerifiedServerMetrics
+        ? Number(serverData?.critical_events?.destino_frame_index ?? -1)
+        : -1;
 
       if (origIdx < 0 || origIdx >= frames.length) {
         if (localTracking) {
@@ -1097,7 +1222,7 @@ export const VideoBiomechExtractor: React.FC<VideoBiomechExtractorProps> = ({
             0,
           );
         } else {
-          origIdx = 1;
+          origIdx = 0;
         }
       }
 
@@ -1113,7 +1238,7 @@ export const VideoBiomechExtractor: React.FC<VideoBiomechExtractorProps> = ({
             frames.length - 1,
           );
         } else {
-          dstIdx = Math.max(0, frames.length - 2);
+          dstIdx = Math.max(0, frames.length - 1);
         }
         if (dstIdx === origIdx && frames.length > 1) {
           dstIdx = origIdx < frames.length / 2 ? frames.length - 1 : 0;
@@ -1125,28 +1250,28 @@ export const VideoBiomechExtractor: React.FC<VideoBiomechExtractorProps> = ({
 
       const detectedVOrigin = Math.round(
         Number(
-          serverData?.movement_analysis?.v_origen_cm ??
+          (useVerifiedServerMetrics ? serverData?.movement_analysis?.v_origen_cm : undefined) ??
             localTracking?.repetitiveMetrics.estimatedVOriginCm ??
-            32,
+            72,
         ),
       );
       const detectedVDest = Math.round(
         Number(
-          serverData?.movement_analysis?.v_destino_cm ??
+          (useVerifiedServerMetrics ? serverData?.movement_analysis?.v_destino_cm : undefined) ??
             localTracking?.repetitiveMetrics.estimatedVDestCm ??
             106,
         ),
       );
       const detectedHOrigin = Math.round(
         Number(
-          serverData?.niosh_inputs?.H_cm ??
+          (useVerifiedServerMetrics ? serverData?.niosh_inputs?.H_cm : undefined) ??
             localTracking?.repetitiveMetrics.estimatedHOriginCm ??
-            38,
+            36,
         ),
       );
       const detectedHDest = Math.round(
         Number(
-          serverData?.movement_analysis?.h_destino_cm ??
+          (useVerifiedServerMetrics ? serverData?.movement_analysis?.h_destino_cm : undefined) ??
             localTracking?.repetitiveMetrics.estimatedHDestCm ??
             35,
         ),
@@ -1173,7 +1298,7 @@ export const VideoBiomechExtractor: React.FC<VideoBiomechExtractorProps> = ({
           ...localTracking.destDigitalTwin,
           fotograma_critico_segundo: frames[dstIdx]?.timeSec ?? localTracking.destKeyframe.timeSec,
         });
-      } else if (serverData?.ergoniza_digital_twin) {
+      } else if (useVerifiedServerMetrics && serverData?.ergoniza_digital_twin) {
         const srvTwin = serverData.ergoniza_digital_twin as ErgonizaDigitalTwinJson;
         setRawOriginTwinJson({
           ...srvTwin,
@@ -1217,6 +1342,14 @@ export const VideoBiomechExtractor: React.FC<VideoBiomechExtractorProps> = ({
         text: err instanceof Error ? err.message : 'No se pudo procesar el archivo de vídeo.',
       });
     } finally {
+      try {
+        videoEl.pause();
+        videoEl.removeAttribute('src');
+        videoEl.load();
+        videoEl.remove();
+      } catch {
+        // Ignorar limpieza
+      }
       setIsAnalyzing(false);
       setAnalysisProgressMsg('');
     }

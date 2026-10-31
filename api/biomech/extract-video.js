@@ -22,12 +22,13 @@ export default async function handler(req, res) {
     niosh_inputs = null,
     movement_analysis = null,
     critical_events = null,
+    frames = null,
   } = body || {};
 
-  const trunkFlex = Number(postural_angles_deg?.trunk_flexion ?? 38);
-  const kneeFlex = Number(postural_angles_deg?.knee_flexion ?? 44);
-  const rightElbow = Number(postural_angles_deg?.right_elbow ?? 72);
-  const leftElbow = Number(postural_angles_deg?.left_elbow ?? 70);
+  const trunkFlex = Number(postural_angles_deg?.trunk_flexion ?? 18);
+  const kneeFlex = Number(postural_angles_deg?.knee_flexion ?? 12);
+  const rightElbow = Number(postural_angles_deg?.right_elbow ?? 65);
+  const leftElbow = Number(postural_angles_deg?.left_elbow ?? 62);
 
   const ergonizaFallback = {
     analisis_exitoso: true,
@@ -39,11 +40,11 @@ export default async function handler(req, res) {
         tronco: {
           flexion_extension_grados: trunkFlex,
           lateralizacion_grados: 0.0,
-          rotacion_axial_grados: Number(niosh_inputs?.A_deg ?? 10),
+          rotacion_axial_grados: Number(niosh_inputs?.A_deg ?? 8),
         },
         hombro_derecho: {
-          flexion_anteroposterior_grados: 45.0,
-          abduccion_aduccion_grados: 12.0,
+          flexion_anteroposterior_grados: Number(postural_angles_deg?.right_shoulder ?? 38.0),
+          abduccion_aduccion_grados: 10.0,
           rotacion_humeral_grados: 0.0,
         },
         codo_derecho: {
@@ -67,22 +68,23 @@ export default async function handler(req, res) {
 
   const dynamicFallbackResult = {
     status: 'processed',
+    isServerFallback: true,
     critical_events: critical_events || {
       origen_frame_index: 0,
-      destino_frame_index: 1,
+      destino_frame_index: Math.max(1, Array.isArray(frames) ? frames.length - 1 : 1),
       critico_frame_index: 0,
-      origen_timestamp: '00:00.600',
-      destino_timestamp: '00:02.800',
+      origen_timestamp: '00:00.400',
+      destino_timestamp: '00:02.400',
     },
     movement_analysis: movement_analysis || {
       direction: 'levantamiento_suelo_a_estanteria',
-      v_origen_cm: 36.0,
-      v_destino_cm: 118.0,
-      h_origen_cm: 34.0,
-      h_destino_cm: 42.0,
-      trajectory_note: 'Procesamiento biomecánico cinemático en tiempo real.',
+      v_origen_cm: 72.0,
+      v_destino_cm: 108.0,
+      h_origen_cm: 36.0,
+      h_destino_cm: 40.0,
+      trajectory_note: 'Procesamiento biomecánico cinemático local en navegador.',
     },
-    niosh_inputs: niosh_inputs || { H_cm: 38.0, V_cm: 36.0, D_cm: 82.0, A_deg: 10.0 },
+    niosh_inputs: niosh_inputs || { H_cm: 36.0, V_cm: 72.0, D_cm: 36.0, A_deg: 8.0 },
     postural_angles_deg: {
       trunk_flexion: trunkFlex,
       knee_flexion: kneeFlex,
@@ -93,7 +95,7 @@ export default async function handler(req, res) {
   };
 
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || !postural_angles_deg) {
+  if (!apiKey || (!postural_angles_deg && (!Array.isArray(frames) || frames.length === 0))) {
     return res.status(200).json(dynamicFallbackResult);
   }
 
@@ -110,7 +112,7 @@ export default async function handler(req, res) {
 
     const response = await ai.models.generateContent({
       model: 'gemini-3.8-flash',
-      contents: `Valida y calibra biomecánicamente estos datos extraídos de vídeo laboral (Tronco=${trunkFlex}°, Rodilla=${kneeFlex}°, CodoDer=${rightElbow}°, H=${niosh_inputs?.H_cm || 38}cm, V=${niosh_inputs?.V_cm || 36}cm, A=${niosh_inputs?.A_deg || 10}°) y devuelve JSON compatible con Ergoniza Intelligent.`,
+      contents: `Valida y calibra biomecánicamente estos datos extraídos de vídeo laboral (Tronco=${trunkFlex}°, Rodilla=${kneeFlex}°, CodoDer=${rightElbow}°, CodoIzq=${leftElbow}°, H=${niosh_inputs?.H_cm || 36}cm, V=${niosh_inputs?.V_cm || 72}cm, A=${niosh_inputs?.A_deg || 8}°) y devuelve JSON compatible con Ergoniza Intelligent respetando los ángulos medidos.`,
       config: {
         temperature: 0.1,
         thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
@@ -124,6 +126,7 @@ export default async function handler(req, res) {
       return res.status(200).json({
         ...dynamicFallbackResult,
         ...parsed,
+        isServerFallback: false,
         ergoniza_digital_twin: parsed.ergoniza_digital_twin || ergonizaFallback,
       });
     }

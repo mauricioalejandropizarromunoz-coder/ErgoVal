@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Activity,
   ArrowLeft,
   CheckCircle2,
+  Copy,
   Crosshair,
   Download,
   Eye,
@@ -54,6 +56,21 @@ import {
 import { makeNeutralPose } from '../utils/figurePlanCatalog';
 import { createNewStudyTab } from '../utils/defaults';
 import { renderAnnotatedOperatorFrameJpeg } from '../utils/methodAvatarReportHelper';
+import { NORMATIVE_KINOVEA_ROWS } from '../utils/normativeJointLimits';
+import {
+  calibrateMaxPlanarSegmentLengths,
+  DIN_33402_2_ANTHROPOMETRY,
+  DinBiologicalSex,
+  DinPercentileKey,
+  evaluatePredictiveKinematicsV26,
+  getRing2AvatarStopSummary,
+  OperatorDinConfig,
+  PredictiveKinematicsEvaluationV26,
+  resolveOperatorAnthropometry,
+} from '../utils/predictiveKinematicsV26';
+
+export const SAMPLE_WORKER_MOCAP_VIDEO_URL =
+  '/assets/aistudio/sin-t-tulo-video-de-persona__1__fcbde593.mp4';
 
 export interface TwinAvatarVideoStudioProps {
   general: GeneralStudyData;
@@ -171,12 +188,13 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
 
   // Secuencia 3D MoCap Heavy + Filtro 1€
   const [mocapTimeline, setMocapTimeline] = useState<MocapTimelineResult | null>(null);
+  const [previewFrame0Sample, setPreviewFrame0Sample] = useState<MocapFrameSample | null>(null);
   const [isTracking, setIsTracking] = useState<boolean>(false);
   const [trackingProgressPct, setTrackingProgressPct] = useState<number>(0);
   const [trackingMsg, setTrackingMsg] = useState<string>('');
   const [showVideoSkeletonOverlay, setShowVideoSkeletonOverlay] = useState<boolean>(true);
   const [showAvatarAngleHUD, setShowAvatarAngleHUD] = useState<boolean>(true);
-  const [autoAssistSevereOcclusion, setAutoAssistSevereOcclusion] = useState<boolean>(true);
+  const [autoAssistSevereOcclusion, setAutoAssistSevereOcclusion] = useState<boolean>(false);
 
   // Opción C: Pines híbridos de corrección asistida en oclusiones
   const [correctionPins, setCorrectionPins] = useState<MocapCorrectionPin[]>([]);
@@ -219,6 +237,15 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
     text: string;
   } | null>(null);
 
+  // Arquitectura Cinemática y Ergonomía Predictiva V2.6 + DIN 33402-2 / EN 1005-3/4
+  const [showPredictiveGuideV26, setShowPredictiveGuideV26] = useState<boolean>(true);
+  const [dinSex, setDinSex] = useState<DinBiologicalSex>('masculino');
+  const [dinPercentile, setDinPercentile] = useState<DinPercentileKey>('P50');
+  const [externalLoadKg, setExternalLoadKg] = useState<number>(12);
+  const [isBimanualLoad, setIsBimanualLoad] = useState<boolean>(true);
+  const [v26Tab, setV26Tab] = useState<'telemetria' | 'datalink_json' | 'matriz_din'>('telemetria');
+  const [copiedFlatJson, setCopiedFlatJson] = useState<boolean>(false);
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const sourceVideoRef = useRef<HTMLVideoElement | null>(null);
   const videoOverlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -245,13 +272,15 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
 
   useEffect(() => {
     return () => {
-      if (pcVideoUrl) URL.revokeObjectURL(pcVideoUrl);
+      if (pcVideoUrl && pcVideoUrl.startsWith('blob:')) URL.revokeObjectURL(pcVideoUrl);
     };
   }, [pcVideoUrl]);
 
   useEffect(() => {
     return () => {
-      if (recordedVideoUrl) URL.revokeObjectURL(recordedVideoUrl);
+      if (recordedVideoUrl && recordedVideoUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(recordedVideoUrl);
+      }
     };
   }, [recordedVideoUrl]);
 
@@ -300,7 +329,8 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
 
   const getMocapSampleAtTime = useCallback(
     (tSec: number, pinsOverride?: MocapCorrectionPin[]): MocapFrameSample | null => {
-      if (mode !== 'pc_upload' || !mocapTimeline) return null;
+      if (mode !== 'pc_upload') return null;
+      if (!mocapTimeline) return previewFrame0Sample;
       return interpolateMocapFrameAtTime(
         mocapTimeline,
         tSec,
@@ -308,7 +338,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
         autoAssistSevereOcclusion,
       );
     },
-    [mode, mocapTimeline, effectivePins, autoAssistSevereOcclusion],
+    [mode, mocapTimeline, previewFrame0Sample, effectivePins, autoAssistSevereOcclusion],
   );
 
   const liveEffectiveProp: ScenePropType =
@@ -339,21 +369,102 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
     [propOffsetX, propOffsetY, propOffsetZ, propRotYDeg, propScale, shelfBoxOnRack, sceneProp],
   );
 
+  // Calibración automática de longitudes máximas en píxeles 2D para Escorzo Óptico Z (Sección 3.3 V2.6)
+  const planarMaxCalib = useMemo(
+    () => (mocapTimeline ? calibrateMaxPlanarSegmentLengths(mocapTimeline) : null),
+    [mocapTimeline],
+  );
+
+  const operatorDinConfig = useMemo<OperatorDinConfig>(
+    () => ({
+      sex: dinSex,
+      percentile: dinPercentile,
+      externalLoadKg,
+      isBimanualLoad,
+    }),
+    [dinSex, dinPercentile, externalLoadKg, isBimanualLoad],
+  );
+
+  const resolvedOperatorAnthro = useMemo(
+    () => resolveOperatorAnthropometry(operatorDinConfig),
+    [operatorDinConfig],
+  );
+
+  const ring2StopsSummary = useMemo(() => getRing2AvatarStopSummary(), []);
+
+  const evaluateV26AtTime = useCallback(
+    (
+      tSec: number,
+      sampleOverride?: MocapFrameSample | null,
+    ): PredictiveKinematicsEvaluationV26 => {
+      if (mode === 'pc_upload') {
+        if (sampleOverride) {
+          return evaluatePredictiveKinematicsV26({
+            tSec,
+            pose: sampleOverride.ergonomicPose,
+            timeline: mocapTimeline,
+            liveSample: sampleOverride,
+            planarMaxCalib,
+            operatorConfig: operatorDinConfig,
+            overlayEnabled: showPredictiveGuideV26,
+          });
+        }
+        return evaluatePredictiveKinematicsV26({
+          tSec,
+          pose: makeNeutralPose({ stanceMode: 'standing' }),
+          operatorConfig: operatorDinConfig,
+          overlayEnabled: false,
+        });
+      }
+
+      const dur = Math.max(1, videoDurationSec || 5);
+      const dtDemo = 0.04;
+      const pCur = Math.max(0, Math.min(1, tSec / dur));
+      const pPrev = Math.max(0, Math.min(1, Math.max(0, tSec - dtDemo) / dur));
+      const pPrev2 = Math.max(0, Math.min(1, Math.max(0, tSec - dtDemo * 2) / dur));
+
+      const poseCur = buildCeneaSampleFrameSpec(activeDemoSample, pCur, 172).panelSpec.pose;
+      const posePrev = buildCeneaSampleFrameSpec(activeDemoSample, pPrev, 172).panelSpec.pose;
+      const posePrev2 = buildCeneaSampleFrameSpec(activeDemoSample, pPrev2, 172).panelSpec.pose;
+
+      return evaluatePredictiveKinematicsV26({
+        tSec,
+        pose: poseCur,
+        prevPose: posePrev,
+        prev2Pose: posePrev2,
+        syntheticDtSec: dtDemo,
+        operatorConfig: operatorDinConfig,
+        overlayEnabled: showPredictiveGuideV26,
+      });
+    },
+    [
+      mode,
+      mocapTimeline,
+      planarMaxCalib,
+      operatorDinConfig,
+      showPredictiveGuideV26,
+      videoDurationSec,
+      activeDemoSample,
+    ],
+  );
+
   // Dibuja un instante exacto tanto en el Avatar 3D como en la capa de esqueleto sobre el vídeo real
   const drawFrameAtTime = useCallback(
     (tSec: number, pinsOverride?: MocapCorrectionPin[]) => {
       if (!avatarCanvasRef.current || isRecordingTwin) return;
 
-      if (mode === 'pc_upload') {
-        if (mocapTimeline) {
+      try {
+        if (mode === 'pc_upload') {
           const sample = getMocapSampleAtTime(tSec, pinsOverride);
           if (sample) {
+            const v26Frame = evaluateV26AtTime(tSec, sample);
             renderMocapTwinFrameToCanvas(sample, avatarCanvasRef.current, 640, 480, orbit, {
               cameraPreset,
               sceneProp: liveEffectiveProp,
               propPlacement: propPlacementConfig,
               showAngleHUD: showAvatarAngleHUD,
-              dpiScale: 1.65,
+              predictiveOverlay: v26Frame.overlaySpec,
+              dpiScale: 1.5,
             });
 
             const ovCanvas = videoOverlayCanvasRef.current;
@@ -361,7 +472,8 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
             if (ovCanvas) {
               const cw = ovCanvas.clientWidth || 640;
               const ch = ovCanvas.clientHeight || 480;
-              const dpr = Math.min(2, window.devicePixelRatio || 1);
+              const isMobile = window.innerWidth < 768;
+              const dpr = Math.min(isMobile ? 1 : 2, window.devicePixelRatio || 1);
               if (
                 ovCanvas.width !== Math.round(cw * dpr) ||
                 ovCanvas.height !== Math.round(ch * dpr)
@@ -386,66 +498,73 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
             }
             return;
           }
+
+          // Antes de cargar vídeo o si el primer fotograma aún no tiene persona: postura erguida de pie limpia (jamás tirado en el suelo)
+          const ovCanvas = videoOverlayCanvasRef.current;
+          if (ovCanvas) {
+            const octx = ovCanvas.getContext('2d');
+            if (octx) octx.clearRect(0, 0, ovCanvas.width, ovCanvas.height);
+          }
+          const standbyPose = makeNeutralPose({
+            stanceMode: 'standing',
+            prop: liveEffectiveProp,
+            ...propPlacementConfig,
+          });
+          renderInteractivePose3DToCanvas(
+            {
+              subTitle: isTracking
+                ? 'Copiando postura inicial y rastreando vídeo fotograma a fotograma...'
+                : pcVideoUrl
+                  ? 'Postura erguida lista · Pulse "Re-analizar Vídeo" para sincronizar'
+                  : 'Postura de pie en espera · Suba o elija un vídeo para iniciar',
+              focusZone: 'full_body',
+              cameraPreset: cameraPreset === 'frontal' ? 'isometric' : cameraPreset,
+              pose: standbyPose,
+            },
+            avatarCanvasRef.current,
+            640,
+            480,
+            orbit,
+            1.5,
+          );
+          return;
         }
 
-        // En modo Vídeo Subido desde PC sin secuencia aún: mostrar postura neutra estática (jamás simular el ciclo de levantamiento de Video IA)
-        const ovCanvas = videoOverlayCanvasRef.current;
-        if (ovCanvas) {
-          const octx = ovCanvas.getContext('2d');
-          if (octx) octx.clearRect(0, 0, ovCanvas.width, ovCanvas.height);
-        }
-        const standbyPose = makeNeutralPose({
-          stanceMode: 'standing',
-          prop: liveEffectiveProp,
+        // Modo Ciclo de Prueba (exclusivo cuando el usuario selecciona la pestaña Ciclo de Prueba)
+        const dur = Math.max(1, videoDurationSec || 5);
+        const progress = Math.max(0, Math.min(1, tSec / dur));
+        const built = buildCeneaSampleFrameSpec(activeDemoSample, progress, 172);
+        const poseWithProp: PosturePose3D = {
+          ...built.panelSpec.pose,
+          prop: liveEffectiveProp !== 'none' ? liveEffectiveProp : built.panelSpec.pose.prop,
           ...propPlacementConfig,
-        });
+        };
+        if (propVisibilityMode === 'hidden' || (propVisibilityMode === 'final_photo_only' && !previewFinalPhotoProp)) {
+          poseWithProp.prop = 'none';
+        }
+        const v26Demo = evaluateV26AtTime(tSec, null);
+        const demoSpec: Panel3DSpec = {
+          subTitle: `Ciclo Demostración · t = ${tSec.toFixed(2)} s`,
+          scoreBadge: `Tronco ${Math.round(poseWithProp.trunkFlexionDeg)}°`,
+          focusZone: 'full_body',
+          cameraPreset: cameraPreset === 'frontal' ? 'isometric' : cameraPreset,
+          pose: poseWithProp,
+        };
         renderInteractivePose3DToCanvas(
-          {
-            subTitle: isTracking
-              ? 'Rastreando vídeo real fotograma a fotograma...'
-              : pcVideoUrl
-                ? 'Pulse "Re-analizar Vídeo" para reconstruir el Mellizo 3D'
-                : 'Suba un vídeo desde su PC para iniciar el Mellizo 3D',
-            focusZone: 'full_body',
-            cameraPreset: cameraPreset === 'frontal' ? 'isometric' : cameraPreset,
-            pose: standbyPose,
-          },
+          demoSpec,
           avatarCanvasRef.current,
           640,
           480,
           orbit,
-          1.65,
+          1.75,
+          'anatomical_skin',
+          false,
+          false,
+          v26Demo.overlaySpec,
         );
-        return;
+      } catch (drawErr) {
+        console.warn('[TwinStudio] drawFrameAtTime non-fatal error:', drawErr);
       }
-
-      // Modo Ciclo de Prueba (exclusivo cuando el usuario selecciona la pestaña Ciclo de Prueba)
-      const dur = Math.max(1, videoDurationSec || 5);
-      const progress = Math.max(0, Math.min(1, tSec / dur));
-      const built = buildCeneaSampleFrameSpec(activeDemoSample, progress, 172);
-      const poseWithProp: PosturePose3D = {
-        ...built.panelSpec.pose,
-        prop: liveEffectiveProp !== 'none' ? liveEffectiveProp : built.panelSpec.pose.prop,
-        ...propPlacementConfig,
-      };
-      if (propVisibilityMode === 'hidden' || (propVisibilityMode === 'final_photo_only' && !previewFinalPhotoProp)) {
-        poseWithProp.prop = 'none';
-      }
-      const demoSpec: Panel3DSpec = {
-        subTitle: `Ciclo Demostración · t = ${tSec.toFixed(2)} s`,
-        scoreBadge: `Tronco ${Math.round(poseWithProp.trunkFlexionDeg)}°`,
-        focusZone: 'full_body',
-        cameraPreset: cameraPreset === 'frontal' ? 'isometric' : cameraPreset,
-        pose: poseWithProp,
-      };
-      renderInteractivePose3DToCanvas(
-        demoSpec,
-        avatarCanvasRef.current,
-        640,
-        480,
-        orbit,
-        1.75,
-      );
     },
     [
       isRecordingTwin,
@@ -454,6 +573,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
       mode,
       mocapTimeline,
       getMocapSampleAtTime,
+      evaluateV26AtTime,
       orbit,
       cameraPreset,
       liveEffectiveProp,
@@ -556,6 +676,12 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
     ).panelSpec.pose;
   }, [activeLiveSample, mode, videoDurationSec, activeDemoSample, currentTimeSec]);
 
+  // Evaluación integral en vivo V2.6 + DIN 33402-2 / EN 1005-3/4 (< 3 ms)
+  const liveV26Eval = useMemo<PredictiveKinematicsEvaluationV26>(
+    () => evaluateV26AtTime(currentTimeSec, activeLiveSample),
+    [evaluateV26AtTime, currentTimeSec, activeLiveSample],
+  );
+
   const resetDraftControls = () => {
     setDraftMirrorArm('none');
     setDraftTrunkPitchDeg(0);
@@ -602,18 +728,19 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
     }
   };
 
-  // Subida desde PC + Rastreo 3D Heavy a 24 fps con filtro 1€
-  const handleUploadPcVideo = async (file: File) => {
+  // Carga y análisis 3D unificado para archivos File o URLs estáticas (ej. vídeo de prueba bundled)
+  const handleLoadVideo = async (fileOrUrl: File | string, customName?: string) => {
     setIsPlaying(false);
     setIsTracking(true);
     setMocapTimeline(null);
+    setPreviewFrame0Sample(null);
     setTrackingProgressPct(4);
-    setTrackingMsg('Abriendo vídeo y verificando códec de vídeo...');
+    setTrackingMsg('Abriendo vídeo y decodificando primer fotograma...');
     setNotice(null);
     setCorrectionPins([]);
     resetDraftControls();
 
-    if (recordedVideoUrl) {
+    if (recordedVideoUrl && recordedVideoUrl.startsWith('blob:')) {
       URL.revokeObjectURL(recordedVideoUrl);
       setRecordedVideoUrl(null);
     }
@@ -621,113 +748,171 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
     setMode('pc_upload');
     setCameraPreset('frontal');
     setOrbit(DEFAULT_ORBIT_OVERRIDE);
-    setPcVideoName(file.name);
 
-    if (pcVideoUrl) URL.revokeObjectURL(pcVideoUrl);
-    let workingUrl = URL.createObjectURL(file);
+    const isFile = typeof fileOrUrl !== 'string';
+    const videoName = isFile ? fileOrUrl.name : (customName || 'operario_taller_mocap.mp4');
+    setPcVideoName(videoName);
+
+    if (pcVideoUrl && pcVideoUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(pcVideoUrl);
+    }
+
+    let workingUrl = isFile ? URL.createObjectURL(fileOrUrl) : fileOrUrl;
+
+    // Mantener el vídeo auxiliar DENTRO del viewport (2x2 px, opacidad 0.01) para impedir que Chrome/Safari/iOS/Android
+    // suspendan la decodificación por hardware de los fotogramas durante `currentTime = tSec`
+    const probeVid = document.createElement('video');
+    probeVid.style.position = 'fixed';
+    probeVid.style.left = '0px';
+    probeVid.style.top = '0px';
+    probeVid.style.width = '2px';
+    probeVid.style.height = '2px';
+    probeVid.style.opacity = '0.01';
+    probeVid.style.zIndex = '-1';
+    probeVid.style.pointerEvents = 'none';
+    probeVid.muted = true;
+    probeVid.playsInline = true;
+    probeVid.setAttribute('playsinline', 'true');
+    probeVid.setAttribute('webkit-playsinline', 'true');
+    probeVid.crossOrigin = 'anonymous';
+    const isMobileDevice = typeof window !== 'undefined' && window.innerWidth < 768;
+    probeVid.preload = isMobileDevice ? 'metadata' : 'auto';
+    document.body.appendChild(probeVid);
 
     try {
-      const probeVid = document.createElement('video');
-      probeVid.muted = true;
-      probeVid.playsInline = true;
-      probeVid.preload = 'auto';
-      probeVid.src = workingUrl;
-
       let loadedOk = false;
       try {
         await new Promise<void>((resolve, reject) => {
-          const timer = window.setTimeout(() => reject(new Error('timeout')), 9000);
-          probeVid.onloadeddata = () => {
-            window.clearTimeout(timer);
-            resolve();
+          const timer = window.setTimeout(() => {
+            if (probeVid.videoWidth > 0 && probeVid.readyState >= 2) resolve();
+            else reject(new Error('timeout'));
+          }, 8500);
+          const onDecoded = () => {
+            if (probeVid.videoWidth > 0 && probeVid.readyState >= 2) {
+              window.clearTimeout(timer);
+              resolve();
+            }
           };
+          probeVid.onloadeddata = onDecoded;
+          probeVid.oncanplay = onDecoded;
           probeVid.onerror = () => {
             window.clearTimeout(timer);
             reject(new Error('codec_error'));
           };
+          probeVid.src = workingUrl;
+          probeVid.load();
         });
-        loadedOk = probeVid.videoWidth > 0;
+        loadedOk = probeVid.videoWidth > 0 && probeVid.readyState >= 2;
       } catch {
-        loadedOk = false;
+        loadedOk = probeVid.videoWidth > 0 && probeVid.readyState >= 1;
       }
 
-      if (!loadedOk) {
-        setTrackingMsg('Normalizando vídeo MOV/HEVC a MP4 H.264 compatible con navegador...');
-        const b64 = await fileToBase64(file);
-        const normResp = await fetch('/api/biomech/normalize-video', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fileName: file.name, videoBase64: b64 }),
-        });
-        if (!normResp.ok) {
-          throw new Error('No se pudo decodificar este formato de vídeo. Suba un archivo MP4 o WebM.');
+      // Si el navegador no pudo decodificar el contenedor y es un File subido,
+      // verificar si el servidor ofrece transcodificación real binaria (ignorando `client_fallback` JSON en Vercel)
+      if (!loadedOk && isFile) {
+        try {
+          setTrackingMsg('Comprobando servicio de normalización de vídeo...');
+          const normResp = await fetch('/api/biomech/normalize-video', {
+            method: 'POST',
+            headers: {
+              'Content-Type': fileOrUrl.type || 'video/mp4',
+              'X-File-Name': encodeURIComponent(fileOrUrl.name),
+            },
+            body: fileOrUrl,
+          });
+          const ct = (normResp.headers.get('content-type') || '').toLowerCase();
+          if (normResp.ok && ct.includes('video')) {
+            const mp4Blob = await normResp.blob();
+            if (mp4Blob && mp4Blob.size > 1000) {
+              if (workingUrl.startsWith('blob:')) URL.revokeObjectURL(workingUrl);
+              workingUrl = URL.createObjectURL(mp4Blob);
+              probeVid.src = workingUrl;
+              probeVid.load();
+              await new Promise<void>((res) => {
+                probeVid.onloadeddata = () => res();
+                probeVid.oncanplay = () => res();
+                window.setTimeout(res, 4500);
+              });
+              loadedOk = probeVid.videoWidth > 0 && probeVid.readyState >= 2;
+            }
+          }
+        } catch (normErr) {
+          console.warn('[handleLoadVideo] Servidor de transcodificación no disponible:', normErr);
         }
-        const normJson = await normResp.json();
-        const binStr = atob(String(normJson.mp4Base64 || ''));
-        const bytes = new Uint8Array(binStr.length);
-        for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
-        const mp4Blob = new Blob([bytes], { type: 'video/mp4' });
-        URL.revokeObjectURL(workingUrl);
-        workingUrl = URL.createObjectURL(mp4Blob);
-        probeVid.src = workingUrl;
-        await new Promise<void>((resolve, reject) => {
-          const timer = window.setTimeout(
-            () => reject(new Error('Tiempo agotado al abrir MP4 normalizado.')),
-            9000,
-          );
-          probeVid.onloadeddata = () => {
-            window.clearTimeout(timer);
-            resolve();
-          };
-          probeVid.onerror = () => {
-            window.clearTimeout(timer);
-            reject(new Error('Formato de vídeo no reproducible en el navegador.'));
-          };
-        });
       }
 
       setPcVideoUrl(workingUrl);
       const dur =
-        Number.isFinite(probeVid.duration) && probeVid.duration > 0.2
-          ? Math.min(25, probeVid.duration)
+        Number.isFinite(probeVid.duration) && probeVid.duration > 0.15
+          ? probeVid.duration
           : 5.0;
       setVideoDurationSec(dur);
       setCurrentTimeSec(0);
 
+      setTrackingMsg('Copiando postura inicial del fotograma 0 y rastreando secuencia 3D...');
+      setTrackingProgressPct(8);
+
       const timeline = await extractTrueMocapTimeline(probeVid, {
         targetFps: dur <= 14 ? 24 : 18,
+        onFirstFrameSample: (sample0) => {
+          setPreviewFrame0Sample(sample0);
+        },
         onProgress: (pct, phaseText) => {
           setTrackingProgressPct(pct);
           if (phaseText) setTrackingMsg(phaseText);
         },
       });
 
+      if (sourceVideoRef.current) {
+        try {
+          sourceVideoRef.current.currentTime = 0;
+        } catch {
+          // Ignorar
+        }
+      }
+
       if (timeline && timeline.frames.length > 0) {
+        setVideoDurationSec(timeline.durationSec);
+        setPreviewFrame0Sample(timeline.frames[0]);
         setMocapTimeline(timeline);
         const occCount = timeline.occlusionSegments.length;
         setNotice({
           tone: 'success',
           text:
             occCount > 0
-              ? `Captura 3D completada con modelo ${timeline.modelTier.toUpperCase()} (${timeline.frames.length} cuadros a ${timeline.sampledFps} fps + filtro 1€). Se detectaron ${occCount} tramo(s) con brazo parcialmente tapado; puede revisarlos debajo en el panel de Corrección de Oclusiones.`
-              : `Captura de movimiento 3D completada con modelo ${timeline.modelTier.toUpperCase()} (${timeline.frames.length} cuadros a ${timeline.sampledFps} fps + filtro 1€ + Root Motion). Pulse Reproducir o Descargar Vídeo Mellizo.`,
+              ? `Vídeo cargado y sincronizado 1:1 con Mellizo 3D (${timeline.modelTier.toUpperCase()} · ${timeline.frames.length} cuadros a ${timeline.sampledFps} fps + filtro 1€). Se detectaron ${occCount} tramo(s) con oclusión parcial.`
+              : `Vídeo cargado con éxito. Sincronización 1:1 activa (${timeline.modelTier.toUpperCase()} · ${timeline.frames.length} cuadros a ${timeline.sampledFps} fps + Root Motion). Pulse Reproducir.`,
         });
       } else {
         setMocapTimeline(null);
         setNotice({
           tone: 'warning',
-          text: 'No se pudo detectar una figura humana clara en el vídeo. Pulse "Re-analizar Vídeo" o verifique que el operario sea visible.',
+          text: 'Vídeo cargado en el reproductor. La visión computacional no detectó una silueta humana clara (toma lejana u operario tapado). El Avatar permanece erguido; pulse "Re-analizar Vídeo" si desea intentar de nuevo.',
         });
       }
     } catch (err) {
+      console.error('[handleLoadVideo] Error:', err);
+      setPcVideoUrl(workingUrl);
       setNotice({
         tone: 'error',
-        text: err instanceof Error ? err.message : 'Error al procesar el vídeo subido.',
+        text: err instanceof Error ? err.message : 'Error al procesar el vídeo.',
       });
     } finally {
+      try {
+        probeVid.pause();
+        probeVid.removeAttribute('src');
+        probeVid.load();
+        probeVid.remove();
+      } catch {
+        // Ignorar limpieza
+      }
       setIsTracking(false);
       setTrackingMsg('');
     }
+  };
+
+  const handleUploadPcVideo = async (file: File) => {
+    return handleLoadVideo(file);
   };
 
   // Re-analizar en 1 clic el vídeo actualmente cargado en pantalla
@@ -745,11 +930,14 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
     try {
       const dur =
         Number.isFinite(vidEl.duration) && vidEl.duration > 0.2
-          ? Math.min(25, vidEl.duration)
+          ? vidEl.duration
           : videoDurationSec || 5.0;
       setVideoDurationSec(dur);
       const timeline = await extractTrueMocapTimeline(vidEl, {
         targetFps: dur <= 14 ? 24 : 18,
+        onFirstFrameSample: (sample0) => {
+          setPreviewFrame0Sample(sample0);
+        },
         onProgress: (pct, phaseText) => {
           setTrackingProgressPct(pct);
           if (phaseText) setTrackingMsg(phaseText);
@@ -758,6 +946,8 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
       await seekVideoFrame(vidEl, 0);
       setCurrentTimeSec(0);
       if (timeline && timeline.frames.length > 0) {
+        setVideoDurationSec(timeline.durationSec);
+        setPreviewFrame0Sample(timeline.frames[0]);
         setMocapTimeline(timeline);
         setNotice({
           tone: 'success',
@@ -865,6 +1055,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
         let poseForFooter: PosturePose3D;
         if (sample) {
           poseForFooter = sample.ergonomicPose;
+          const v26Export = evaluateV26AtTime(tSec, sample);
           renderMocapTwinFrameToCanvas(
             sample,
             rawAvatarCanvas,
@@ -876,6 +1067,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
               sceneProp: liveEffectiveProp,
               propPlacement: propPlacementConfig,
               showAngleHUD: showAvatarAngleHUD,
+              predictiveOverlay: v26Export.overlaySpec,
               dpiScale: 1.5,
             },
           );
@@ -889,6 +1081,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
           if (propVisibilityMode === 'hidden' || (propVisibilityMode === 'final_photo_only' && !previewFinalPhotoProp)) {
             poseForFooter.prop = 'none';
           }
+          const v26ExportDemo = evaluateV26AtTime(tSec, null);
           renderInteractivePose3DToCanvas(
             {
               subTitle: `Avatar 3D Mellizo · t = ${tSec.toFixed(2)} s`,
@@ -901,6 +1094,10 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
             avatarRenderH,
             orbit,
             1.5,
+            'anatomical_skin',
+            false,
+            false,
+            v26ExportDemo.overlaySpec,
           );
         }
 
@@ -1274,11 +1471,13 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
     const outCanvas = document.createElement('canvas');
     const sample = getMocapSampleAtTime(currentTimeSec, effectivePins);
     if (sample) {
+      const v26Png = evaluateV26AtTime(currentTimeSec, sample);
       renderMocapTwinFrameToCanvas(sample, outCanvas, 920, 680, orbit, {
         cameraPreset,
         sceneProp: finalPhotoProp,
         propPlacement: propPlacementConfig,
         showAngleHUD: showAvatarAngleHUD,
+        predictiveOverlay: v26Png.overlaySpec,
         dpiScale: 2,
       });
     } else {
@@ -1294,6 +1493,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
         ...propPlacementConfig,
       };
       if (propVisibilityMode === 'hidden') poseFinal.prop = 'none';
+      const v26PngDemo = evaluateV26AtTime(currentTimeSec, null);
       renderInteractivePose3DToCanvas(
         {
           subTitle: `Foto Final Avatar 3D · t = ${currentTimeSec.toFixed(2)} s`,
@@ -1306,6 +1506,10 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
         680,
         orbit,
         2,
+        'anatomical_skin',
+        false,
+        false,
+        v26PngDemo.overlaySpec,
       );
     }
     const a = document.createElement('a');
@@ -1367,6 +1571,16 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
                 Re-analizar Vídeo
               </button>
             )}
+            <button
+              type="button"
+              disabled={isTracking || isRecordingTwin}
+              onClick={() => void handleLoadVideo(SAMPLE_WORKER_MOCAP_VIDEO_URL, 'operario_levantamiento_taller.mp4')}
+              className="px-3.5 py-2 rounded-md border border-sky-400 bg-sky-50 hover:bg-sky-100 disabled:opacity-50 text-sky-900 text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
+              title="Cargar vídeo real de operario manipulando carga en taller"
+            >
+              <Play className="w-3.5 h-3.5 text-sky-700" />
+              Vídeo de Prueba Real
+            </button>
             <button
               type="button"
               disabled={isTracking || isRecordingTwin}
@@ -1506,14 +1720,38 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
           </div>
 
           <div className="relative bg-slate-950 aspect-4/3 w-full flex items-center justify-center overflow-hidden">
-            {mode === 'pc_upload' && pcVideoUrl ? (
+            {mode === 'demo_cycle' ? (
+              <div className="w-full h-full flex flex-col bg-slate-950">
+                <div className="flex-1 w-full relative">
+                  <iframe
+                    src={`https://www.youtube-nocookie.com/embed/${activeDemoSample.youtubeVideoId}?rel=0`}
+                    title={activeDemoSample.title}
+                    className="w-full h-full border-0 absolute inset-0"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                    allowFullScreen
+                  />
+                </div>
+                <div className="p-2.5 bg-slate-900 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <span className="text-slate-300 font-semibold truncate max-w-xs">
+                    {activeDemoSample.shortLabel}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void handleLoadVideo(SAMPLE_WORKER_MOCAP_VIDEO_URL, 'operario_levantamiento_taller.mp4')}
+                    className="px-2.5 py-1 bg-sky-700 hover:bg-sky-600 text-white rounded text-[11px] font-bold cursor-pointer"
+                  >
+                    Probar con Vídeo Real de Taller
+                  </button>
+                </div>
+              </div>
+            ) : mode === 'pc_upload' && pcVideoUrl ? (
               <>
                 <video
                   ref={sourceVideoRef}
                   src={pcVideoUrl}
                   muted
                   playsInline
-                  preload="auto"
+                  preload="metadata"
                   onLoadedData={() => drawFrameAtTime(currentTimeSec)}
                   className="w-full h-full object-contain"
                 />
@@ -1524,24 +1762,31 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
               </>
             ) : (
               <div className="p-6 text-center max-w-sm">
-                <Upload className="w-9 h-9 text-slate-500 mx-auto mb-2" />
-                <p className="text-sm font-semibold text-slate-200">
-                  {mode === 'demo_cycle'
-                    ? activeDemoSample.title
-                    : 'Suba un vídeo desde su PC para ver la captura de movimiento 1:1'}
+                <Video className="w-10 h-10 text-sky-400 mx-auto mb-2.5" />
+                <p className="text-sm font-semibold text-white">
+                  Visualizador de Vídeo y Rastreador MoCap 3D
                 </p>
-                <p className="text-xs text-slate-400 mt-1">
-                  El motor MediaPipe Pose Heavy rastrea 33 marcadores 3D (hombros, codos, muñecas, pelvis, rodillas, talones y puntas de pie) a 24 fps.
+                <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
+                  Sincronice el movimiento del operario en vídeo 1:1 con el Mellizo Avatar 3D mediante MediaPipe Pose y topes normativos DIN 33402-2.
                 </p>
-                {mode === 'pc_upload' && (
+                <div className="mt-4 flex flex-col sm:flex-row items-center justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleLoadVideo(SAMPLE_WORKER_MOCAP_VIDEO_URL, 'operario_levantamiento_taller.mp4')}
+                    className="w-full sm:w-auto px-3.5 py-2 rounded-md bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+                  >
+                    <Play className="w-3.5 h-3.5" />
+                    Cargar Vídeo de Prueba Real
+                  </button>
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="mt-3 px-4 py-2 rounded-md bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold cursor-pointer"
+                    className="w-full sm:w-auto px-3.5 py-2 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer border border-slate-700"
                   >
-                    Seleccionar vídeo en mi PC
+                    <Upload className="w-3.5 h-3.5" />
+                    Subir desde mi PC
                   </button>
-                )}
+                </div>
               </div>
             )}
           </div>
@@ -1553,16 +1798,37 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
                 {' · '}
                 Brazo Izq: {Math.round(activeLiveSample.leftArmConfidence * 100)}%
               </span>
-              <span
-                className={
-                  activeLiveSample.hasOcclusion
-                    ? 'text-amber-700 font-semibold'
-                    : 'text-emerald-700 font-semibold'
-                }
-              >
-                {activeLiveSample.hasOcclusion
-                  ? 'Oclusión parcial detectada (use Opción C si requiere ajuste)'
-                  : 'Visibilidad articular óptima'}
+              <span className="flex items-center gap-2">
+                <span
+                  className="inline-flex items-center gap-1.5 font-semibold text-slate-800"
+                  title="Evaluación micro-cinemática V2.6 sobre residual de alta frecuencia (compuerta cuasi-isométrica)"
+                >
+                  <span
+                    className={`w-2 h-2 rounded-xs ${
+                      liveV26Eval.flatPayload.fatigue_code === 0
+                        ? 'bg-emerald-600'
+                        : liveV26Eval.flatPayload.fatigue_code === 1
+                          ? 'bg-amber-500'
+                          : 'bg-rose-600'
+                    }`}
+                  />
+                  <span>
+                    J={liveV26Eval.flatPayload.jitter_deg.toFixed(2)}° · If=
+                    {liveV26Eval.flatPayload.fatigue_if.toFixed(2)} ({liveV26Eval.dominantFatigueJoint})
+                  </span>
+                </span>
+                <span>·</span>
+                <span
+                  className={
+                    activeLiveSample.hasOcclusion
+                      ? 'text-amber-700 font-semibold'
+                      : 'text-emerald-700 font-semibold'
+                  }
+                >
+                  {activeLiveSample.hasOcclusion
+                    ? 'Oclusión parcial'
+                    : 'Visibilidad óptima'}
+                </span>
               </span>
             </div>
           )}
@@ -1605,7 +1871,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
           </div>
 
           <div
-            className="relative bg-white aspect-4/3 w-full flex items-center justify-center select-none cursor-grab active:cursor-grabbing"
+            className="relative bg-white aspect-4/3 w-full flex items-center justify-center select-none touch-none cursor-grab active:cursor-grabbing"
             onPointerDown={(e) => {
               (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
               dragOrbitRef.current = {
@@ -1639,7 +1905,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
               Tronco {Math.round(currentReadoutPose.trunkFlexionDeg)}° · Giro{' '}
               {Math.round(currentReadoutPose.rootYawDeg ?? 0)}° · Brazo D{' '}
               {Math.round(currentReadoutPose.shoulderRFlexionDeg)}° · Codo D{' '}
-              {Math.max(30, Math.min(170, Math.round(180 - currentReadoutPose.elbowRFlexionDeg)))}° ·
+              {Math.max(28, Math.min(175, Math.round(180 - currentReadoutPose.elbowRFlexionDeg)))}° ·
               Rodilla{' '}
               {Math.round(
                 Math.max(
@@ -1649,14 +1915,27 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
               )}
               °
             </span>
-            <label className="flex items-center gap-1.5 font-sans text-xs text-slate-600 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={showAvatarAngleHUD}
-                onChange={(e) => setShowAvatarAngleHUD(e.target.checked)}
-              />
-              Goniómetros 3D
-            </label>
+            <div className="flex flex-wrap items-center gap-3 font-sans text-xs text-slate-700">
+              <label
+                className="flex items-center gap-1.5 cursor-pointer font-medium text-emerald-800"
+                title="Proyecta en 3D la Guía de Trayectoria Ergonómica Corregida (+0.5 s) cuando se vulnera el Anillo 1 (P5 DIN 33402-2 / DIN EN 1005-4)"
+              >
+                <input
+                  type="checkbox"
+                  checked={showPredictiveGuideV26}
+                  onChange={(e) => setShowPredictiveGuideV26(e.target.checked)}
+                />
+                Guía Predictiva V2.6 (+0.5s)
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={showAvatarAngleHUD}
+                  onChange={(e) => setShowAvatarAngleHUD(e.target.checked)}
+                />
+                Goniómetros 3D
+              </label>
+            </div>
           </div>
         </div>
       </div>
@@ -1904,6 +2183,469 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
               ))}
             </div>
           )}
+      </div>
+
+      {/* ESPECIFICACIÓN TÉCNICA DE CONTROL V2.6 + DIN 33402-2 / DIN EN 1005-3/4 / ISO 7250-1 */}
+      <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-xs space-y-3.5">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-3">
+          <div>
+            <p className="text-[11px] font-mono uppercase tracking-wider text-emerald-800 font-semibold">
+              ARQUITECTURA CINEMÁTICA Y ERGONOMÍA PREDICTIVA V2.6 · DIN 33402-2 · DIN EN 1005-3/4 · ISO 7250-1
+            </p>
+            <h3 className="text-sm font-bold text-slate-900 mt-0.5 flex items-center gap-1.5">
+              <Activity className="w-4 h-4 text-emerald-700 shrink-0" />
+              Control Predictivo de Doble Anillo, Torque Dinámico VIM (Nm) y Escorzo Óptico Z
+            </h3>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-mono tabular-nums text-slate-600 flex items-center gap-1.5 mr-1">
+              <span
+                className={`w-2 h-2 rounded-xs ${
+                  liveV26Eval.flatPayload.exec_latency_ms < 3
+                    ? 'bg-emerald-600'
+                    : 'bg-amber-500'
+                }`}
+              />
+              Data Link: {liveV26Eval.flatPayload.exec_latency_ms.toFixed(2)} ms (&lt; 3.00 ms)
+            </span>
+
+            <div className="flex flex-wrap items-center gap-1 p-0.5 bg-slate-100 rounded border border-slate-200">
+              {(
+                [
+                  ['telemetria', '1. Telemetría VIM + Campo Repulsivo'],
+                  ['datalink_json', '2. Esquema Plano Data Link (< 3 ms)'],
+                  ['matriz_din', '3. Matriz DIN 33402-2 y Doble Anillo'],
+                ] as const
+              ).map(([tabKey, tabLabel]) => (
+                <button
+                  key={tabKey}
+                  type="button"
+                  onClick={() => setV26Tab(tabKey)}
+                  className={`px-2.5 py-1 rounded text-xs font-medium cursor-pointer transition-colors ${
+                    v26Tab === tabKey
+                      ? 'bg-white text-slate-900 font-semibold shadow-2xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {tabLabel}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Barra de parámetros antropométricos reales DIN 33402-2 y carga externa */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 bg-slate-50 border border-slate-200 rounded-md p-3 text-xs">
+          <label className="space-y-1">
+            <span className="block font-semibold text-slate-700">Sexo biológico (DIN 33402-2)</span>
+            <select
+              value={dinSex}
+              onChange={(e) => setDinSex(e.target.value as DinBiologicalSex)}
+              className="w-full border border-slate-300 rounded px-2 py-1.5 bg-white text-slate-800 text-xs"
+            >
+              <option value="masculino">Hombres adultos (18–65 años)</option>
+              <option value="femenino">Mujeres adultas (18–65 años)</option>
+            </select>
+          </label>
+
+          <label className="space-y-1">
+            <span className="block font-semibold text-slate-700">
+              Percentil antropométrico ({Math.round(resolvedOperatorAnthro.statureM * 1000)} mm ·{' '}
+              {resolvedOperatorAnthro.bodyMassKg.toFixed(1)} kg)
+            </span>
+            <select
+              value={dinPercentile}
+              onChange={(e) => setDinPercentile(e.target.value as DinPercentileKey)}
+              className="w-full border border-slate-300 rounded px-2 py-1.5 bg-white text-slate-800 text-xs font-mono"
+            >
+              <option value="P5">P5 ( Talla baja / menor brazo palanca )</option>
+              <option value="P50">P50 ( Mediana poblacional DIN )</option>
+              <option value="P95">P95 ( Talla alta / mayor momento gravitatorio )</option>
+            </select>
+          </label>
+
+          <label className="space-y-1">
+            <span className="flex items-center justify-between font-semibold text-slate-700">
+              <span>Carga externa manipulada</span>
+              <span className="font-mono tabular-nums text-sky-800">{externalLoadKg} kg</span>
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={35}
+              step={1}
+              value={externalLoadKg}
+              onChange={(e) => setExternalLoadKg(Number(e.target.value))}
+              className="w-full accent-sky-700 cursor-pointer"
+            />
+          </label>
+
+          <div className="space-y-1 flex flex-col justify-between">
+            <span className="block font-semibold text-slate-700">Reparto biomecánico de manos</span>
+            <div className="flex items-center gap-2 pt-0.5">
+              <button
+                type="button"
+                onClick={() => setIsBimanualLoad(true)}
+                className={`flex-1 px-2 py-1.5 rounded border text-xs font-medium cursor-pointer ${
+                  isBimanualLoad
+                    ? 'bg-slate-900 text-white border-slate-900'
+                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                }`}
+              >
+                Bimanual (50/50)
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsBimanualLoad(false)}
+                className={`flex-1 px-2 py-1.5 rounded border text-xs font-medium cursor-pointer ${
+                  !isBimanualLoad
+                    ? 'bg-slate-900 text-white border-slate-900'
+                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                }`}
+              >
+                Unimanual Der
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {v26Tab === 'telemetria' && (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 text-xs">
+            {/* Bloque 1: Cinemática Inversa de Vídeo (VIM) y Torque Dinámico Nm */}
+            <div className="border border-slate-200 rounded-md p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-slate-900">1. Torque VIM (DIN EN 1005-3)</span>
+                <span className="inline-flex items-center gap-1 font-mono text-[11px] tabular-nums text-slate-700">
+                  <span
+                    className={`w-2 h-2 rounded-xs ${
+                      liveV26Eval.flatPayload.din_fr_code === 0
+                        ? 'bg-emerald-600'
+                        : liveV26Eval.flatPayload.din_fr_code === 1
+                          ? 'bg-amber-500'
+                          : 'bg-rose-600'
+                    }`}
+                  />
+                  Fr={liveV26Eval.flatPayload.din_fr_max.toFixed(2)} (
+                  {liveV26Eval.flatPayload.din_fr_code === 0
+                    ? 'Óptimo'
+                    : liveV26Eval.flatPayload.din_fr_code === 1
+                      ? 'Moderado'
+                      : 'Riesgo EN 1005-3'}
+                  )
+                </span>
+              </div>
+              <div className="space-y-1 font-mono text-[11px] tabular-nums text-slate-700">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Lumbar L5/S1 (τ):</span>
+                  <span className="font-semibold text-slate-900">
+                    {liveV26Eval.flatPayload.tau_lumbar_nm.toFixed(1)} Nm
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Hombro Der (τ):</span>
+                  <span className="font-semibold text-slate-900">
+                    {liveV26Eval.flatPayload.tau_sh_r_nm.toFixed(1)} Nm
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Codo Der (τ · McKay):</span>
+                  <span className="font-semibold text-slate-900">
+                    {liveV26Eval.flatPayload.tau_elb_r_nm.toFixed(1)} Nm
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Rodilla Der (τ):</span>
+                  <span className="font-semibold text-slate-900">
+                    {liveV26Eval.flatPayload.tau_knee_r_nm.toFixed(1)} Nm
+                  </span>
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-500 leading-snug">
+                Incluye par gravitatorio + carga externa + término inercial dinámico{' '}
+                <span className="font-mono">I·α</span> reducido por fatiga/velocidad EN 1005-3.
+              </p>
+            </div>
+
+            {/* Bloque 2: Escorzo Óptico 2D -> Z y Derivadas Discretas */}
+            <div className="border border-slate-200 rounded-md p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-slate-900">2. Escorzo Z y Derivadas ω/α</span>
+                <span className="font-mono text-[11px] tabular-nums text-sky-800">
+                  Lpx(t)/Lmax = cos(φz)
+                </span>
+              </div>
+              <div className="space-y-1 font-mono text-[11px] tabular-nums text-slate-700">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Antebrazo Der cos(φz):</span>
+                  <span className="font-semibold text-slate-900">
+                    {liveV26Eval.flatPayload.cos_phiz_fore_r.toFixed(2)} (φz=
+                    {liveV26Eval.flatPayload.phiz_fore_r_deg.toFixed(0)}°)
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Brazo Sup Der cos(φz):</span>
+                  <span className="font-semibold text-slate-900">
+                    {liveV26Eval.flatPayload.cos_phiz_arm_r.toFixed(2)}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">ω / α Lumbar:</span>
+                  <span className="font-semibold text-slate-900">
+                    {liveV26Eval.flatPayload.om_lumbar_dps.toFixed(1)} °/s ·{' '}
+                    {liveV26Eval.flatPayload.al_lumbar_dps2.toFixed(0)} °/s²
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">ω / α Codo Der:</span>
+                  <span className="font-semibold text-slate-900">
+                    {liveV26Eval.flatPayload.om_elb_r_dps.toFixed(1)} °/s ·{' '}
+                    {liveV26Eval.flatPayload.al_elb_r_dps2.toFixed(0)} °/s²
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Bloque 3: Micro-cinemática Jitter N=10 y Fatiga Neuromuscular */}
+            <div className="border border-slate-200 rounded-md p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-slate-900">3. Fatiga Micro-Cinemática</span>
+                <span className="inline-flex items-center gap-1 font-mono text-[11px] tabular-nums text-slate-700">
+                  <span
+                    className={`w-2 h-2 rounded-xs ${
+                      liveV26Eval.flatPayload.fatigue_code === 0
+                        ? 'bg-emerald-600'
+                        : liveV26Eval.flatPayload.fatigue_code === 1
+                          ? 'bg-amber-500'
+                          : 'bg-rose-600'
+                    }`}
+                  />
+                  N=10 fotogramas
+                </span>
+              </div>
+              <div className="space-y-1 font-mono text-[11px] tabular-nums text-slate-700">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Jitter residual J:</span>
+                  <span className="font-semibold text-slate-900">
+                    {liveV26Eval.flatPayload.jitter_deg.toFixed(2)}° ({liveV26Eval.dominantFatigueJoint})
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Índice Fatiga If:</span>
+                  <span className="font-semibold text-slate-900">
+                    {liveV26Eval.flatPayload.fatigue_if.toFixed(2)} / 1.00
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Compuerta isométrica:</span>
+                  <span className="font-semibold text-slate-900">
+                    {Math.round(liveV26Eval.flatPayload.isometric_gate * 100)}% (|ω| ≤ 14 °/s)
+                  </span>
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-500 leading-snug">
+                Aísla <span className="font-mono">θ_raw − θ_1€</span> durante fijación postural para
+                no confundir movimiento voluntario con temblor neuromuscular.
+              </p>
+            </div>
+
+            {/* Bloque 4: Campo Potencial Repulsivo Artificial (+0.5 s) */}
+            <div className="border border-slate-200 rounded-md p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-slate-900">4. Campo Repulsivo (+0.5 s)</span>
+                <span className="inline-flex items-center gap-1 font-mono text-[11px] tabular-nums text-slate-700">
+                  <span
+                    className={`w-2 h-2 rounded-xs ${
+                      liveV26Eval.flatPayload.pred_collision_05s === 0
+                        ? 'bg-emerald-600'
+                        : liveV26Eval.flatPayload.pred_collision_05s === 1
+                          ? 'bg-amber-500'
+                          : 'bg-rose-600'
+                    }`}
+                  />
+                  U={liveV26Eval.flatPayload.u_rep_total.toFixed(2)}
+                </span>
+              </div>
+              <p className="text-[11px] font-medium text-slate-800">
+                {liveV26Eval.activeRepulsiveBarriers.length > 0
+                  ? liveV26Eval.activeRepulsiveBarriers.join(' · ')
+                  : 'Zona segura EN 1005-4 / P5 DIN 33402-2'}
+              </p>
+              {liveV26Eval.overlaySpec.hasActiveCorrection ? (
+                <div className="space-y-1 font-mono text-[11px] tabular-nums text-emerald-900 bg-emerald-50 border border-emerald-200 rounded p-2">
+                  {Math.abs(liveV26Eval.flatPayload.dth_corr_trunk_deg) >= 5 && (
+                    <div className="flex justify-between">
+                      <span>Guía Tronco:</span>
+                      <span className="font-bold">
+                        {liveV26Eval.flatPayload.dth_corr_trunk_deg > 0 ? '+' : ''}
+                        {liveV26Eval.flatPayload.dth_corr_trunk_deg.toFixed(1)}° hacia neutro
+                      </span>
+                    </div>
+                  )}
+                  {Math.abs(liveV26Eval.flatPayload.dth_corr_sh_r_deg) >= 6 && (
+                    <div className="flex justify-between">
+                      <span>Guía Hombro D:</span>
+                      <span className="font-bold">
+                        {liveV26Eval.flatPayload.dth_corr_sh_r_deg.toFixed(1)}° (&lt;60° EN 1005-4)
+                      </span>
+                    </div>
+                  )}
+                  {Math.abs(liveV26Eval.flatPayload.dth_corr_sh_l_deg) >= 6 && (
+                    <div className="flex justify-between">
+                      <span>Guía Hombro I:</span>
+                      <span className="font-bold">
+                        {liveV26Eval.flatPayload.dth_corr_sh_l_deg.toFixed(1)}° (&lt;60° EN 1005-4)
+                      </span>
+                    </div>
+                  )}
+                  {Math.abs(liveV26Eval.flatPayload.dth_corr_elb_r_deg) >= 8 && (
+                    <div className="flex justify-between">
+                      <span>Guía Codo D:</span>
+                      <span className="font-bold">
+                        {liveV26Eval.flatPayload.dth_corr_elb_r_deg > 0 ? '+' : ''}
+                        {liveV26Eval.flatPayload.dth_corr_elb_r_deg.toFixed(1)}° (P5 DIN)
+                      </span>
+                    </div>
+                  )}
+                  {Math.abs(liveV26Eval.flatPayload.dth_corr_knee_r_deg) >= 8 && (
+                    <div className="flex justify-between">
+                      <span>Guía Rodilla D:</span>
+                      <span className="font-bold">
+                        {liveV26Eval.flatPayload.dth_corr_knee_r_deg.toFixed(1)}° (P5 DIN)
+                      </span>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <p className="text-[11px] text-emerald-800 bg-emerald-50/70 border border-emerald-200 rounded p-2">
+                  Postura actual y proyección a +0.5 s contenidas dentro del Anillo 1 (P5 DIN 33402-2 / EN 1005-4).
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {v26Tab === 'datalink_json' && (
+          <div className="space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <p className="text-slate-600">
+                <strong>Sección 5 V2.6 (Esquema Plano Data Link):</strong> Objeto JSON plano sin
+                anidamientos ni cadenas narrativas; exclusivamente flotantes de precisión simple (
+                <code className="font-mono text-slate-800">Math.fround</code>) y códigos enteros{' '}
+                <code className="font-mono text-slate-800">0 | 1 | 2</code>.
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (navigator.clipboard) {
+                      void navigator.clipboard.writeText(liveV26Eval.serializedFlatJson);
+                      setCopiedFlatJson(true);
+                      window.setTimeout(() => setCopiedFlatJson(false), 1800);
+                    }
+                  }}
+                  className="px-2.5 py-1.5 rounded border border-slate-300 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-800 inline-flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  {copiedFlatJson ? 'JSON Copiado' : 'Copiar JSON Plano'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const blob = new Blob([liveV26Eval.serializedFlatJson], {
+                      type: 'application/json',
+                    });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `datalink_v26_t${currentTimeSec.toFixed(2)}s.json`;
+                    a.click();
+                    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+                  }}
+                  className="px-2.5 py-1.5 rounded bg-slate-900 hover:bg-slate-800 text-xs font-semibold text-white inline-flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Descargar .json
+                </button>
+              </div>
+            </div>
+            <pre className="bg-slate-950 text-emerald-300 border border-slate-800 rounded-md p-3 text-[11px] font-mono tabular-nums overflow-x-auto max-h-64 leading-relaxed">
+              {liveV26Eval.serializedFlatJson}
+            </pre>
+          </div>
+        )}
+
+        {v26Tab === 'matriz_din' && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 text-xs">
+            {/* Tabla izquierda: Antropometría DIN 33402-2 */}
+            <div className="border border-slate-200 rounded-md overflow-hidden">
+              <div className="px-3 py-2 bg-slate-100 border-b border-slate-200 font-bold text-slate-800">
+                Antropometría Real DIN 33402-2 (Adultos 18–65 años)
+              </div>
+              <div className="overflow-x-auto max-h-64">
+                <table className="w-full text-left border-collapse text-[11px] tabular-nums">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                      <th className="py-1.5 px-2.5 font-semibold">Dimensión</th>
+                      <th className="py-1.5 px-2 font-semibold">Hombres P5/P50/P95</th>
+                      <th className="py-1.5 px-2 font-semibold">Mujeres P5/P50/P95</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {DIN_33402_2_ANTHROPOMETRY.map((row) => (
+                      <tr key={row.id} className="hover:bg-slate-50">
+                        <td className="py-1.5 px-2.5 text-slate-800 font-medium">
+                          {row.dimensionLabel} <span className="text-slate-400">({row.unit})</span>
+                        </td>
+                        <td className="py-1.5 px-2 font-mono text-slate-700">
+                          {row.male.P5} / <strong>{row.male.P50}</strong> / {row.male.P95}
+                        </td>
+                        <td className="py-1.5 px-2 font-mono text-slate-700">
+                          {row.female.P5} / <strong>{row.female.P50}</strong> / {row.female.P95}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Tabla derecha: Síntesis de Doble Anillo (Anillo 1 Alerta P5 vs Anillo 2 Avatar P95) */}
+            <div className="border border-slate-200 rounded-md overflow-hidden">
+              <div className="px-3 py-2 bg-slate-100 border-b border-slate-200 font-bold text-slate-800">
+                Síntesis de Doble Anillo (Anillo 1: P5 Alerta · Anillo 2: Tope Avatar 3D)
+              </div>
+              <div className="p-2.5 space-y-2 max-h-64 overflow-y-auto">
+                <div className="font-mono text-[11px] tabular-nums bg-slate-50 border border-slate-200 rounded p-2 text-slate-700">
+                  {ring2StopsSummary}
+                </div>
+
+                <table className="w-full text-left border-collapse text-[11px] tabular-nums">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                      <th className="py-1 px-2 font-semibold">ID Kinovea</th>
+                      <th className="py-1 px-2 font-semibold">P5 (Anillo 1)</th>
+                      <th className="py-1 px-2 font-semibold">P50</th>
+                      <th className="py-1 px-2 font-semibold">P95 (Anillo 2)</th>
+                      <th className="py-1 px-2 font-semibold">Norma</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-mono">
+                    {NORMATIVE_KINOVEA_ROWS.slice(0, 13).map((r) => (
+                      <tr key={r.id} className="hover:bg-slate-50">
+                        <td className="py-1 px-2 font-semibold text-slate-800">{r.id}</td>
+                        <td className="py-1 px-2 text-amber-800">{r.p5Deg.toFixed(1)}°</td>
+                        <td className="py-1 px-2 text-slate-700">{r.p50Deg.toFixed(1)}°</td>
+                        <td className="py-1 px-2 text-emerald-800">{r.p95Deg.toFixed(1)}°</td>
+                        <td className="py-1 px-2 text-slate-500">{r.standardRef}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* OPCIÓN C: Panel de Corrección Asistida en Oclusiones (Keyframes Híbridos) */}

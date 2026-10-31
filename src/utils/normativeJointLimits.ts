@@ -618,3 +618,85 @@ export function clampPoseToNormativeWorkAgeLimits(pose: PosturePose3D): PostureP
     ...(toeLExtensionDeg !== undefined ? { toeLExtensionDeg } : {}),
   };
 }
+
+// ============================================================================
+// MODELADO MICRO-CINEMÁTICO: INFERENCIA DE FATIGA NEUROMUSCULAR (V2.6 · SEC. 2)
+// Jitter Articular (J): J = 1/(N-1) * sum(|theta_{i+1} - theta_i|)
+// ============================================================================
+export interface JointJitterFatigueResult {
+  jitterDeg: number;
+  ifScore: number;
+  level: 'optimo' | 'moderada' | 'critica';
+  label: string;
+  colorTone: 'emerald' | 'amber' | 'rose';
+}
+
+/**
+ * Evalúa el comportamiento temporal de un ángulo articular en una ventana móvil de N muestras (N=10 a 30 fps)
+ * y clasifica el Índice de Fatiga Neuromuscular (If) según la Especificación Técnica V2.6:
+ * - J < 0.5°: Control motor estable (If = 0.0)
+ * - 0.5° <= J <= 2.5°: Micro-oscilación por reclutamiento de unidades motoras secundarias (If = 0.1..0.7 lineal)
+ * - J > 2.5°: Temblor periférico pre-fallo / Pérdida de control isométrico (If = 1.0)
+ */
+export function computeJointJitterAndFatigue(
+  angleSeries: number[],
+  windowSize = 10,
+): JointJitterFatigueResult {
+  if (!angleSeries || angleSeries.length < 2) {
+    return {
+      jitterDeg: 0,
+      ifScore: 0.0,
+      level: 'optimo',
+      label: 'Control motor óptimo (J=0.0° · If=0.00)',
+      colorTone: 'emerald',
+    };
+  }
+
+  const window = angleSeries.slice(-Math.max(2, windowSize));
+  const n = window.length;
+  if (n < 2) {
+    return {
+      jitterDeg: 0,
+      ifScore: 0.0,
+      level: 'optimo',
+      label: 'Control motor óptimo (J=0.0° · If=0.00)',
+      colorTone: 'emerald',
+    };
+  }
+
+  let sumDiff = 0;
+  for (let i = 0; i < n - 1; i++) {
+    sumDiff += Math.abs(window[i + 1] - window[i]);
+  }
+  const jitterDeg = Math.round((sumDiff / (n - 1)) * 100) / 100;
+
+  if (jitterDeg < 0.5) {
+    return {
+      jitterDeg,
+      ifScore: 0.0,
+      level: 'optimo',
+      label: `Control motor estable (J=${jitterDeg.toFixed(2)}° · If=0.00)`,
+      colorTone: 'emerald',
+    };
+  }
+
+  if (jitterDeg <= 2.5) {
+    const ifScore = Math.round((0.1 + ((jitterDeg - 0.5) / 2.0) * 0.6) * 100) / 100;
+    return {
+      jitterDeg,
+      ifScore,
+      level: 'moderada',
+      label: `Fatiga moderada (J=${jitterDeg.toFixed(2)}° · If=${ifScore.toFixed(2)})`,
+      colorTone: 'amber',
+    };
+  }
+
+  return {
+    jitterDeg,
+    ifScore: 1.0,
+    level: 'critica',
+    label: `Fatiga crítica / Temblor (J=${jitterDeg.toFixed(2)}° · If=1.00)`,
+    colorTone: 'rose',
+  };
+}
+

@@ -118,8 +118,10 @@ async function normalizeVideoViaServer(file: File, timeoutMs = 22000): Promise<B
       signal: controller.signal,
     });
     if (!resp.ok) return null;
+    const ct = (resp.headers.get('content-type') || '').toLowerCase();
+    if (!ct.includes('video')) return null;
     const blob = await resp.blob();
-    return blob.size > 256 ? blob : null;
+    return blob.size > 512 ? blob : null;
   } catch {
     return null;
   } finally {
@@ -211,9 +213,20 @@ export const HandRepetitionTesterWorkspace: React.FC<HandRepetitionTesterWorkspa
 
       let workingUrl: string | null = null;
       const probeVid = document.createElement('video');
+      probeVid.style.position = 'fixed';
+      probeVid.style.left = '0px';
+      probeVid.style.top = '0px';
+      probeVid.style.width = '2px';
+      probeVid.style.height = '2px';
+      probeVid.style.opacity = '0.01';
+      probeVid.style.zIndex = '-1';
+      probeVid.style.pointerEvents = 'none';
       probeVid.muted = true;
       probeVid.playsInline = true;
+      probeVid.setAttribute('playsinline', 'true');
+      probeVid.setAttribute('webkit-playsinline', 'true');
       probeVid.preload = 'auto';
+      document.body.appendChild(probeVid);
 
       try {
         // 1. Si el vídeo <= 120 MB, normalizar primero en servidor con FFmpeg (-g 6 -r 24)
@@ -314,6 +327,7 @@ export const HandRepetitionTesterWorkspace: React.FC<HandRepetitionTesterWorkspa
           probeVid.pause();
           probeVid.removeAttribute('src');
           probeVid.load();
+          probeVid.remove();
         } catch {
           // Ignorar limpieza de probeVid
         }

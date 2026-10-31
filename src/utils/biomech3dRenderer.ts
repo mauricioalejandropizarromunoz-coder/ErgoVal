@@ -22,6 +22,7 @@ import {
 import { getEffectiveFigurePhotoUrl } from './figurePlanCatalog';
 import type { MocapFrameSample } from './mocapRetargeter';
 import { NORMATIVE_JOINT_LIMITS } from './normativeJointLimits';
+import type { PredictiveAvatarOverlaySpec } from './predictiveKinematicsV26';
 
 export const AVATAR_GLB_URL = '/models/ergo_avatar.glb';
 
@@ -239,9 +240,29 @@ interface BoneRestState {
   restWorldPos: THREE.Vector3;
 }
 
+interface PredictiveGuide3DRig {
+  group: THREE.Group;
+  ghostMat: THREE.MeshStandardMaterial;
+  haloWarnMat: THREE.MeshBasicMaterial;
+  haloCritMat: THREE.MeshBasicMaterial;
+  trunkRod: THREE.Mesh;
+  trunkTip: THREE.Mesh;
+  armRRod: THREE.Mesh;
+  elbowRTip: THREE.Mesh;
+  foreRRod: THREE.Mesh;
+  wristRTip: THREE.Mesh;
+  armLRod: THREE.Mesh;
+  elbowLTip: THREE.Mesh;
+  foreLRod: THREE.Mesh;
+  wristLTip: THREE.Mesh;
+  haloLumbar: THREE.Mesh;
+  haloShoulderR: THREE.Mesh;
+}
+
 interface GlbAvatarRig {
   avatarContainer: THREE.Group;
   propsRoot: THREE.Group;
+  predictiveGuide: PredictiveGuide3DRig;
   groundShadowMesh: THREE.Mesh;
   bones: Map<string, BoneRestState>;
   joints: Record<JointKey, THREE.Object3D>;
@@ -352,29 +373,32 @@ function configureStudioLighting(
   renderer: THREE.WebGLRenderer,
   isSoftwareRenderer: boolean,
 ): THREE.Mesh {
-  try {
-    const pmrem = new THREE.PMREMGenerator(renderer);
-    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-    scene.environmentIntensity = 0.6;
-    pmrem.dispose();
-  } catch {
-    // Direct studio lights below provide full illumination if PMREM is unavailable
+  const isMobileGpu =
+    typeof window !== 'undefined' &&
+    (window.innerWidth < 768 || Boolean(window.matchMedia?.('(pointer: coarse)').matches));
+
+  if (!isMobileGpu && !isSoftwareRenderer) {
+    try {
+      const pmrem = new THREE.PMREMGenerator(renderer);
+      scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+      scene.environmentIntensity = 0.6;
+      pmrem.dispose();
+    } catch {
+      // Direct studio lights below provide full illumination if PMREM is unavailable
+    }
   }
 
-  const ambientLight = new THREE.AmbientLight(0xffffff, 0.35);
+  const ambientLight = new THREE.AmbientLight(0xffffff, isMobileGpu ? 0.52 : 0.35);
   scene.add(ambientLight);
 
-  const hemiLight = new THREE.HemisphereLight(0xf8fafc, 0xdbe3ec, 0.7);
+  const hemiLight = new THREE.HemisphereLight(0xf8fafc, 0xdbe3ec, isMobileGpu ? 0.82 : 0.7);
   hemiLight.position.set(0, 3.2, 0);
   scene.add(hemiLight);
 
-  const keyLight = new THREE.DirectionalLight(0xfffcf8, 1.32);
+  const keyLight = new THREE.DirectionalLight(0xfffcf8, isMobileGpu ? 1.36 : 1.32);
   keyLight.position.set(-2.6, 3.8, 2.8);
-  if (!isSoftwareRenderer) {
-    const isMobileGpu =
-      typeof window !== 'undefined' &&
-      (window.innerWidth < 768 || Boolean(window.matchMedia?.('(pointer: coarse)').matches));
-    const shadowRes = isMobileGpu ? 1024 : 2048;
+  if (!isSoftwareRenderer && !isMobileGpu) {
+    const shadowRes = 1024;
     keyLight.castShadow = true;
     keyLight.shadow.mapSize.set(shadowRes, shadowRes);
     keyLight.shadow.camera.near = 0.5;
@@ -386,11 +410,13 @@ function configureStudioLighting(
     keyLight.shadow.bias = -0.0003;
     keyLight.shadow.normalBias = 0.018;
     // `radius` solo tiene efecto con PCFShadowMap (no con PCFSoftShadowMap)
-    keyLight.shadow.radius = isMobileGpu ? 3 : 4;
+    keyLight.shadow.radius = 3;
+  } else {
+    keyLight.castShadow = false;
   }
   scene.add(keyLight);
 
-  const fillLight = new THREE.DirectionalLight(0xf1f5f9, 0.62);
+  const fillLight = new THREE.DirectionalLight(0xf1f5f9, isMobileGpu ? 0.72 : 0.62);
   fillLight.position.set(2.8, 2.2, 2.4);
   scene.add(fillLight);
 
@@ -398,14 +424,16 @@ function configureStudioLighting(
   rimLight.position.set(0.4, 2.4, -2.8);
   scene.add(rimLight);
 
-  // Soft studio contact-shadow catcher plane on floor y = 0 (amplio para desplazamientos a pie)
+  // Soft studio contact-shadow catcher plane on floor y = 0
   const shadowFloor = new THREE.Mesh(
     new THREE.PlaneGeometry(6.8, 6.8),
-    new THREE.ShadowMaterial({ color: 0x0f172a, opacity: 0.22 }),
+    isMobileGpu || isSoftwareRenderer
+      ? new THREE.MeshBasicMaterial({ color: 0x0f172a, transparent: true, opacity: 0.12, depthWrite: false })
+      : new THREE.ShadowMaterial({ color: 0x0f172a, opacity: 0.22 }),
   );
   shadowFloor.rotation.x = -Math.PI / 2;
   shadowFloor.position.set(0, 0, 0);
-  shadowFloor.receiveShadow = !isSoftwareRenderer;
+  shadowFloor.receiveShadow = !isSoftwareRenderer && !isMobileGpu;
   scene.add(shadowFloor);
 
   return shadowFloor;
@@ -473,8 +501,12 @@ function bindLoadedGlbToRig(
 
     if ((obj as THREE.SkinnedMesh).isSkinnedMesh) {
       const sm = obj as THREE.SkinnedMesh;
-      sm.castShadow = !isSoftwareRenderer;
-      sm.receiveShadow = !isSoftwareRenderer;
+      const isMobileGpu =
+        typeof window !== 'undefined' &&
+        (window.innerWidth < 768 || Boolean(window.matchMedia?.('(pointer: coarse)').matches));
+
+      sm.castShadow = !isSoftwareRenderer && !isMobileGpu;
+      sm.receiveShadow = !isSoftwareRenderer && !isMobileGpu;
       sm.frustumCulled = false;
 
       const origMat = Array.isArray(sm.material) ? sm.material[0] : sm.material;
@@ -485,29 +517,34 @@ function bindLoadedGlbToRig(
 
       if (stdMat.map) {
         stdMat.map.colorSpace = THREE.SRGBColorSpace;
-        stdMat.map.anisotropy = maxAniso;
+        stdMat.map.anisotropy = isMobileGpu ? 1 : maxAniso;
         stdMat.map.needsUpdate = true;
       }
       if (stdMat.transparent) {
         stdMat.alphaTest = Math.max(stdMat.alphaTest || 0, 0.08);
         stdMat.depthWrite = true;
       }
-      stdMat.envMapIntensity = 0.52;
+      stdMat.envMapIntensity = isMobileGpu ? 0.1 : 0.52;
       stdMat.needsUpdate = true;
       sm.material = stdMat;
 
       rig.skinnedMeshes.push(sm);
       rig.baseMaterials.set(sm, stdMat);
 
-      const matA = stdMat.clone();
-      matA.emissive = new THREE.Color(0x0284c7);
-      matA.emissiveIntensity = 0.14;
-      rig.groupATintMaterials.set(sm, matA);
+      if (!isMobileGpu) {
+        const matA = stdMat.clone();
+        matA.emissive = new THREE.Color(0x0284c7);
+        matA.emissiveIntensity = 0.14;
+        rig.groupATintMaterials.set(sm, matA);
 
-      const matB = stdMat.clone();
-      matB.emissive = new THREE.Color(0xea580c);
-      matB.emissiveIntensity = 0.12;
-      rig.groupBTintMaterials.set(sm, matB);
+        const matB = stdMat.clone();
+        matB.emissive = new THREE.Color(0xea580c);
+        matB.emissiveIntensity = 0.12;
+        rig.groupBTintMaterials.set(sm, matB);
+      } else {
+        rig.groupATintMaterials.set(sm, stdMat);
+        rig.groupBTintMaterials.set(sm, stdMat);
+      }
 
       const n = sm.name;
       if (n === 'Avatar_HeadNeck') {
@@ -651,31 +688,41 @@ function getSharedEngine(): StudioEngine3D | null {
   if (engineCreationFailed) return null;
 
   try {
+    const isMobileScreen =
+      typeof window !== 'undefined' &&
+      (window.innerWidth < 768 || Boolean(window.matchMedia?.('(pointer: coarse)').matches));
+
     let isSoftwareRenderer = false;
     try {
-      const probeGl = document.createElement('canvas').getContext('webgl2');
-      if (!probeGl) {
-        isSoftwareRenderer = true;
-      } else {
-        const dbg = probeGl.getExtension('WEBGL_debug_renderer_info');
-        const param = dbg ? dbg.UNMASKED_RENDERER_WEBGL : probeGl.RENDERER;
-        const unmasked = String(probeGl.getParameter(param) || '');
-        probeGl.getExtension('WEBGL_lose_context')?.loseContext();
-        if (/swiftshader|llvmpipe|softpipe|software|basic render/i.test(unmasked)) {
+      if (typeof navigator !== 'undefined') {
+        const ua = navigator.userAgent.toLowerCase();
+        if (/swiftshader|llvmpipe|softpipe/i.test(ua)) {
           isSoftwareRenderer = true;
         }
       }
     } catch {
-      // Ignore WebGL debug extension query failure
+      // Ignore
     }
 
     const offscreen = document.createElement('canvas');
+    offscreen.width = isMobileScreen ? 560 : 720;
+    offscreen.height = isMobileScreen ? 420 : 540;
+
     const renderer = new THREE.WebGLRenderer({
       canvas: offscreen,
-      antialias: !isSoftwareRenderer,
+      antialias: !isSoftwareRenderer && !isMobileScreen,
       alpha: true,
       preserveDrawingBuffer: true,
-      powerPreference: 'high-performance',
+      powerPreference: isMobileScreen ? 'default' : 'high-performance',
+      precision: isMobileScreen ? 'mediump' : 'highp',
+    });
+
+    offscreen.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      console.warn('[StudioEngine3D] WebGL context loss intercepted and stabilized.');
+    });
+    offscreen.addEventListener('webglcontextrestored', () => {
+      console.info('[StudioEngine3D] WebGL context restored.');
     });
 
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -686,9 +733,10 @@ function getSharedEngine(): StudioEngine3D | null {
     renderer.toneMappingExposure = 1.0;
 
     renderer.setPixelRatio(1);
-    renderer.shadowMap.enabled = !isSoftwareRenderer;
-    // PCFShadowMap respeta `shadow.radius` (PCFSoftShadowMap lo ignora)
-    renderer.shadowMap.type = THREE.PCFShadowMap;
+    renderer.shadowMap.enabled = !isSoftwareRenderer && !isMobileScreen;
+    if (renderer.shadowMap.enabled) {
+      renderer.shadowMap.type = THREE.PCFShadowMap;
+    }
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(PALETTE.bgHex);
@@ -701,12 +749,74 @@ function getSharedEngine(): StudioEngine3D | null {
     const propsRoot = new THREE.Group();
     scene.add(propsRoot);
 
+    const predGroup = new THREE.Group();
+    predGroup.visible = false;
+    scene.add(predGroup);
+
+    const ghostMat = new THREE.MeshStandardMaterial({
+      color: 0x10b981,
+      emissive: 0x059669,
+      emissiveIntensity: 0.38,
+      roughness: 0.35,
+      metalness: 0.05,
+      transparent: true,
+      opacity: 0.68,
+      depthWrite: false,
+    });
+    const haloWarnMat = new THREE.MeshBasicMaterial({
+      color: 0xf59e0b,
+      transparent: true,
+      opacity: 0.78,
+      side: THREE.DoubleSide,
+      depthTest: false,
+    });
+    const haloCritMat = new THREE.MeshBasicMaterial({
+      color: 0xe11d48,
+      transparent: true,
+      opacity: 0.84,
+      side: THREE.DoubleSide,
+      depthTest: false,
+    });
+
+    const unitCylGeo = new THREE.CylinderGeometry(1, 1, 1, 14);
+    const unitSphereGeo = new THREE.SphereGeometry(1, 14, 14);
+    const haloGeoLumbar = new THREE.TorusGeometry(0.115, 0.009, 10, 36);
+    const haloGeoSh = new THREE.TorusGeometry(0.082, 0.008, 10, 32);
+
+    const makePredPart = (geo: THREE.BufferGeometry, mat: THREE.Material) => {
+      const m = new THREE.Mesh(geo, mat);
+      m.visible = false;
+      m.renderOrder = 6;
+      predGroup.add(m);
+      return m;
+    };
+
+    const predictiveGuide: PredictiveGuide3DRig = {
+      group: predGroup,
+      ghostMat,
+      haloWarnMat,
+      haloCritMat,
+      trunkRod: makePredPart(unitCylGeo, ghostMat),
+      trunkTip: makePredPart(unitSphereGeo, ghostMat),
+      armRRod: makePredPart(unitCylGeo, ghostMat),
+      elbowRTip: makePredPart(unitSphereGeo, ghostMat),
+      foreRRod: makePredPart(unitCylGeo, ghostMat),
+      wristRTip: makePredPart(unitSphereGeo, ghostMat),
+      armLRod: makePredPart(unitCylGeo, ghostMat),
+      elbowLTip: makePredPart(unitSphereGeo, ghostMat),
+      foreLRod: makePredPart(unitCylGeo, ghostMat),
+      wristLTip: makePredPart(unitSphereGeo, ghostMat),
+      haloLumbar: makePredPart(haloGeoLumbar, haloWarnMat),
+      haloShoulderR: makePredPart(haloGeoSh, haloWarnMat),
+    };
+
     const orthoCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.05, 30);
     const perspCam = new THREE.PerspectiveCamera(PERSPECTIVE_FOV_DEG, 1, 0.05, 30);
 
     const rig: GlbAvatarRig = {
       avatarContainer,
       propsRoot,
+      predictiveGuide,
       groundShadowMesh,
       bones: new Map(),
       joints: createPlaceholderJoints(avatarContainer),
@@ -3069,6 +3179,306 @@ function drawDimensionOverlay(
 // ============================================================================
 // SINGLE PANEL & BOOK FIGURE RENDERING PIPELINE
 // ============================================================================
+interface ProjectedCorrectionArrow {
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+  label: string;
+  isCritical: boolean;
+}
+
+const _predUpY = new THREE.Vector3(0, 1, 0);
+
+function orientUnitCylinderBetween(
+  mesh: THREE.Mesh,
+  a: THREE.Vector3,
+  b: THREE.Vector3,
+  radius: number,
+): void {
+  const dir = b.clone().sub(a);
+  const len = dir.length();
+  if (len < 0.02) {
+    mesh.visible = false;
+    return;
+  }
+  mesh.visible = true;
+  mesh.position.copy(a).addScaledVector(dir, 0.5);
+  mesh.scale.set(radius, len, radius);
+  mesh.quaternion.setFromUnitVectors(_predUpY, dir.divideScalar(len));
+  mesh.updateMatrixWorld(true);
+}
+
+function hidePredictiveGuide3D(rig: GlbAvatarRig): void {
+  const pg = rig.predictiveGuide;
+  pg.group.visible = false;
+  for (const child of pg.group.children) {
+    child.visible = false;
+  }
+}
+
+/**
+ * Configura en espacio 3D mundial la guía ergonómica predictiva (Sección 4.3 V2.6)
+ * sobre las articulaciones reales del avatar y proyecta los vectores de retorno Δθ_corr.
+ */
+function configurePredictiveGuide3DAndProject(
+  rig: GlbAvatarRig,
+  camera: THREE.Camera,
+  pose: PosturePose3D,
+  overlay: PredictiveAvatarOverlaySpec | undefined,
+  rx: number,
+  ry: number,
+  rw: number,
+  rh: number,
+): ProjectedCorrectionArrow[] {
+  hidePredictiveGuide3D(rig);
+  if (!overlay || !overlay.enabled) return [];
+
+  const showAny =
+    overlay.hasActiveCorrection || overlay.repulsiveEnergy >= 0.16 || overlay.dinFrMax > 0.55;
+  if (!showAny) return [];
+
+  const pg = rig.predictiveGuide;
+  pg.group.visible = true;
+
+  const pL5 = new THREE.Vector3();
+  const pC7 = new THREE.Vector3();
+  const pShR = new THREE.Vector3();
+  const pElbR = new THREE.Vector3();
+  const pWrR = new THREE.Vector3();
+  const pShL = new THREE.Vector3();
+  const pElbL = new THREE.Vector3();
+  const pWrL = new THREE.Vector3();
+
+  rig.joints.l5s1.getWorldPosition(pL5);
+  rig.joints.c7.getWorldPosition(pC7);
+  rig.joints.shoulderR.getWorldPosition(pShR);
+  rig.joints.elbowR.getWorldPosition(pElbR);
+  rig.joints.wristR.getWorldPosition(pWrR);
+  rig.joints.shoulderL.getWorldPosition(pShL);
+  rig.joints.elbowL.getWorldPosition(pElbL);
+  rig.joints.wristL.getWorldPosition(pWrL);
+
+  const leftSh = pShL.clone().sub(pShR);
+  if (leftSh.lengthSq() < 1e-5) leftSh.set(1, 0, 0);
+  else leftSh.normalize();
+
+  const subjectFwd = new THREE.Vector3().crossVectors(leftSh, _predUpY);
+  if (subjectFwd.lengthSq() < 1e-5) subjectFwd.set(0, 0, 1);
+  else subjectFwd.normalize();
+
+  const proj2D = (w: THREE.Vector3) => {
+    const v = w.clone().project(camera);
+    return {
+      x: rx + (v.x + 1) * 0.5 * rw,
+      y: ry + (-v.y + 1) * 0.5 * rh,
+    };
+  };
+
+  const arrows: ProjectedCorrectionArrow[] = [];
+  const isCrit = overlay.collisionState === 2 || overlay.dinFrMax > 0.7;
+  const activeHaloMat = isCrit ? pg.haloCritMat : pg.haloWarnMat;
+
+  // 1. Halo de barrera potencial en L5/S1 y vector fantasma 3D de corrección de Tronco
+  if (Math.abs(overlay.deltaTrunkFlexDeg) >= 5 || overlay.dinFrMax > 0.55) {
+    pg.haloLumbar.visible = true;
+    pg.haloLumbar.material = activeHaloMat;
+    pg.haloLumbar.position.copy(pL5);
+    pg.haloLumbar.lookAt(camera.position);
+    pg.haloLumbar.updateMatrixWorld(true);
+  }
+
+  if (Math.abs(overlay.deltaTrunkFlexDeg) >= 5) {
+    const spineLen = Math.max(0.28, pL5.distanceTo(pC7));
+    const targetTrunkDeg = Math.max(0, Math.min(22, pose.trunkFlexionDeg + overlay.deltaTrunkFlexDeg));
+    const targetRad = targetTrunkDeg * DEG2RAD;
+    const targetDir = _predUpY
+      .clone()
+      .multiplyScalar(Math.cos(targetRad))
+      .addScaledVector(subjectFwd, Math.sin(targetRad))
+      .normalize();
+    const targetC7 = pL5.clone().addScaledVector(targetDir, spineLen);
+
+    orientUnitCylinderBetween(pg.trunkRod, pL5, targetC7, 0.022);
+    pg.trunkTip.visible = true;
+    pg.trunkTip.position.copy(targetC7);
+    pg.trunkTip.scale.setScalar(0.038);
+    pg.trunkTip.updateMatrixWorld(true);
+
+    const a2 = proj2D(pC7);
+    const b2 = proj2D(targetC7);
+    if (Math.hypot(b2.x - a2.x, b2.y - a2.y) >= 8) {
+      const signStr = overlay.deltaTrunkFlexDeg > 0 ? '+' : '';
+      arrows.push({
+        fromX: a2.x,
+        fromY: a2.y,
+        toX: b2.x,
+        toY: b2.y,
+        label: `Guía DIN Tronco ${signStr}${Math.round(overlay.deltaTrunkFlexDeg)}°`,
+        isCritical: isCrit,
+      });
+    }
+  }
+
+  // 2. Guía 3D de miembro superior derecho cuando supera barrera DIN EN 1005-4 / P5
+  if (Math.abs(overlay.deltaShoulderRFlexDeg) >= 6 || Math.abs(overlay.deltaElbowRFlexDeg) >= 8) {
+    pg.haloShoulderR.visible = true;
+    pg.haloShoulderR.material = activeHaloMat;
+    pg.haloShoulderR.position.copy(pShR);
+    pg.haloShoulderR.lookAt(camera.position);
+    pg.haloShoulderR.updateMatrixWorld(true);
+
+    const lenUpperR = Math.max(0.22, pShR.distanceTo(pElbR));
+    const lenForeR = Math.max(0.20, pElbR.distanceTo(pWrR));
+    const outRight = leftSh.clone().negate();
+
+    const safeElevRad = 20 * DEG2RAD;
+    const targetArmDir = _predUpY
+      .clone()
+      .multiplyScalar(-Math.cos(safeElevRad))
+      .addScaledVector(subjectFwd, Math.sin(safeElevRad))
+      .addScaledVector(outRight, 0.14)
+      .normalize();
+    const targetElbR = pShR.clone().addScaledVector(targetArmDir, lenUpperR);
+
+    const safeElbBendRad = 78 * DEG2RAD;
+    const targetForeDir = targetArmDir
+      .clone()
+      .multiplyScalar(Math.cos(safeElbBendRad))
+      .addScaledVector(subjectFwd, Math.sin(safeElbBendRad))
+      .normalize();
+    const targetWrR = targetElbR.clone().addScaledVector(targetForeDir, lenForeR);
+
+    orientUnitCylinderBetween(pg.armRRod, pShR, targetElbR, 0.018);
+    pg.elbowRTip.visible = true;
+    pg.elbowRTip.position.copy(targetElbR);
+    pg.elbowRTip.scale.setScalar(0.030);
+    pg.elbowRTip.updateMatrixWorld(true);
+
+    orientUnitCylinderBetween(pg.foreRRod, targetElbR, targetWrR, 0.015);
+    pg.wristRTip.visible = true;
+    pg.wristRTip.position.copy(targetWrR);
+    pg.wristRTip.scale.setScalar(0.028);
+    pg.wristRTip.updateMatrixWorld(true);
+
+    const a2 = proj2D(pWrR);
+    const b2 = proj2D(targetWrR);
+    if (Math.hypot(b2.x - a2.x, b2.y - a2.y) >= 8) {
+      const dDeg =
+        Math.abs(overlay.deltaShoulderRFlexDeg) >= 6
+          ? overlay.deltaShoulderRFlexDeg
+          : overlay.deltaElbowRFlexDeg;
+      const signStr = dDeg > 0 ? '+' : '';
+      arrows.push({
+        fromX: a2.x,
+        fromY: a2.y,
+        toX: b2.x,
+        toY: b2.y,
+        label: `Corr. +0.5s Brazo D ${signStr}${Math.round(dDeg)}°`,
+        isCritical: isCrit,
+      });
+    }
+  }
+
+  // 3. Guía 3D de miembro superior izquierdo si supera barrera
+  if (Math.abs(overlay.deltaShoulderLFlexDeg) >= 6) {
+    const lenUpperL = Math.max(0.22, pShL.distanceTo(pElbL));
+    const lenForeL = Math.max(0.20, pElbL.distanceTo(pWrL));
+    const safeElevRad = 20 * DEG2RAD;
+    const targetArmLDir = _predUpY
+      .clone()
+      .multiplyScalar(-Math.cos(safeElevRad))
+      .addScaledVector(subjectFwd, Math.sin(safeElevRad))
+      .addScaledVector(leftSh, 0.14)
+      .normalize();
+    const targetElbL = pShL.clone().addScaledVector(targetArmLDir, lenUpperL);
+    const safeElbBendRad = 78 * DEG2RAD;
+    const targetForeLDir = targetArmLDir
+      .clone()
+      .multiplyScalar(Math.cos(safeElbBendRad))
+      .addScaledVector(subjectFwd, Math.sin(safeElbBendRad))
+      .normalize();
+    const targetWrL = targetElbL.clone().addScaledVector(targetForeLDir, lenForeL);
+
+    orientUnitCylinderBetween(pg.armLRod, pShL, targetElbL, 0.018);
+    pg.elbowLTip.visible = true;
+    pg.elbowLTip.position.copy(targetElbL);
+    pg.elbowLTip.scale.setScalar(0.030);
+    pg.elbowLTip.updateMatrixWorld(true);
+
+    orientUnitCylinderBetween(pg.foreLRod, targetElbL, targetWrL, 0.015);
+    pg.wristLTip.visible = true;
+    pg.wristLTip.position.copy(targetWrL);
+    pg.wristLTip.scale.setScalar(0.028);
+    pg.wristLTip.updateMatrixWorld(true);
+  }
+
+  return arrows;
+}
+
+function drawProjectedPredictiveArrows2D(
+  ctx: CanvasRenderingContext2D,
+  arrows: ProjectedCorrectionArrow[],
+  bounds: { x: number; y: number; w: number; h: number },
+  placedBoxes: OverlayBoxRect[],
+): void {
+  if (arrows.length === 0) return;
+  ctx.save();
+  for (const arr of arrows) {
+    const dx = arr.toX - arr.fromX;
+    const dy = arr.toY - arr.fromY;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 8) continue;
+
+    // Curva cuadrática suave desde la postura riesgosa actual hacia la postura fantasma corregida DIN
+    const nx = -dy / dist;
+    const ny = dx / dist;
+    const bendOffset = Math.min(28, dist * 0.24);
+    const ctrlX = (arr.fromX + arr.toX) * 0.5 + nx * bendOffset;
+    const ctrlY = (arr.fromY + arr.toY) * 0.5 + ny * bendOffset;
+
+    ctx.strokeStyle = '#059669';
+    ctx.lineWidth = 2.4;
+    ctx.setLineDash([5, 3]);
+    ctx.beginPath();
+    ctx.moveTo(arr.fromX, arr.fromY);
+    ctx.quadraticCurveTo(ctrlX, ctrlY, arr.toX, arr.toY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Punta de flecha en el objetivo corregido
+    const tipAng = Math.atan2(arr.toY - ctrlY, arr.toX - ctrlX);
+    const headLen = 8.5;
+    ctx.fillStyle = '#059669';
+    ctx.beginPath();
+    ctx.moveTo(arr.toX, arr.toY);
+    ctx.lineTo(
+      arr.toX - headLen * Math.cos(tipAng - 0.45),
+      arr.toY - headLen * Math.sin(tipAng - 0.45),
+    );
+    ctx.lineTo(
+      arr.toX - headLen * Math.cos(tipAng + 0.45),
+      arr.toY - headLen * Math.sin(tipAng + 0.45),
+    );
+    ctx.closePath();
+    ctx.fill();
+
+    drawWhiteBackedTag(
+      ctx,
+      arr.label,
+      ctrlX,
+      ctrlY - 10,
+      arr.isCritical ? '#059669' : '#0d9488',
+      '#065f46',
+      bounds,
+      '700 10.5px "IBM Plex Mono", monospace',
+      placedBoxes,
+      { x: arr.toX, y: arr.toY },
+    );
+  }
+  ctx.restore();
+}
+
 function renderSingle3DPanelIntoRect(
   ctx: CanvasRenderingContext2D,
   engine: StudioEngine3D,
@@ -3078,6 +3488,7 @@ function renderSingle3DPanelIntoRect(
   dpiScale: number,
   transparentBg = false,
   hideChrome = false,
+  predictiveOverlay?: PredictiveAvatarOverlaySpec,
 ): void {
   ctx.save();
   ctx.font = '700 13px "Plus Jakarta Sans", system-ui, sans-serif';
@@ -3130,12 +3541,28 @@ function renderSingle3DPanelIntoRect(
   const isMobileViewport =
     typeof window !== 'undefined' &&
     (window.innerWidth < 768 || Boolean(window.matchMedia?.('(pointer: coarse)').matches));
-  const glScale = engine.isSoftwareRenderer
-    ? Math.max(1, dpiScale)
-    : isMobileViewport && dpiScale < 1.95
-      ? Math.min(1.55, Math.max(1.15, dpiScale * 1.25))
-      : Math.max(2, dpiScale * 1.5);
-  engine.renderer.setSize(Math.round(viewW * glScale), Math.round(viewH * glScale), false);
+  const glScale = engine.isSoftwareRenderer || isMobileViewport
+    ? 1.0
+    : Math.max(1.35, Math.min(2.0, dpiScale));
+  const targetGlW = Math.round(viewW * glScale);
+  const targetGlH = Math.round(viewH * glScale);
+  if (
+    engine.renderer.domElement.width !== targetGlW ||
+    engine.renderer.domElement.height !== targetGlH
+  ) {
+    engine.renderer.setSize(targetGlW, targetGlH, false);
+  }
+
+  const predictiveArrows = configurePredictiveGuide3DAndProject(
+    engine.rig,
+    camera,
+    panel.pose,
+    predictiveOverlay,
+    viewX,
+    viewY,
+    viewW,
+    viewH,
+  );
 
   try {
     engine.renderer.render(engine.scene, camera);
@@ -3150,11 +3577,16 @@ function renderSingle3DPanelIntoRect(
       ctx.strokeRect(viewX, viewY, viewW, viewH);
       ctx.restore();
     }
+  } finally {
+    hidePredictiveGuide3D(engine.rig);
   }
 
   const pts = projectJoints2D(engine.rig, camera, viewX, viewY, viewW, viewH);
   const viewportBounds = { x: viewX, y: viewY, w: viewW, h: viewH };
   const placedBoxes: OverlayBoxRect[] = [];
+  if (predictiveArrows.length > 0) {
+    drawProjectedPredictiveArrows2D(ctx, predictiveArrows, viewportBounds, placedBoxes);
+  }
 
   if (hideChrome && panel.scoreBadge) {
     ctx.save();
@@ -3295,10 +3727,18 @@ export function renderInteractivePose3DToCanvas(
   _visualStyle: BiomechVisualStyle = 'anatomical_skin',
   transparentBg = false,
   hideGroundShadow = false,
+  predictiveOverlay?: PredictiveAvatarOverlaySpec,
 ): void {
-  const scale = Math.max(1, dpiScale);
-  canvas.width = Math.round(widthPx * scale);
-  canvas.height = Math.round(heightPx * scale);
+  const isMobileScreen =
+    typeof window !== 'undefined' &&
+    (window.innerWidth < 768 || Boolean(window.matchMedia?.('(pointer: coarse)').matches));
+  const scale = isMobileScreen ? 1.0 : Math.max(1, dpiScale);
+  const targetCanvasW = Math.round(widthPx * scale);
+  const targetCanvasH = Math.round(heightPx * scale);
+  if (canvas.width !== targetCanvasW || canvas.height !== targetCanvasH) {
+    canvas.width = targetCanvasW;
+    canvas.height = targetCanvasH;
+  }
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
@@ -3338,6 +3778,7 @@ export function renderInteractivePose3DToCanvas(
       scale,
       transparentBg,
       true,
+      predictiveOverlay,
     );
   } finally {
     if (engine.rig.groundShadowMesh) {
@@ -3532,7 +3973,10 @@ function clampThighAnatomicalLimits(
   const clampedLatRad = Math.max(-15 * DEG2RAD, Math.min(42 * DEG2RAD, latAngRad));
 
   const rawSagRad = Math.atan2(cFwd, -cUp);
-  const clampedSagRad = Math.max(-28 * DEG2RAD, Math.min(102 * DEG2RAD, rawSagRad));
+  const clampedSagRad = Math.max(
+    NORMATIVE_JOINT_LIMITS.hip.extensionMaxDeg * DEG2RAD,
+    Math.min(NORMATIVE_JOINT_LIMITS.hip.flexionMaxDeg * DEG2RAD, rawSagRad),
+  );
 
   const cosLat = Math.cos(clampedLatRad);
   const sinLat = Math.sin(clampedLatRad);
@@ -3546,8 +3990,8 @@ function clampThighAnatomicalLimits(
     .addScaledVector(pelvisFwd, newFwd)
     .normalize();
 
-  // Tope anatómico de cierre Muslo–Tronco (>= 40° internos; impide que el muslo suba al pecho)
-  const minTrunkThighRad = 40 * DEG2RAD;
+  // Tope anatómico Anillo 2 DIN 33402-2 P95 de cierre Muslo–Tronco (>= 57.0° internos; cero aproximación ideal a 0°)
+  const minTrunkThighRad = NORMATIVE_JOINT_LIMITS.hip.kinoveaTrunkThighHardMinDeg * DEG2RAD;
   const curTrunkAng = Math.acos(Math.max(-1, Math.min(1, out.dot(trunkUp))));
   if (curTrunkAng < minTrunkThighRad) {
     const pushAxis = new THREE.Vector3().crossVectors(trunkUp, out);
@@ -3616,7 +4060,22 @@ function applyDirectMocapRetargetToGlbBones(
 
   const P = (idx: number) => {
     const p = sample.world3D[idx];
-    return new THREE.Vector3(p.x, p.y, p.z);
+    const x = Number.isFinite(p?.x) ? p.x : 0;
+    const y = Number.isFinite(p?.y) ? p.y : 0;
+    const z = Number.isFinite(p?.z) ? p.z : 0;
+    return new THREE.Vector3(x, y, z);
+  };
+
+  const safeSubUnit = (
+    a: THREE.Vector3,
+    b: THREE.Vector3,
+    fallback: THREE.Vector3,
+    minLen = 1e-3,
+  ): THREE.Vector3 => {
+    const d = a.clone().sub(b);
+    const len = d.length();
+    if (!Number.isFinite(len) || len < minLen) return fallback.clone().normalize();
+    return d.divideScalar(len);
   };
 
   const nose = P(0);
@@ -3647,25 +4106,36 @@ function applyDirectMocapRetargetToGlbBones(
   const midSh = shL.clone().add(shR).multiplyScalar(0.5);
   const midEar = earL.clone().add(earR).multiplyScalar(0.5);
   const worldUp = new THREE.Vector3(0, 1, 0);
+  const worldLeftFallback = new THREE.Vector3(-1, 0, 0);
+  const worldDown = new THREE.Vector3(0, -1, 0);
 
   // 1. Base ortonormal 3D de Pelvis (Hips) — pondera confianza de caderas para evitar giros falsos en perfil
-  const shLeftDir = shL.clone().sub(shR).normalize();
-  const hipLeftRaw = hipL.clone().sub(hipR).normalize();
+  const shLeftDir = safeSubUnit(shL, shR, worldLeftFallback, 0.025);
+  const hipLeftRaw = safeSubUnit(hipL, hipR, shLeftDir, 0.025);
   const minHipVis = Math.min(sample.world3D[23]?.visibility ?? 0.5, sample.world3D[24]?.visibility ?? 0.5);
-  const hipWeight = Math.max(0.28, Math.min(0.72, (minHipVis - 0.35) / 0.35));
-  const pelvisLeftBlend = hipLeftRaw
+  const minLegVis = Math.min(
+    sample.world3D[25]?.visibility ?? 0.5,
+    sample.world3D[26]?.visibility ?? 0.5,
+    sample.world3D[27]?.visibility ?? 0.5,
+    sample.world3D[28]?.visibility ?? 0.5,
+  );
+  const hipWeight = Math.max(0.24, Math.min(0.72, (minHipVis - 0.35) / 0.35));
+  const pelvisLeftBlendRaw = hipLeftRaw
     .clone()
     .multiplyScalar(hipWeight)
-    .addScaledVector(shLeftDir, 1 - hipWeight)
-    .normalize();
-  const trunkUpRaw = midSh.clone().sub(midHip).normalize();
-  // Tope anatómico de inclinación global de tronco respecto a vertical (máx 105°)
+    .addScaledVector(shLeftDir, 1 - hipWeight);
+  const pelvisLeftBlend =
+    pelvisLeftBlendRaw.lengthSq() > 1e-4 ? pelvisLeftBlendRaw.normalize() : shLeftDir.clone();
+
+  const trunkUpRaw = safeSubUnit(midSh, midHip, worldUp, 0.08);
+  // Tope anatómico de inclinación global de tronco: máx 52° si tren inferior está en sombra/oculto, 85° si es visible
+  const maxTrunkDeg = minHipVis < 0.42 || minLegVis < 0.42 ? 52 : 85;
   const trunkWorldAngle = worldUp.angleTo(trunkUpRaw);
   const trunkUpUnit =
-    trunkWorldAngle > 105 * DEG2RAD
-      ? worldUp.clone().lerp(trunkUpRaw, (105 * DEG2RAD) / trunkWorldAngle).normalize()
+    trunkWorldAngle > maxTrunkDeg * DEG2RAD && trunkWorldAngle > 1e-4
+      ? worldUp.clone().lerp(trunkUpRaw, (maxTrunkDeg * DEG2RAD) / trunkWorldAngle).normalize()
       : trunkUpRaw;
-  const pelvisUpUnit = worldUp.clone().lerp(trunkUpUnit, 0.42).normalize();
+  const pelvisUpUnit = worldUp.clone().lerp(trunkUpUnit, 0.38).normalize();
 
   let pelvisFwd = new THREE.Vector3().crossVectors(pelvisLeftBlend, pelvisUpUnit);
   if (pelvisFwd.lengthSq() < 1e-5) pelvisFwd.set(0, 0, 1);
@@ -3693,15 +4163,19 @@ function applyDirectMocapRetargetToGlbBones(
 
   // 3. Cuello y Cabeza (Neck -> Head) orientados según vector interauricular + nariz
   const earSpan = earL.clone().sub(earR);
-  const headLeftRaw = earSpan.lengthSq() > 1e-4 ? earSpan.normalize() : thoraxLeft.clone();
+  const headLeftRaw = earSpan.lengthSq() > 4e-4 ? earSpan.normalize() : thoraxLeft.clone();
   const gazeRaw = nose.clone().sub(midEar);
-  const neckChordUp = midEar.clone().sub(midSh).normalize();
+  const neckChordUp = safeSubUnit(midEar, midSh, trunkUpUnit, 0.04);
+  const gazeUpCross =
+    gazeRaw.lengthSq() > 4e-4
+      ? new THREE.Vector3().crossVectors(gazeRaw.clone().normalize(), headLeftRaw)
+      : new THREE.Vector3(0, 0, 0);
   const headUpRaw =
-    gazeRaw.lengthSq() > 1e-4
+    gazeUpCross.lengthSq() > 1e-4
       ? neckChordUp
           .clone()
           .multiplyScalar(0.68)
-          .addScaledVector(new THREE.Vector3().crossVectors(gazeRaw.normalize(), headLeftRaw).normalize(), 0.32)
+          .addScaledVector(gazeUpCross.normalize(), 0.32)
           .normalize()
       : neckChordUp;
   let headFwd = new THREE.Vector3().crossVectors(headLeftRaw, headUpRaw);
@@ -3719,23 +4193,23 @@ function applyDirectMocapRetargetToGlbBones(
   applyBoneWorldRotDelta(rig, 'Neck', qThoraxWorld.clone().slerp(qHeadWorld, 0.55));
   applyBoneWorldRotDelta(rig, 'Head', qHeadWorld);
 
-  // 4. Cintura Escapular + Brazos y Antebrazos con topes anatómicos humanos
+  // 4. Cintura Escapular + Brazos y Antebrazos con topes anatómicos humanos y protección anti-NaN
   const uR = clampUpperArmAnatomicalLimits(
-    elbR.clone().sub(shR).normalize(),
+    safeSubUnit(elbR, shR, worldDown, 0.03),
     'R',
     thoraxLeft,
     trunkUpUnit,
     thoraxFwd,
   );
-  const fR = wrR.clone().sub(elbR).normalize();
+  const fR = safeSubUnit(wrR, elbR, uR, 0.03);
   const uL = clampUpperArmAnatomicalLimits(
-    elbL.clone().sub(shL).normalize(),
+    safeSubUnit(elbL, shL, worldDown, 0.03),
     'L',
     thoraxLeft,
     trunkUpUnit,
     thoraxFwd,
   );
-  const fL = wrL.clone().sub(elbL).normalize();
+  const fL = safeSubUnit(wrL, elbL, uL, 0.03);
 
   // Ritmo escapulohumeral sutil en elevaciones por encima del hombro
   const elevFactorR = Math.max(0, (uR.dot(trunkUpUnit) + 0.15) * 0.24);
@@ -3764,30 +4238,32 @@ function applyDirectMocapRetargetToGlbBones(
     refBendDir: thoraxFwd,
     fallbackSwingAxis: thoraxLeft,
     maxAxialTwistRad: 1.25,
-    minBendRad: 10 * DEG2RAD,
-    maxBendRad: 150 * DEG2RAD,
+    minBendRad: NORMATIVE_JOINT_LIMITS.elbow.flexionMinDeg * DEG2RAD,
+    maxBendRad: NORMATIVE_JOINT_LIMITS.elbow.flexionMaxDeg * DEG2RAD,
     parentWorldRot: qThoraxWorld,
   });
   const fEffR = armChainR.fEffective;
   applyBoneWorldRotDelta(rig, 'RightArm', armChainR.proxWorldRot);
 
-  // Pronosupinación real de muñeca derecha si índice y meñique son visibles
+  // Pronosupinación real de muñeca derecha si índice y meñique son nítidamente visibles
   let foreWorldRotR = armChainR.distWorldRot.clone();
   const visHandR = Math.min(sample.world3D[18]?.visibility ?? 0, sample.world3D[20]?.visibility ?? 0);
-  if (visHandR >= 0.55) {
+  if (visHandR >= 0.68) {
     const spanR = idxR.clone().sub(pinkyR);
-    const projSpan = spanR.sub(fEffR.clone().multiplyScalar(spanR.dot(fEffR)));
-    if (projSpan.lengthSq() > 1e-4) {
-      projSpan.normalize();
-      const restSpanAfter = new THREE.Vector3(0, 0, 1).applyQuaternion(foreWorldRotR);
-      const restSpanProj = restSpanAfter.sub(fEffR.clone().multiplyScalar(restSpanAfter.dot(fEffR)));
-      if (restSpanProj.lengthSq() > 1e-4) {
-        restSpanProj.normalize();
-        const pronoRad = Math.max(
-          -1.35,
-          Math.min(1.35, signedAngleAroundAxis(restSpanProj, projSpan, fEffR) * 0.65),
-        );
-        foreWorldRotR = new THREE.Quaternion().setFromAxisAngle(fEffR, pronoRad).multiply(foreWorldRotR);
+    if (spanR.length() > 0.032) {
+      const projSpan = spanR.sub(fEffR.clone().multiplyScalar(spanR.dot(fEffR)));
+      if (projSpan.lengthSq() > 4e-4) {
+        projSpan.normalize();
+        const restSpanAfter = new THREE.Vector3(0, 0, 1).applyQuaternion(foreWorldRotR);
+        const restSpanProj = restSpanAfter.sub(fEffR.clone().multiplyScalar(restSpanAfter.dot(fEffR)));
+        if (restSpanProj.lengthSq() > 4e-4) {
+          restSpanProj.normalize();
+          const pronoRad = Math.max(
+            -1.15,
+            Math.min(1.15, signedAngleAroundAxis(restSpanProj, projSpan, fEffR) * 0.55),
+          );
+          foreWorldRotR = new THREE.Quaternion().setFromAxisAngle(fEffR, pronoRad).multiply(foreWorldRotR);
+        }
       }
     }
   }
@@ -3796,11 +4272,11 @@ function applyDirectMocapRetargetToGlbBones(
   // Mano derecha (orientación muñeca -> nudillos)
   const midKnuckleR = idxR.clone().add(pinkyR).multiplyScalar(0.5);
   const handVecR = midKnuckleR.sub(wrR);
-  if (visHandR >= 0.5 && handVecR.lengthSq() > 1e-4) {
+  if (visHandR >= 0.62 && handVecR.lengthSq() > 9e-4) {
     handVecR.normalize();
     const vRestHandR = getRestSegmentUnitDir(rig, 'RightHand', 'RightHandMiddle1', vRestForeR);
     const handRestAfter = vRestHandR.clone().applyQuaternion(foreWorldRotR).normalize();
-    if (handRestAfter.angleTo(handVecR) < 0.85) {
+    if (handRestAfter.angleTo(handVecR) < 0.72) {
       const qWristR = setQuatFromUnitVectorsSafe(handRestAfter, handVecR, thoraxLeft).multiply(foreWorldRotR);
       applyBoneWorldRotDelta(rig, 'RightHand', qWristR);
     } else {
@@ -3821,8 +4297,8 @@ function applyDirectMocapRetargetToGlbBones(
     refBendDir: thoraxFwd,
     fallbackSwingAxis: thoraxLeft,
     maxAxialTwistRad: 1.25,
-    minBendRad: 10 * DEG2RAD,
-    maxBendRad: 150 * DEG2RAD,
+    minBendRad: NORMATIVE_JOINT_LIMITS.elbow.flexionMinDeg * DEG2RAD,
+    maxBendRad: NORMATIVE_JOINT_LIMITS.elbow.flexionMaxDeg * DEG2RAD,
     parentWorldRot: qThoraxWorld,
   });
   const fEffL = armChainL.fEffective;
@@ -3830,20 +4306,22 @@ function applyDirectMocapRetargetToGlbBones(
 
   let foreWorldRotL = armChainL.distWorldRot.clone();
   const visHandL = Math.min(sample.world3D[17]?.visibility ?? 0, sample.world3D[19]?.visibility ?? 0);
-  if (visHandL >= 0.55) {
+  if (visHandL >= 0.68) {
     const spanL = idxL.clone().sub(pinkyL);
-    const projSpanL = spanL.sub(fEffL.clone().multiplyScalar(spanL.dot(fEffL)));
-    if (projSpanL.lengthSq() > 1e-4) {
-      projSpanL.normalize();
-      const restSpanAfterL = new THREE.Vector3(0, 0, 1).applyQuaternion(foreWorldRotL);
-      const restSpanProjL = restSpanAfterL.sub(fEffL.clone().multiplyScalar(restSpanAfterL.dot(fEffL)));
-      if (restSpanProjL.lengthSq() > 1e-4) {
-        restSpanProjL.normalize();
-        const pronoRadL = Math.max(
-          -1.35,
-          Math.min(1.35, signedAngleAroundAxis(restSpanProjL, projSpanL, fEffL) * 0.65),
-        );
-        foreWorldRotL = new THREE.Quaternion().setFromAxisAngle(fEffL, pronoRadL).multiply(foreWorldRotL);
+    if (spanL.length() > 0.032) {
+      const projSpanL = spanL.sub(fEffL.clone().multiplyScalar(spanL.dot(fEffL)));
+      if (projSpanL.lengthSq() > 4e-4) {
+        projSpanL.normalize();
+        const restSpanAfterL = new THREE.Vector3(0, 0, 1).applyQuaternion(foreWorldRotL);
+        const restSpanProjL = restSpanAfterL.sub(fEffL.clone().multiplyScalar(restSpanAfterL.dot(fEffL)));
+        if (restSpanProjL.lengthSq() > 4e-4) {
+          restSpanProjL.normalize();
+          const pronoRadL = Math.max(
+            -1.15,
+            Math.min(1.15, signedAngleAroundAxis(restSpanProjL, projSpanL, fEffL) * 0.55),
+          );
+          foreWorldRotL = new THREE.Quaternion().setFromAxisAngle(fEffL, pronoRadL).multiply(foreWorldRotL);
+        }
       }
     }
   }
@@ -3851,11 +4329,11 @@ function applyDirectMocapRetargetToGlbBones(
 
   const midKnuckleL = idxL.clone().add(pinkyL).multiplyScalar(0.5);
   const handVecL = midKnuckleL.sub(wrL);
-  if (visHandL >= 0.5 && handVecL.lengthSq() > 1e-4) {
+  if (visHandL >= 0.62 && handVecL.lengthSq() > 9e-4) {
     handVecL.normalize();
     const vRestHandL = getRestSegmentUnitDir(rig, 'LeftHand', 'LeftHandMiddle1', vRestForeL);
     const handRestAfterL = vRestHandL.clone().applyQuaternion(foreWorldRotL).normalize();
-    if (handRestAfterL.angleTo(handVecL) < 0.85) {
+    if (handRestAfterL.angleTo(handVecL) < 0.72) {
       const qWristL = setQuatFromUnitVectorsSafe(handRestAfterL, handVecL, thoraxLeft).multiply(foreWorldRotL);
       applyBoneWorldRotDelta(rig, 'LeftHand', qWristL);
     } else {
@@ -3876,23 +4354,23 @@ function applyDirectMocapRetargetToGlbBones(
 
   // 5. Miembros Inferiores: Caderas, Rodillas y Pies con límites anatómicos y transporte sin singularidad a 90°
   const thighR = clampThighAnatomicalLimits(
-    kneeR.clone().sub(hipR).normalize(),
+    safeSubUnit(kneeR, hipR, worldDown, 0.04),
     'R',
     pelvisLeft,
     pelvisUpUnit,
     pelvisFwd,
     trunkUpUnit,
   );
-  const shankR = ankR.clone().sub(kneeR).normalize();
+  const shankR = safeSubUnit(ankR, kneeR, thighR, 0.04);
   const thighL = clampThighAnatomicalLimits(
-    kneeL.clone().sub(hipL).normalize(),
+    safeSubUnit(kneeL, hipL, worldDown, 0.04),
     'L',
     pelvisLeft,
     pelvisUpUnit,
     pelvisFwd,
     trunkUpUnit,
   );
-  const shankL = ankL.clone().sub(kneeL).normalize();
+  const shankL = safeSubUnit(ankL, kneeL, thighL, 0.04);
   const pelvisBack = pelvisFwd.clone().negate();
 
   const vRestThighR = getRestSegmentUnitDir(rig, 'RightUpLeg', 'RightLeg', new THREE.Vector3(0, -1, 0));
@@ -3906,8 +4384,8 @@ function applyDirectMocapRetargetToGlbBones(
     refBendDir: pelvisBack,
     fallbackSwingAxis: pelvisLeft,
     maxAxialTwistRad: 0.32,
-    minBendRad: 4 * DEG2RAD,
-    maxBendRad: 145 * DEG2RAD,
+    minBendRad: NORMATIVE_JOINT_LIMITS.knee.flexionMinDeg * DEG2RAD,
+    maxBendRad: NORMATIVE_JOINT_LIMITS.knee.flexionMaxDeg * DEG2RAD,
     parentWorldRot: qHipsWorld,
   });
   applyBoneWorldRotDelta(rig, 'RightUpLeg', legChainR.proxWorldRot);
@@ -3924,8 +4402,8 @@ function applyDirectMocapRetargetToGlbBones(
     refBendDir: pelvisBack,
     fallbackSwingAxis: pelvisLeft,
     maxAxialTwistRad: 0.32,
-    minBendRad: 4 * DEG2RAD,
-    maxBendRad: 145 * DEG2RAD,
+    minBendRad: NORMATIVE_JOINT_LIMITS.knee.flexionMinDeg * DEG2RAD,
+    maxBendRad: NORMATIVE_JOINT_LIMITS.knee.flexionMaxDeg * DEG2RAD,
     parentWorldRot: qHipsWorld,
   });
   applyBoneWorldRotDelta(rig, 'LeftUpLeg', legChainL.proxWorldRot);
@@ -4061,9 +4539,10 @@ function applyDirectMocapRetargetToGlbBones(
   rig.groundShadowMesh.position.x = sample.rootTranslation.x;
   rig.groundShadowMesh.position.z = sample.rootTranslation.z;
 
-  // Actualizar todas las mallas PBR de cuerpo completo
+  // Actualizar todas las mallas PBR de cuerpo completo e impedir frustum-culling esquelético en alcances amplios (ej. mano izquierda)
   for (const sm of rig.skinnedMeshes) {
     sm.visible = true;
+    sm.frustumCulled = false;
     sm.material = rig.baseMaterials.get(sm) || sm.material;
     sm.skeleton.update();
   }
@@ -4098,16 +4577,19 @@ export function renderMocapTwinFrameToCanvas(
       >
     >;
     showAngleHUD?: boolean;
+    predictiveOverlay?: PredictiveAvatarOverlaySpec;
     dpiScale?: number;
   },
 ): void {
-  const scale = Math.max(1, options?.dpiScale ?? 1.5);
-  if (
-    canvas.width !== Math.round(widthPx * scale) ||
-    canvas.height !== Math.round(heightPx * scale)
-  ) {
-    canvas.width = Math.round(widthPx * scale);
-    canvas.height = Math.round(heightPx * scale);
+  const isMobileScreen =
+    typeof window !== 'undefined' &&
+    (window.innerWidth < 768 || Boolean(window.matchMedia?.('(pointer: coarse)').matches));
+  const scale = isMobileScreen ? 1.0 : Math.max(1, Math.min(2, options?.dpiScale ?? 1.5));
+  const targetCanvasW = Math.round(widthPx * scale);
+  const targetCanvasH = Math.round(heightPx * scale);
+  if (canvas.width !== targetCanvasW || canvas.height !== targetCanvasH) {
+    canvas.width = targetCanvasW;
+    canvas.height = targetCanvasH;
   }
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -4185,8 +4667,26 @@ export function renderMocapTwinFrameToCanvas(
 
   engine.scene.background = null;
   engine.renderer.setClearColor(PALETTE.bgHex, 0);
-  const glScale = engine.isSoftwareRenderer ? 1 : Math.min(2, scale * 1.25);
-  engine.renderer.setSize(Math.round(widthPx * glScale), Math.round(heightPx * glScale), false);
+  const glScale = engine.isSoftwareRenderer || isMobileScreen ? 1.0 : Math.min(2, scale * 1.25);
+  const targetGlW = Math.round(widthPx * glScale);
+  const targetGlH = Math.round(heightPx * glScale);
+  if (
+    engine.renderer.domElement.width !== targetGlW ||
+    engine.renderer.domElement.height !== targetGlH
+  ) {
+    engine.renderer.setSize(targetGlW, targetGlH, false);
+  }
+
+  const predictiveArrows = configurePredictiveGuide3DAndProject(
+    engine.rig,
+    camera,
+    sample.ergonomicPose,
+    options?.predictiveOverlay,
+    0,
+    0,
+    widthPx,
+    heightPx,
+  );
 
   try {
     engine.renderer.render(engine.scene, camera);
@@ -4194,14 +4694,20 @@ export function renderMocapTwinFrameToCanvas(
   } catch (err) {
     console.warn('Mocap twin WebGL frame error:', err);
   } finally {
+    hidePredictiveGuide3D(engine.rig);
     engine.rig.groundShadowMesh.position.set(0, 0.001, 0);
+  }
+
+  const viewportBounds = { x: 8, y: 8, w: widthPx - 16, h: heightPx - 16 };
+  const placed: OverlayBoxRect[] = [];
+
+  if (predictiveArrows.length > 0) {
+    drawProjectedPredictiveArrows2D(ctx, predictiveArrows, viewportBounds, placed);
   }
 
   if (options?.showAngleHUD !== false) {
     const pts = projectJoints2D(engine.rig, camera, 0, 0, widthPx, heightPx);
     const ep = sample.ergonomicPose;
-    const viewportBounds = { x: 8, y: 8, w: widthPx - 16, h: heightPx - 16 };
-    const placed: OverlayBoxRect[] = [];
 
     const elbIntR = Math.max(30, Math.min(170, Math.round(180 - ep.elbowRFlexionDeg)));
     const dynamicArcs: AngleArcAnnotation[] = [
@@ -4255,9 +4761,16 @@ export function renderInteractiveFreeAvatarToCanvas(
     hideGroundShadow?: boolean;
   },
 ): Record<JointKey, { x: number; y: number }> | null {
-  const scale = Math.max(1, dpiScale);
-  canvas.width = Math.round(widthPx * scale);
-  canvas.height = Math.round(heightPx * scale);
+  const isMobileScreen =
+    typeof window !== 'undefined' &&
+    (window.innerWidth < 768 || Boolean(window.matchMedia?.('(pointer: coarse)').matches));
+  const scale = isMobileScreen ? 1.0 : Math.max(1, dpiScale);
+  const targetCanvasW = Math.round(widthPx * scale);
+  const targetCanvasH = Math.round(heightPx * scale);
+  if (canvas.width !== targetCanvasW || canvas.height !== targetCanvasH) {
+    canvas.width = targetCanvasW;
+    canvas.height = targetCanvasH;
+  }
   const ctx = canvas.getContext('2d');
   if (!ctx) return null;
 

@@ -1621,6 +1621,22 @@ export default function App() {
           <button
             type="button"
             onClick={() => {
+              setActiveWorkspace('video_mellizo');
+              setIsMobileMoreOpen(false);
+            }}
+            className={`flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold whitespace-nowrap transition-colors ${
+              activeWorkspace === 'video_mellizo'
+                ? 'text-teal-400 bg-slate-800/90'
+                : 'text-teal-300 hover:text-white'
+            }`}
+          >
+            <Film className="w-4 h-4" />
+            <span>Mellizo 3D</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
               setActiveWorkspace('avatar_libre');
               setIsMobileMoreOpen(false);
             }}
@@ -1631,23 +1647,7 @@ export default function App() {
             }`}
           >
             <Move3d className="w-4 h-4" />
-            <span>Avatar Libre</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setActiveWorkspace('ambiente_fisico');
-              setIsMobileMoreOpen(false);
-            }}
-            className={`flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold whitespace-nowrap transition-colors ${
-              activeWorkspace === 'ambiente_fisico'
-                ? 'text-amber-400 bg-slate-800/90'
-                : 'text-slate-300 hover:text-white'
-            }`}
-          >
-            <Thermometer className="w-4 h-4" />
-            <span>Térmico</span>
+            <span>Avatar 3D</span>
           </button>
 
           <button
@@ -1655,8 +1655,9 @@ export default function App() {
             onClick={() => setIsMobileMoreOpen((prev) => !prev)}
             className={`flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold whitespace-nowrap transition-colors ${
               isMobileMoreOpen ||
-              activeWorkspace === 'video_mellizo' ||
+              activeWorkspace === 'ambiente_fisico' ||
               activeWorkspace === 'medidor_angulos' ||
+              activeWorkspace === 'testeo_repetitividad' ||
               activeWorkspace === 'avatar_cebolla' ||
               activeWorkspace === 'testeo_avatar' ||
               activeWorkspace === 'figuras3d' ||

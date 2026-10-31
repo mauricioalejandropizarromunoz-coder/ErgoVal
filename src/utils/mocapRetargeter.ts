@@ -18,8 +18,10 @@ export interface MocapFrameSample {
   timeSec: number;
   /** 33 puntos en espacio métrico 3D alineado con la cámara Three.js (+X der pantalla, +Y arriba, +Z hacia cámara) */
   world3D: MocapVec3[];
-  /** 33 puntos normalizados 2D [0..1] sobre el fotograma de vídeo original */
+  /** 33 puntos normalizados 2D [0..1] sobre el fotograma de vídeo original (filtrados 1€) */
   norm2D: MocapVec3[];
+  /** 33 puntos normalizados 2D [0..1] crudos pre-filtro 1€ para inferencia de micro-jitter neuromuscular (V2.6 Sec. 2) */
+  rawNorm2D?: MocapVec3[];
   /** Traslación real 3D de la pelvis en metros respecto a la postura inicial (caminata / desplazamiento) */
   rootTranslation: { x: number; y: number; z: number };
   /** Visibilidad media de muñeca/codo derecho [0..1] */
@@ -63,8 +65,10 @@ export interface MocapTimelineResult {
   occlusionSegments: OcclusionSegment[];
 }
 
-const MEDIAPIPE_WASM_CDN =
-  'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm';
+const MEDIAPIPE_WASM_CDNS = [
+  'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm',
+  'https://unpkg.com/@mediapipe/tasks-vision@0.10.8/wasm',
+];
 
 const MODEL_URLS: Array<{ tier: 'heavy' | 'full' | 'lite'; url: string }> = [
   {
@@ -81,6 +85,18 @@ const MODEL_URLS: Array<{ tier: 'heavy' | 'full' | 'lite'; url: string }> = [
   },
 ];
 
+async function resolveVisionTasks(): Promise<Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>>> {
+  for (const cdn of MEDIAPIPE_WASM_CDNS) {
+    try {
+      const resolver = await FilesetResolver.forVisionTasks(cdn);
+      if (resolver) return resolver;
+    } catch {
+      // Siguiente CDN de respaldo
+    }
+  }
+  throw new Error('No se pudo inicializar el motor WASM de visión computacional.');
+}
+
 let heavyLandmarker: PoseLandmarker | null = null;
 let loadedModelTier: 'heavy' | 'full' | 'lite' = 'heavy';
 let heavyInitPromise: Promise<{ landmarker: PoseLandmarker; tier: 'heavy' | 'full' | 'lite' } | null> | null =
@@ -90,6 +106,34 @@ let heavyInitPromise: Promise<{ landmarker: PoseLandmarker; tier: 'heavy' | 'ful
  * Impide colisiones `Packet timestamp mismatch` cuando se procesan varios vídeos seguidos.
  */
 let lastGlobalMocapTimestampMs = 0;
+
+/**
+ * Genera una marca temporal estrictamente creciente compartida entre todos los módulos
+ * que consumen el singleton `PoseLandmarker` en modo `VIDEO`.
+ */
+export function nextMonotonicMocapTimestampMs(stepMs = 42, forceVideoResetJump = false): number {
+  const safeStep = Math.max(16, Math.round(stepMs));
+  if (forceVideoResetJump) {
+    lastGlobalMocapTimestampMs = Math.max(
+      lastGlobalMocapTimestampMs + 5000,
+      Math.round(performance.now()) + 150,
+    );
+  } else {
+    lastGlobalMocapTimestampMs = Math.max(
+      lastGlobalMocapTimestampMs + safeStep,
+      Math.round(performance.now()),
+    );
+  }
+  return lastGlobalMocapTimestampMs;
+}
+
+function isMobileViewportDevice(): boolean {
+  if (typeof window === 'undefined') return false;
+  return (
+    window.innerWidth < 768 ||
+    (typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches)
+  );
+}
 
 function clamp(v: number, min: number, max: number): number {
   if (!Number.isFinite(v)) return min;
@@ -195,9 +239,16 @@ export async function initHeavyPoseMoCap(): Promise<{
 
   heavyInitPromise = (async () => {
     try {
-      const vision = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM_CDN);
-      for (const candidate of MODEL_URLS) {
-        for (const delegate of ['GPU', 'CPU'] as const) {
+      const vision = await resolveVisionTasks();
+      const isMobile = isMobileViewportDevice();
+      // En dispositivos móviles se utiliza estrictamente LITE -> FULL y delegado CPU (WASM SIMD)
+      // para eliminar la colisión de contextos WebGL con Three.js que satura el driver GPU de Android y congela/cierra la app.
+      const orderedModels = isMobile
+        ? [MODEL_URLS[2], MODEL_URLS[1]]
+        : MODEL_URLS;
+      const delegates = isMobile ? (['CPU'] as const) : (['GPU', 'CPU'] as const);
+      for (const candidate of orderedModels) {
+        for (const delegate of delegates) {
           try {
             const lm = await PoseLandmarker.createFromOptions(vision, {
               baseOptions: {
@@ -206,9 +257,9 @@ export async function initHeavyPoseMoCap(): Promise<{
               },
               runningMode: 'VIDEO',
               numPoses: 1,
-              minPoseDetectionConfidence: 0.45,
-              minPosePresenceConfidence: 0.45,
-              minTrackingConfidence: 0.45,
+              minPoseDetectionConfidence: 0.42,
+              minPosePresenceConfidence: 0.42,
+              minTrackingConfidence: 0.42,
             });
             heavyLandmarker = lm;
             loadedModelTier = candidate.tier;
@@ -221,7 +272,7 @@ export async function initHeavyPoseMoCap(): Promise<{
       heavyInitPromise = null;
       return null;
     } catch (err) {
-      console.warn('[mocapRetargeter] No se pudo inicializar MediaPipe Pose Heavy:', err);
+      console.warn('[mocapRetargeter] No se pudo inicializar MediaPipe Pose:', err);
       heavyInitPromise = null;
       return null;
     }
@@ -253,9 +304,14 @@ export async function resetHeavyPoseMoCap(preferCpuFallback = false): Promise<{
   }
 
   try {
-    const vision = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM_CDN);
-    for (const candidate of MODEL_URLS) {
-      for (const delegate of ['CPU', 'GPU'] as const) {
+    const vision = await resolveVisionTasks();
+    const isMobile = isMobileViewportDevice();
+    const orderedModels = isMobile
+      ? [MODEL_URLS[2], MODEL_URLS[1]]
+      : MODEL_URLS;
+    const delegates = isMobile ? (['CPU'] as const) : (['CPU', 'GPU'] as const);
+    for (const candidate of orderedModels) {
+      for (const delegate of delegates) {
         try {
           const lm = await PoseLandmarker.createFromOptions(vision, {
             baseOptions: {
@@ -282,34 +338,66 @@ export async function resetHeavyPoseMoCap(preferCpuFallback = false): Promise<{
   return null;
 }
 
-function seekVideoExact(video: HTMLVideoElement, timeSec: number): Promise<void> {
-  return new Promise((resolve) => {
-    const safeMax = Math.max(0, (video.duration || 1) - 0.025);
-    const target = clamp(timeSec, 0, safeMax);
-    if (Math.abs(video.currentTime - target) < 0.008 && video.readyState >= 2) {
-      resolve();
-      return;
-    }
+async function ensureVideoFrameDecoded(video: HTMLVideoElement, timeoutMs = 1400): Promise<void> {
+  if (video.readyState >= 2 && video.videoWidth > 0) return;
+  await new Promise<void>((resolve) => {
     let done = false;
     const finish = () => {
       if (done) return;
       done = true;
-      video.removeEventListener('seeked', onSeeked);
+      video.removeEventListener('loadeddata', finish);
+      video.removeEventListener('canplay', finish);
+      window.clearTimeout(timer);
       resolve();
     };
-    const onSeeked = () => {
-      window.clearTimeout(timer);
-      finish();
-    };
-    const timer = window.setTimeout(finish, 380);
-    video.addEventListener('seeked', onSeeked, { once: true });
+    const timer = window.setTimeout(finish, timeoutMs);
+    video.addEventListener('loadeddata', finish, { once: true });
+    video.addEventListener('canplay', finish, { once: true });
     try {
-      video.currentTime = target;
+      if (video.readyState === 0) video.load();
     } catch {
-      window.clearTimeout(timer);
       finish();
     }
   });
+}
+
+function seekVideoExact(video: HTMLVideoElement, timeSec: number): Promise<void> {
+  return ensureVideoFrameDecoded(video, 1200).then(
+    () =>
+      new Promise<void>((resolve) => {
+        const dur = Number.isFinite(video.duration) && video.duration > 0.05 ? video.duration : 1;
+        const safeMax = Math.max(0, dur - 0.025);
+        const target = clamp(timeSec, 0, safeMax);
+        if (Math.abs(video.currentTime - target) < 0.008 && video.readyState >= 2) {
+          resolve();
+          return;
+        }
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          video.removeEventListener('seeked', onSeeked);
+          window.clearTimeout(timer);
+          resolve();
+        };
+        const onSeeked = () => {
+          window.clearTimeout(timer);
+          // Un único ciclo de composición tras `seeked` garantiza que el buffer de píxeles esté listo en vídeos pausados sin bloquear 80ms por fotograma
+          if (typeof window.requestAnimationFrame === 'function') {
+            window.requestAnimationFrame(() => finish());
+          } else {
+            finish();
+          }
+        };
+        const timer = window.setTimeout(finish, 260);
+        video.addEventListener('seeked', onSeeked, { once: true });
+        try {
+          video.currentTime = target;
+        } catch {
+          finish();
+        }
+      }),
+  );
 }
 
 function vecSub(a: MocapVec3, b: MocapVec3): { x: number; y: number; z: number } {
@@ -542,26 +630,78 @@ function enforceAnatomicalLimitsAndLegCoherence(
 
   const shL = out[11];
   const shR = out[12];
-  const hipL = out[23];
-  const hipR = out[24];
+  let hipL = out[23];
+  let hipR = out[24];
   if (!shL || !shR || !hipL || !hipR) return out;
 
-  const midHip = vecMid(hipL, hipR);
   const midSh = vecMid(shL, shR);
-  const trunkUp = vecNorm(vecSub(midSh, midHip));
-  const shLeft = vecNorm(vecSub(shL, shR));
-  const hipLeftRaw = vecNorm(vecSub(hipL, hipR));
+  let shLeft = vecSub(shL, shR);
+  if (vecLen(shLeft) < 0.04) shLeft = { x: 0, y: 0, z: -1 };
+  else shLeft = vecNorm(shLeft);
+
   const minHipVis = Math.min(rawWorld[23]?.visibility ?? 0.5, rawWorld[24]?.visibility ?? 0.5);
-  const hipTrust = clamp((minHipVis - 0.35) / 0.35, 0.28, 0.72);
+  const rawMidHip = vecMid(hipL, hipR);
+
+  // Protección anti-colapso ("tirado en el suelo"): si las caderas están en sombra profunda bajo mesa/banco
+  // o fuera de plano (encuadre de cintura arriba) y el vector midHip->midSh pierde altura vertical,
+  // reconstruimos una pelvis anatómica erguida bajo los hombros.
+  if (minHipVis < 0.38 || midSh.y - rawMidHip.y < 0.16) {
+    let shHorizFwd = vecCross(shLeft, upY);
+    if (vecLen(shHorizFwd) < 1e-4) shHorizFwd = { x: 0, y: 0, z: 1 };
+    else shHorizFwd = vecNorm(shHorizFwd);
+
+    const wHipFix =
+      midSh.y - rawMidHip.y < 0.16 ? 1.0 : clamp((0.38 - minHipVis) / 0.18, 0.35, 1.0);
+    const synthMidHip = {
+      x: midSh.x - shHorizFwd.x * 0.04,
+      y: midSh.y - 0.46,
+      z: midSh.z - shHorizFwd.z * 0.04,
+    };
+    const halfPelvisW = 0.105;
+    const synthHipL: MocapVec3 = {
+      x: synthMidHip.x + shLeft.x * halfPelvisW,
+      y: synthMidHip.y + shLeft.y * halfPelvisW,
+      z: synthMidHip.z + shLeft.z * halfPelvisW,
+      visibility: hipL.visibility,
+    };
+    const synthHipR: MocapVec3 = {
+      x: synthMidHip.x - shLeft.x * halfPelvisW,
+      y: synthMidHip.y - shLeft.y * halfPelvisW,
+      z: synthMidHip.z - shLeft.z * halfPelvisW,
+      visibility: hipR.visibility,
+    };
+    out[23] = {
+      x: hipL.x * (1 - wHipFix) + synthHipL.x * wHipFix,
+      y: hipL.y * (1 - wHipFix) + synthHipL.y * wHipFix,
+      z: hipL.z * (1 - wHipFix) + synthHipL.z * wHipFix,
+      visibility: hipL.visibility,
+    };
+    out[24] = {
+      x: hipR.x * (1 - wHipFix) + synthHipR.x * wHipFix,
+      y: hipR.y * (1 - wHipFix) + synthHipR.y * wHipFix,
+      z: hipR.z * (1 - wHipFix) + synthHipR.z * wHipFix,
+      visibility: hipR.visibility,
+    };
+    hipL = out[23];
+    hipR = out[24];
+  }
+
+  const midHip = vecMid(hipL, hipR);
+  const trunkUp = vecNorm(vecSub(midSh, midHip));
+  let hipLeftRaw = vecSub(hipL, hipR);
+  if (vecLen(hipLeftRaw) < 0.04) hipLeftRaw = shLeft;
+  else hipLeftRaw = vecNorm(hipLeftRaw);
+
+  const hipTrust = clamp((minHipVis - 0.35) / 0.35, 0.25, 0.72);
   const pelvisLeftBlend = vecNorm({
     x: hipLeftRaw.x * hipTrust + shLeft.x * (1 - hipTrust),
     y: hipLeftRaw.y * hipTrust + shLeft.y * (1 - hipTrust),
     z: hipLeftRaw.z * hipTrust + shLeft.z * (1 - hipTrust),
   });
   const pelvisUp = vecNorm({
-    x: upY.x * 0.58 + trunkUp.x * 0.42,
-    y: upY.y * 0.58 + trunkUp.y * 0.42,
-    z: upY.z * 0.58 + trunkUp.z * 0.42,
+    x: upY.x * 0.58 + trunkUp.x * 0.52,
+    y: upY.y * 0.58 + trunkUp.y * 0.52,
+    z: upY.z * 0.58 + trunkUp.z * 0.52,
   });
   let pelvisFwd = vecCross(pelvisLeftBlend, pelvisUp);
   if (vecLen(pelvisFwd) < 1e-5) pelvisFwd = { x: 0, y: 0, z: 1 };
@@ -615,7 +755,7 @@ function enforceAnatomicalLimitsAndLegCoherence(
     return best;
   };
 
-  // Paso A: Asistencia bilateral en agachadas cuando una pierna pierde referencia (< 0.48) y la otra es visible
+  // Paso A: Asistencia bilateral o bipedestación erguida cuando las piernas están ocultas / en sombra bajo mesa
   const legConfR = Math.min(rawWorld[26]?.visibility ?? 0, rawWorld[28]?.visibility ?? 0);
   const legConfL = Math.min(rawWorld[25]?.visibility ?? 0, rawWorld[27]?.visibility ?? 0);
   const fullLegSpan = limbs.thigh + limbs.shank;
@@ -628,7 +768,75 @@ function enforceAnatomicalLimitsAndLegCoherence(
     };
   };
 
-  if (legConfL < 0.48 && legConfR >= 0.52) {
+  const rawAnkCollapsed =
+    (out[28] && out[24] && out[28].y > out[24].y - 0.26) ||
+    (out[27] && out[23] && out[27].y > out[23].y - 0.26);
+
+  if (Math.max(legConfR, legConfL) < 0.44 || (rawAnkCollapsed && Math.max(legConfR, legConfL) < 0.62)) {
+    // Ambas piernas ocultas (sombra bajo banco de trabajo o vídeo de cintura arriba):
+    // mantener bipedestación vertical limpia debajo de la pelvis para que el avatar jamás caiga al suelo.
+    const wStand = rawAnkCollapsed
+      ? 1.0
+      : clamp((0.46 - Math.max(legConfR, legConfL)) / 0.22, 0.45, 1.0);
+    const applyStandingLeg = (
+      hipPt: MocapVec3,
+      kneeIdx: number,
+      ankIdx: number,
+      heelIdx: number,
+      toeIdx: number,
+    ) => {
+      const sKnee = {
+        x: hipPt.x + pelvisFwd.x * 0.025,
+        y: hipPt.y - limbs.thigh,
+        z: hipPt.z + pelvisFwd.z * 0.025,
+      };
+      const sAnk = {
+        x: hipPt.x,
+        y: sKnee.y - limbs.shank,
+        z: hipPt.z,
+      };
+      const sHeel = {
+        x: sAnk.x - pelvisFwd.x * 0.055,
+        y: sAnk.y - 0.045,
+        z: sAnk.z - pelvisFwd.z * 0.055,
+      };
+      const sToe = {
+        x: sAnk.x + pelvisFwd.x * 0.145,
+        y: sAnk.y - 0.045,
+        z: sAnk.z + pelvisFwd.z * 0.145,
+      };
+      out[kneeIdx] = {
+        x: out[kneeIdx].x * (1 - wStand) + sKnee.x * wStand,
+        y: out[kneeIdx].y * (1 - wStand) + sKnee.y * wStand,
+        z: out[kneeIdx].z * (1 - wStand) + sKnee.z * wStand,
+        visibility: out[kneeIdx].visibility,
+      };
+      out[ankIdx] = {
+        x: out[ankIdx].x * (1 - wStand) + sAnk.x * wStand,
+        y: out[ankIdx].y * (1 - wStand) + sAnk.y * wStand,
+        z: out[ankIdx].z * (1 - wStand) + sAnk.z * wStand,
+        visibility: out[ankIdx].visibility,
+      };
+      if (out[heelIdx]) {
+        out[heelIdx] = {
+          x: out[heelIdx].x * (1 - wStand) + sHeel.x * wStand,
+          y: out[heelIdx].y * (1 - wStand) + sHeel.y * wStand,
+          z: out[heelIdx].z * (1 - wStand) + sHeel.z * wStand,
+          visibility: out[heelIdx].visibility,
+        };
+      }
+      if (out[toeIdx]) {
+        out[toeIdx] = {
+          x: out[toeIdx].x * (1 - wStand) + sToe.x * wStand,
+          y: out[toeIdx].y * (1 - wStand) + sToe.y * wStand,
+          z: out[toeIdx].z * (1 - wStand) + sToe.z * wStand,
+          visibility: out[toeIdx].visibility,
+        };
+      }
+    };
+    applyStandingLeg(out[24], 26, 28, 30, 32);
+    applyStandingLeg(out[23], 25, 27, 29, 31);
+  } else if (legConfL < 0.48 && legConfR >= 0.52) {
     const haR = vecSub(out[28], out[24]);
     if (vecLen(haR) < 0.86 * fullLegSpan) {
       const wMirror = clamp((0.50 - legConfL) / 0.28, 0.35, 0.95);
@@ -1119,6 +1327,7 @@ function alignWorldChainToScreen2D(
   norm2D: MocapVec3[],
   videoAspect: number,
   calibratedLimbs?: CalibratedLimbLengths,
+  refScale?: number,
 ): MocapVec3[] {
   const out = world3D.map((p) => ({ ...p }));
 
@@ -1203,7 +1412,7 @@ function alignWorldChainToScreen2D(
     const len3D = fixedBoneLen ?? rawLen3D;
 
     const minVis = Math.min(pW.visibility, cW.visibility);
-    if (minVis < 0.46) {
+    if (minVis < 0.20) {
       const scaleRel = rawLen3D > 0.03 && fixedBoneLen ? fixedBoneLen / rawLen3D : 1;
       out[childIdx] = {
         x: pW.x + dxW * scaleRel,
@@ -1219,12 +1428,26 @@ function alignWorldChainToScreen2D(
     const dyScreen = -(cN.y - pN.y);
     const lenScreen = Math.hypot(dxScreen, dyScreen);
 
-    if (len3D > 0.035 && lenScreen > 0.014) {
-      const dampedDz = clamp(dzW * 0.70, -len3D * 0.76, len3D * 0.76);
+    if (len3D > 0.035 && lenScreen > 0.012) {
+      // Conservar componente Z monocular continua y amortiguada SIN saltos de signo artificiales:
+      // evita que en plano sagital/oblicuo el brazo izquierdo invierta su eje Z y desaparezca tras el tórax.
+      let blendedDz = dzW * 0.68;
+      if (fixedBoneLen && refScale && refScale > 0.18 && minVis >= 0.68 && Math.abs(dzW) > 0.045) {
+        const expectedMaxScreen = fixedBoneLen * refScale;
+        if (expectedMaxScreen > 0.04) {
+          const cosPhiZ = clamp(lenScreen / expectedMaxScreen, 0.45, 1.0);
+          if (cosPhiZ < 0.82) {
+            const foreshortenMagZ = fixedBoneLen * Math.sqrt(Math.max(0, 1 - cosPhiZ * cosPhiZ));
+            blendedDz = blendedDz * 0.78 + Math.sign(dzW) * foreshortenMagZ * 0.22;
+          }
+        }
+      }
+      const dampedDz = clamp(blendedDz, -len3D * 0.72, len3D * 0.72);
       const targetLenXY = Math.sqrt(Math.max(0.0004, len3D * len3D - dampedDz * dampedDz));
       const angScreen = Math.atan2(dyScreen, dxScreen);
       const angW = lenXY > 0.02 ? Math.atan2(dyW, dxW) : angScreen;
-      const effWeight = blendWeight * clamp((minVis - 0.42) / 0.4, 0.3, 1);
+      // Permitir alineación 2D desde vis >= 0.20 para que el brazo más alejado en perfil siga fielmente el vídeo
+      const effWeight = blendWeight * clamp((minVis - 0.18) / 0.42, 0.35, 1);
       const angAligned = angW + shortestAngleDiffRad(angW, angScreen) * effWeight;
       out[childIdx] = {
         x: pW.x + Math.cos(angAligned) * targetLenXY,
@@ -1375,7 +1598,7 @@ export function computeErgonomicPoseFromWorld3D(
   // Muñeca real 3D con signo palmar (+) / dorsal (-), acotada a [-62.0°, +74.0°] (242°..106° Kinovea)
   const computeSignedWristFlex = (
     side: 'R' | 'L',
-    foreVec: MocapVec3,
+    foreVec: { x: number; y: number; z: number },
     wrPt: MocapVec3,
     pinkyPt: MocapVec3 | undefined,
     indexPt: MocapVec3 | undefined,
@@ -1392,7 +1615,8 @@ export function computeErgonomicPoseFromWorld3D(
     if (magDeg < 1.5) return 0;
     const rawPalmNormal = side === 'R' ? vecCross(iVec, pVec) : vecCross(pVec, iVec);
     const nLen = vecLen(rawPalmNormal);
-    const sign = nLen > 1e-4 ? (vecDot(hDir, vecScale(rawPalmNormal, 1 / nLen)) >= 0 ? 1 : -1) : 1;
+    const normPalm = nLen > 1e-4 ? vecNorm(rawPalmNormal) : { x: 0, y: 1, z: 0 };
+    const sign = nLen > 1e-4 ? (vecDot(hDir, normPalm) >= 0 ? 1 : -1) : 1;
     return clamp(
       round1(sign * magDeg),
       NORMATIVE_JOINT_LIMITS.wrist.dorsalExtensionMinDeg,
@@ -1584,14 +1808,36 @@ function applyArmMirrorInThoraxSpace(
       x: out[13].x + (targetElbL.x - out[13].x) * w,
       y: out[13].y + (targetElbL.y - out[13].y) * w,
       z: out[13].z + (targetElbL.z - out[13].z) * w,
-      visibility: Math.max(out[13].visibility, 0.75 * w),
+      visibility: Math.max(out[13].visibility, 0.72 * w),
     };
     out[15] = {
       x: out[15].x + (targetWrL.x - out[15].x) * w,
       y: out[15].y + (targetWrL.y - out[15].y) * w,
       z: out[15].z + (targetWrL.z - out[15].z) * w,
-      visibility: Math.max(out[15].visibility, 0.75 * w),
+      visibility: Math.max(out[15].visibility, 0.72 * w),
     };
+    // Espejar también los nudillos/mano (17=meñique, 19=índice, 21=pulgar) respecto a la muñeca para evitar torsión errática
+    const handPairsL: Array<[number, number]> = [
+      [17, 18],
+      [19, 20],
+      [21, 22],
+    ];
+    for (const [lIdx, rIdx] of handPairsL) {
+      if (out[lIdx] && out[rIdx]) {
+        const mHand = mirrorRelVec(vecSub(out[rIdx], world3D[16]));
+        const targetHandL = {
+          x: out[15].x + mHand.x,
+          y: out[15].y + mHand.y,
+          z: out[15].z + mHand.z,
+        };
+        out[lIdx] = {
+          x: out[lIdx].x + (targetHandL.x - out[lIdx].x) * w,
+          y: out[lIdx].y + (targetHandL.y - out[lIdx].y) * w,
+          z: out[lIdx].z + (targetHandL.z - out[lIdx].z) * w,
+          visibility: Math.max(out[lIdx].visibility, 0.65 * w),
+        };
+      }
+    }
   } else {
     const humL = vecSub(out[13], out[11]);
     const foreL = vecSub(out[15], out[13]);
@@ -1613,14 +1859,35 @@ function applyArmMirrorInThoraxSpace(
       x: out[14].x + (targetElbR.x - out[14].x) * w,
       y: out[14].y + (targetElbR.y - out[14].y) * w,
       z: out[14].z + (targetElbR.z - out[14].z) * w,
-      visibility: Math.max(out[14].visibility, 0.75 * w),
+      visibility: Math.max(out[14].visibility, 0.72 * w),
     };
     out[16] = {
       x: out[16].x + (targetWrR.x - out[16].x) * w,
       y: out[16].y + (targetWrR.y - out[16].y) * w,
       z: out[16].z + (targetWrR.z - out[16].z) * w,
-      visibility: Math.max(out[16].visibility, 0.75 * w),
+      visibility: Math.max(out[16].visibility, 0.72 * w),
     };
+    const handPairsR: Array<[number, number]> = [
+      [18, 17],
+      [20, 19],
+      [22, 21],
+    ];
+    for (const [rIdx, lIdx] of handPairsR) {
+      if (out[rIdx] && out[lIdx]) {
+        const mHand = mirrorRelVec(vecSub(out[lIdx], world3D[15]));
+        const targetHandR = {
+          x: out[16].x + mHand.x,
+          y: out[16].y + mHand.y,
+          z: out[16].z + mHand.z,
+        };
+        out[rIdx] = {
+          x: out[rIdx].x + (targetHandR.x - out[rIdx].x) * w,
+          y: out[rIdx].y + (targetHandR.y - out[rIdx].y) * w,
+          z: out[rIdx].z + (targetHandR.z - out[rIdx].z) * w,
+          visibility: Math.max(out[rIdx].visibility, 0.65 * w),
+        };
+      }
+    }
   }
 
   return out;
@@ -1658,19 +1925,19 @@ export function applyHybridCorrectionPinsToWorld3D(
   baseWorld3D: MocapVec3[],
   tSec: number,
   pins: MocapCorrectionPin[],
-  autoAssistSevereArmOcclusion = true,
+  autoAssistSevereArmOcclusion = false,
 ): MocapVec3[] {
   let pts = baseWorld3D.map((p) => ({ ...p }));
 
-  // Auto-asistencia cuando un brazo queda completamente tapado (< 0.26) y el otro es nítido (> 0.74)
+  // Auto-asistencia opcional solo cuando un brazo tiene oclusión total (< 0.12) y el usuario la habilitó explícitamente
   if (autoAssistSevereArmOcclusion) {
     const confR = Math.min(pts[14]?.visibility ?? 0, pts[16]?.visibility ?? 0);
     const confL = Math.min(pts[13]?.visibility ?? 0, pts[15]?.visibility ?? 0);
-    if (confL < 0.26 && confR > 0.74) {
-      const autoW = clamp((0.26 - confL) / 0.2, 0.2, 0.72);
+    if (confL < 0.12 && confR > 0.78) {
+      const autoW = clamp((0.12 - confL) / 0.10, 0.2, 0.65);
       pts = applyArmMirrorInThoraxSpace(pts, 'left_from_right', autoW);
-    } else if (confR < 0.26 && confL > 0.74) {
-      const autoW = clamp((0.26 - confR) / 0.2, 0.2, 0.72);
+    } else if (confR < 0.12 && confL > 0.78) {
+      const autoW = clamp((0.12 - confR) / 0.10, 0.2, 0.65);
       pts = applyArmMirrorInThoraxSpace(pts, 'right_from_left', autoW);
     }
   }
@@ -1783,15 +2050,101 @@ export function applyHybridCorrectionPinsToWorld3D(
  * reparación de oclusiones, fusión 2D-3D de perspectiva, Root Motion métrico
  * y filtrado adaptativo One-Euro (1€ Filter).
  */
+/**
+ * Extrae instantáneamente la pose 3D estabilizada de un único fotograma (por defecto t = 0 s)
+ * para que el Avatar 3D adopte de inmediato la postura real del primer fotograma mientras se completa el escaneo.
+ */
+export async function extractSingleMocapFrame(
+  videoElement: HTMLVideoElement,
+  timeSec = 0,
+): Promise<MocapFrameSample | null> {
+  const activeLoaded = await initHeavyPoseMoCap();
+  if (!activeLoaded) return null;
+
+  await seekVideoExact(videoElement, timeSec);
+  const vw = videoElement.videoWidth || 1280;
+  const vh = videoElement.videoHeight || 720;
+  const videoAspect = vw / Math.max(1, vh);
+  const maxDim = isMobileViewportDevice() ? 560 : 768;
+  const scale = Math.min(1, maxDim / Math.max(vw, vh, 1));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(64, Math.round(vw * scale));
+  canvas.height = Math.max(64, Math.round(vh * scale));
+  const ctx = canvas.getContext('2d', { willReadFrequently: false });
+
+  let detectInput: HTMLCanvasElement | HTMLVideoElement = videoElement;
+  if (ctx && videoElement.videoWidth > 0 && videoElement.videoHeight > 0) {
+    try {
+      ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+      detectInput = canvas;
+    } catch {
+      detectInput = videoElement;
+    }
+  }
+
+  try {
+    const ts = nextMonotonicMocapTimestampMs(42, true);
+    const res = activeLoaded.landmarker.detectForVideo(detectInput, ts);
+    if (!res.worldLandmarks?.length || !res.landmarks?.length) return null;
+
+    const rawW: MocapVec3[] = res.worldLandmarks[0].map((p) => ({
+      x: p.x,
+      y: -p.y,
+      z: -p.z,
+      visibility: clamp(p.visibility ?? 0.85, 0, 1),
+    }));
+    const rawN: MocapVec3[] = res.landmarks[0].map((p) => ({
+      x: p.x,
+      y: p.y,
+      z: p.z,
+      visibility: clamp(p.visibility ?? 0.85, 0, 1),
+    }));
+    const limbs = calibrateSubjectLimbLengths([rawW]);
+    const aligned = alignWorldChainToScreen2D(rawW, rawN, videoAspect, limbs, 0.55);
+    const stabilized = enforceAnatomicalLimitsAndLegCoherence(
+      aligned,
+      rawW,
+      rawN,
+      videoAspect,
+      limbs,
+      0.55,
+    );
+    const rootTranslation = { x: 0, y: 0, z: 0 };
+    const rightArmConfidence = ((rawW[14]?.visibility ?? 0) + (rawW[16]?.visibility ?? 0)) * 0.5;
+    const leftArmConfidence = ((rawW[13]?.visibility ?? 0) + (rawW[15]?.visibility ?? 0)) * 0.5;
+    return {
+      timeSec: Math.round(timeSec * 1000) / 1000,
+      world3D: stabilized,
+      norm2D: rawN,
+      rawNorm2D: rawN,
+      rootTranslation,
+      rightArmConfidence,
+      leftArmConfidence,
+      hasOcclusion: Math.min(rightArmConfidence, leftArmConfidence) < 0.45,
+      ergonomicPose: computeErgonomicPoseFromWorld3D(stabilized, rootTranslation),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extrae la secuencia cinemática 3D real con MediaPipe Pose,
+ * reparación de oclusiones, fusión 2D-3D de perspectiva, Root Motion métrico
+ * y filtrado adaptativo One-Euro (1€ Filter).
+ */
 export async function extractTrueMocapTimeline(
   videoElement: HTMLVideoElement,
   options?: {
     targetFps?: number;
     onProgress?: (pct: number, phaseText?: string) => void;
+    onFirstFrameSample?: (sample: MocapFrameSample) => void;
   },
 ): Promise<MocapTimelineResult | null> {
   let activeLoaded = await initHeavyPoseMoCap();
   if (!activeLoaded) return null;
+
+  await ensureVideoFrameDecoded(videoElement, 1500);
 
   let { landmarker, tier } = activeLoaded;
   const duration =
@@ -1801,18 +2154,20 @@ export async function extractTrueMocapTimeline(
   const vw = videoElement.videoWidth || 1280;
   const vh = videoElement.videoHeight || 720;
   const videoAspect = vw / Math.max(1, vh);
+  const mobileMode = isMobileViewportDevice();
 
-  // Lienzo 2D RGBA intermedio: normaliza rotación MP4/MOV de móviles y evita fallos de texturas de vídeo GPU en Windows
-  const maxDetectDim = 960;
+  // Lienzo 2D RGBA intermedio: normaliza rotación MP4/MOV de móviles y evita fallos de texturas de vídeo GPU
+  const maxDetectDim = mobileMode ? 640 : 960;
   const detectScale = Math.min(1, maxDetectDim / Math.max(vw, vh, 1));
   const frameCanvas = document.createElement('canvas');
   frameCanvas.width = Math.max(64, Math.round(vw * detectScale));
   frameCanvas.height = Math.max(64, Math.round(vh * detectScale));
   const frameCtx = frameCanvas.getContext('2d', { willReadFrequently: false });
 
-  const requestedFps = clamp(options?.targetFps ?? 24, 12, 30);
-  // Hasta 480 fotogramas (~20 s a 24 fps); para vídeos más largos ajusta el paso suavemente
-  const totalSamples = Math.max(16, Math.min(480, Math.ceil(duration * requestedFps)));
+  const defaultFps = mobileMode ? 18 : 24;
+  const requestedFps = clamp(options?.targetFps ?? defaultFps, 12, 30);
+  const maxTotalSamples = mobileMode ? 300 : 480;
+  const totalSamples = Math.max(16, Math.min(maxTotalSamples, Math.ceil(duration * requestedFps)));
   const effectiveFps = totalSamples / Math.max(0.2, duration);
   const stepMs = Math.max(20, Math.round(1000 / effectiveFps));
 
@@ -1821,11 +2176,9 @@ export async function extractTrueMocapTimeline(
   const rawNorm2D: MocapVec3[][] = [];
 
   // Salto >= 5000 ms respecto al último vídeo procesado: garantiza monotonía estricta y reinicia el ROI interno de MediaPipe
-  lastGlobalMocapTimestampMs = Math.max(
-    lastGlobalMocapTimestampMs + 5000,
-    Math.round(performance.now()) + 150,
-  );
+  nextMonotonicMocapTimestampMs(stepMs, true);
   let didAttemptRecovery = false;
+  let emittedFirstPreview = false;
 
   for (let i = 0; i < totalSamples; i++) {
     const tSec =
@@ -1833,7 +2186,7 @@ export async function extractTrueMocapTimeline(
         ? 0
         : (i / (totalSamples - 1)) * Math.max(0.05, duration - 0.03);
     await seekVideoExact(videoElement, tSec);
-    lastGlobalMocapTimestampMs += stepMs;
+    const frameTs = nextMonotonicMocapTimestampMs(stepMs, false);
 
     let detectInput: HTMLCanvasElement | HTMLVideoElement = videoElement;
     if (frameCtx && videoElement.videoWidth > 0 && videoElement.videoHeight > 0) {
@@ -1845,10 +2198,10 @@ export async function extractTrueMocapTimeline(
       }
     }
 
-    const runSingleFrameDetect = () => landmarker.detectForVideo(detectInput, lastGlobalMocapTimestampMs);
+    const runSingleFrameDetect = (tsVal: number) => landmarker.detectForVideo(detectInput, tsVal);
 
     try {
-      let res = runSingleFrameDetect();
+      let res = runSingleFrameDetect(frameTs);
       // Si en los primeros fotogramas no detecta nada tras cambiar de vídeo, reiniciar instancia una vez
       if (
         !didAttemptRecovery &&
@@ -1861,8 +2214,7 @@ export async function extractTrueMocapTimeline(
         if (recovered) {
           landmarker = recovered.landmarker;
           tier = recovered.tier;
-          lastGlobalMocapTimestampMs += stepMs;
-          res = runSingleFrameDetect();
+          res = runSingleFrameDetect(nextMonotonicMocapTimestampMs(stepMs, false));
         }
       }
 
@@ -1874,8 +2226,6 @@ export async function extractTrueMocapTimeline(
       ) {
         const wLm = res.worldLandmarks[0];
         const nLm = res.landmarks[0];
-        // Conversión directa de ejes MediaPipe (+X der, +Y abajo, +Z fondo) -> Three.js (+X der, +Y arriba, +Z hacia cámara)
-        // det(diag(1, -1, -1)) = +1 (rotación propia derecha sin inversión especular)
         const convertedWorld: MocapVec3[] = wLm.map((p) => ({
           x: p.x,
           y: -p.y,
@@ -1892,6 +2242,39 @@ export async function extractTrueMocapTimeline(
         rawTimes.push(tSec);
         rawWorld3D.push(convertedWorld);
         rawNorm2D.push(convertedNorm);
+
+        if (!emittedFirstPreview && options?.onFirstFrameSample) {
+          emittedFirstPreview = true;
+          const previewLimbs = calibrateSubjectLimbLengths([convertedWorld]);
+          const previewAligned = alignWorldChainToScreen2D(
+            convertedWorld,
+            convertedNorm,
+            videoAspect,
+            previewLimbs,
+            0.55,
+          );
+          const previewStab = enforceAnatomicalLimitsAndLegCoherence(
+            previewAligned,
+            convertedWorld,
+            convertedNorm,
+            videoAspect,
+            previewLimbs,
+            0.55,
+          );
+          const rConf = ((convertedWorld[14]?.visibility ?? 0) + (convertedWorld[16]?.visibility ?? 0)) * 0.5;
+          const lConf = ((convertedWorld[13]?.visibility ?? 0) + (convertedWorld[15]?.visibility ?? 0)) * 0.5;
+          options.onFirstFrameSample({
+            timeSec: Math.round(tSec * 1000) / 1000,
+            world3D: previewStab,
+            norm2D: convertedNorm,
+            rawNorm2D: convertedNorm,
+            rootTranslation: { x: 0, y: 0, z: 0 },
+            rightArmConfidence: rConf,
+            leftArmConfidence: lConf,
+            hasOcclusion: Math.min(rConf, lConf) < 0.45,
+            ergonomicPose: computeErgonomicPoseFromWorld3D(previewStab, { x: 0, y: 0, z: 0 }),
+          });
+        }
       } else if (rawWorld3D.length > 0) {
         rawTimes.push(tSec);
         rawWorld3D.push(rawWorld3D[rawWorld3D.length - 1].map((p) => ({ ...p, visibility: p.visibility * 0.7 })));
@@ -1905,9 +2288,8 @@ export async function extractTrueMocapTimeline(
         if (recovered) {
           landmarker = recovered.landmarker;
           tier = recovered.tier;
-          lastGlobalMocapTimestampMs += stepMs;
           try {
-            const retryRes = runSingleFrameDetect();
+            const retryRes = runSingleFrameDetect(nextMonotonicMocapTimestampMs(stepMs, false));
             if (
               retryRes.worldLandmarks &&
               retryRes.worldLandmarks.length > 0 &&
@@ -1945,6 +2327,11 @@ export async function extractTrueMocapTimeline(
       }
     }
 
+    // Ceder el hilo principal cada 4 fotogramas para mantener respuesta táctil fluida en móviles
+    if (i % 4 === 3) {
+      await new Promise<void>((r) => window.setTimeout(r, 0));
+    }
+
     options?.onProgress?.(
       Math.round(((i + 1) / totalSamples) * 92),
       `Rastreando esqueleto 3D (${tier.toUpperCase()}) · fotograma ${i + 1}/${totalSamples}`,
@@ -1955,8 +2342,8 @@ export async function extractTrueMocapTimeline(
 
   options?.onProgress?.(96, 'Aplicando reparación de oclusiones y filtro cinemático 1€...');
 
-  // 1. Reparar huecos severos de oclusión temporal antes del filtrado
-  const repairedWorldSeq = repairSevereOcclusionsTemporal(rawWorld3D, 0.36);
+  // 1. Reparar huecos severos de oclusión temporal antes del filtrado (umbral conservador 0.22 para no borrar brazo lejano en perfil)
+  const repairedWorldSeq = repairSevereOcclusionsTemporal(rawWorld3D, 0.22);
   const calibratedLimbs = calibrateSubjectLimbLengths(rawWorld3D);
 
   // 2. Filtrar con banco One-Euro (1€) + estimar Root Motion métrico (caminata X/Z)
@@ -1965,20 +2352,31 @@ export async function extractTrueMocapTimeline(
   const rootXFilter = new OneEuroScalarFilter(0.95, 0.28, 1.0);
   const rootZFilter = new OneEuroScalarFilter(0.65, 0.16, 1.0);
 
-  // Calibrar escala píxel/metro invariante a flexión/cuclillas en los primeros fotogramas nítidos
+  // Calibrar escala píxel/metro priorizando tronco y brazos cuando las piernas están en sombra/ocluidas
   const measureScaleRatio = (wPts: MocapVec3[], nPts: MocapVec3[]): number => {
-    const pairs: Array<[number, number]> = [
+    const upperPairs: Array<[number, number]> = [
       [11, 23],
       [12, 24],
+      [11, 13],
+      [12, 14],
+    ];
+    const lowerPairs: Array<[number, number]> = [
       [23, 25],
       [24, 26],
       [25, 27],
       [26, 28],
     ];
+    const legVis = Math.min(
+      wPts[25]?.visibility ?? 0,
+      wPts[26]?.visibility ?? 0,
+      wPts[27]?.visibility ?? 0,
+      wPts[28]?.visibility ?? 0,
+    );
+    const pairs = legVis >= 0.5 ? [...upperPairs, ...lowerPairs] : upperPairs;
     let sum2D = 0;
     let sum3D = 0;
     for (const [a, b] of pairs) {
-      if (Math.min(wPts[a].visibility, wPts[b].visibility) < 0.45) continue;
+      if (Math.min(wPts[a].visibility, wPts[b].visibility) < 0.42) continue;
       const d2 = Math.hypot((nPts[b].x - nPts[a].x) * videoAspect, nPts[b].y - nPts[a].y);
       const d3 = Math.hypot(wPts[b].x - wPts[a].x, wPts[b].y - wPts[a].y);
       if (d3 > 0.1) {
@@ -1986,11 +2384,11 @@ export async function extractTrueMocapTimeline(
         sum3D += d3;
       }
     }
-    return sum3D > 0.15 ? sum2D / sum3D : 0.45;
+    return sum3D > 0.15 ? clamp(sum2D / sum3D, 0.22, 1.65) : 0.52;
   };
 
   const refScale = measureScaleRatio(repairedWorldSeq[0], rawNorm2D[0]);
-  const refHip2DX = (rawNorm2D[0][23].x + rawNorm2D[0][24].x) * 0.5 * videoAspect;
+  const refHip2DX = (rawNorm2D[0][11].x + rawNorm2D[0][12].x) * 0.5 * videoAspect;
 
   const frames: MocapFrameSample[] = [];
   const occlusionSegments: OcclusionSegment[] = [];
@@ -2004,6 +2402,7 @@ export async function extractTrueMocapTimeline(
       filtNorm,
       videoAspect,
       calibratedLimbs,
+      refScale,
     );
     const stabilizedWorld = enforceAnatomicalLimitsAndLegCoherence(
       alignedWorld,
@@ -2015,7 +2414,7 @@ export async function extractTrueMocapTimeline(
     );
     const filtWorld = worldBank.filterLandmarks(stabilizedWorld, tSec);
 
-    const curHip2DX = (filtNorm[23].x + filtNorm[24].x) * 0.5 * videoAspect;
+    const curHip2DX = (filtNorm[11].x + filtNorm[12].x) * 0.5 * videoAspect;
     const rawRootX = clamp((curHip2DX - refHip2DX) / Math.max(0.18, refScale), -1.8, 1.8);
     const curScale = measureScaleRatio(filtWorld, filtNorm);
     const rawRootZ = clamp(((curScale - refScale) / Math.max(0.18, refScale)) * 1.35, -1.1, 1.1);
@@ -2062,6 +2461,7 @@ export async function extractTrueMocapTimeline(
       timeSec: Math.round(tSec * 1000) / 1000,
       world3D: filtWorld,
       norm2D: filtNorm,
+      rawNorm2D: rawNorm2D[i],
       rootTranslation,
       rightArmConfidence,
       leftArmConfidence,
@@ -2091,7 +2491,7 @@ export function interpolateMocapFrameAtTime(
   timeline: MocapTimelineResult,
   tSec: number,
   pins: MocapCorrectionPin[] = [],
-  autoAssistSevereArmOcclusion = true,
+  autoAssistSevereArmOcclusion = false,
 ): MocapFrameSample | null {
   const { frames } = timeline;
   if (!frames || frames.length === 0) return null;
@@ -2170,10 +2570,24 @@ export function interpolateMocapFrameAtTime(
   const leftArmConfidence =
     a.leftArmConfidence + (b.leftArmConfidence - a.leftArmConfidence) * alpha;
 
+  const interpRawNorm: MocapVec3[] | undefined =
+    a.rawNorm2D && b.rawNorm2D
+      ? a.rawNorm2D.map((pa, i) => {
+          const pb = b.rawNorm2D![i] || pa;
+          return {
+            x: pa.x + (pb.x - pa.x) * alpha,
+            y: pa.y + (pb.y - pa.y) * alpha,
+            z: pa.z + (pb.z - pa.z) * alpha,
+            visibility: pa.visibility + (pb.visibility - pa.visibility) * alpha,
+          };
+        })
+      : a.rawNorm2D || b.rawNorm2D;
+
   return {
     timeSec: tSec,
     world3D: adjustedWorld,
     norm2D: interpNorm,
+    rawNorm2D: interpRawNorm,
     rootTranslation,
     rightArmConfidence,
     leftArmConfidence,
