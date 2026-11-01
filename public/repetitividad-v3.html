@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ErgoEval · Repetitividad de movimientos desde video (v3)</title>
+<style>
+  :root{color-scheme:light dark;--bd:#8885;--mut:#777;--acc:#0369a1}
+  *{box-sizing:border-box}
+  body{font:14px/1.45 system-ui,sans-serif;margin:0 auto;padding:14px;max-width:1380px}
+  h1{font-size:19px;margin:0 0 2px} h2{font-size:15px;margin:16px 0 6px}
+  .n{color:var(--mut);font-size:12.5px}
+  fieldset{border:1px solid var(--bd);border-radius:8px;margin:8px 0;padding:8px 12px}
+  legend{padding:0 6px;font-weight:600}
+  label{display:inline-flex;align-items:center;gap:6px;margin:3px 12px 3px 0}
+  input[type=number]{width:70px} select,input,button{font:inherit}
+  button{padding:5px 12px;border-radius:6px;border:1px solid var(--bd);cursor:pointer}
+  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start}
+  .box{border:1px solid var(--bd);border-radius:10px;padding:10px 12px}
+  .box h3{margin:8px 0 3px;font-size:13.5px;border-bottom:1px solid var(--bd)} .box h3:first-child{margin-top:0}
+  .box div.l{padding:1px 0}
+  canvas{max-width:100%;height:auto;border-radius:10px;display:block}
+  progress{width:100%}
+  table{border-collapse:collapse;width:100%} td,th{border:1px solid var(--bd);padding:3px 8px;text-align:left} th{font-weight:600} td.r{text-align:right;font-variant-numeric:tabular-nums}
+  .ev{border:1px solid var(--bd);border-radius:14px;overflow:hidden;box-shadow:0 2px 10px #0003}
+  .evh{display:flex;align-items:center;gap:10px;padding:9px 12px;background:linear-gradient(135deg,#075985,#0369a1 55%,#0284c7);color:#fff}
+  .evm{width:32px;height:32px;border-radius:8px;background:#fff;color:#0369a1;display:flex;align-items:center;justify-content:center;font:800 14px ui-monospace,monospace;letter-spacing:-.5px}
+  .evt{font-weight:800;font-size:17px;letter-spacing:-.3px;line-height:1.1}.evs{font-size:11.5px;opacity:.9}
+  .evb{padding:8px 12px 10px}.evg{max-width:250px;margin:0 auto}.evg svg{display:block;width:100%;height:auto}
+  .evp{margin:-6px auto 2px;width:fit-content;border-radius:20px;padding:3px 16px;font-weight:800;font-size:15px;letter-spacing:.4px}
+  .evq{text-align:center;font-weight:600;font-size:13px;margin-bottom:6px}
+  .evf{margin-top:8px;font-size:10.5px;color:var(--mut);text-align:center;border-top:1px dashed var(--bd);padding-top:6px}
+  .alc{display:flex;align-items:center;gap:10px;border:1px solid var(--bd);border-left-width:9px;border-radius:8px;padding:5px 10px;margin:5px 0}
+  .alc .sc{font-size:21px;font-weight:800;min-width:74px;text-align:center;line-height:1.1;white-space:nowrap}.alc .tx{font-size:12.5px;line-height:1.35}
+  .pri{display:inline-block;border-radius:10px;padding:0 8px;font-size:11.5px;font-weight:700;white-space:nowrap}
+  .warn{background:#d9770622;border:1px solid #d97706;color:#d97706;border-radius:6px;padding:4px 8px;margin:6px 0;font-size:12.5px;font-weight:600}
+  .bar{height:9px;background:#8883;border-radius:5px;position:relative;margin:3px 0 1px}.bar i{display:block;height:100%;border-radius:5px}
+  .bar b{position:absolute;top:-3px;width:2px;height:15px;background:currentColor}
+  .disc{margin-top:16px;padding:10px 12px;border:1px solid #d97706;border-radius:8px;font-size:13px}
+  #vp{display:block;width:100%;height:auto;border-radius:10px;background:#000}
+  #ov{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
+  #tl{display:block;width:100%;height:104px;border:1px solid var(--bd);border-radius:8px;cursor:pointer}
+  #ph{position:absolute;top:0;bottom:0;left:0;width:2px;background:#16a34a;pointer-events:none}
+</style>
+</head>
+<body>
+<h1>Repetitividad de movimientos desde video <span class="n">· ErgoEval · v3</span></h1>
+<p class="n" style="margin:2px 0 8px">Elige un video con la tarea repetitiva (cuerpo visible, cámara estable). El análisis empieza solo: detecta los ciclos de cada mano, calcula esfuerzos por minuto y el Strain Index.</p>
+
+<fieldset><legend>Video</legend>
+  <input type="file" id="f" accept="video/*"> <label>Vista de la cámara <select id="vista"><option value="auto">Automática</option><option value="frontal">De frente</option><option value="oblicua">Oblicua (3/4)</option><option value="perfil-d">Perfil derecho</option><option value="perfil-i">Perfil izquierdo</option></select></label> <span class="n" id="vinfo"></span>
+  <details style="margin-top:4px"><summary class="n">Ajustes técnicos (opcional)</summary>
+    <label>Muestreo <input type="number" id="fps" value="10" min="4" max="20"> fps</label>
+    <label>Desde <input type="number" id="t0" value="0" min="0" step="0.5"> s</label>
+    <label>Hasta <input type="number" id="t1" value="0" min="0" step="0.5"> s</label>
+    <label>Visibilidad mínima <input type="number" id="vm" value="0.3" min="0.1" max="0.9" step="0.05"></label>
+    <label>Modelo <select id="mdl"><option value="full">Normal</option><option value="heavy">Pesado (más preciso)</option></select></label>
+  </details>
+</fieldset>
+<progress id="pg" value="0" max="1" hidden></progress><div class="n" id="st"></div>
+
+<div id="res" hidden>
+  <div class="row" id="fg">
+    <div style="flex:2 1 420px;min-width:0">
+      <div class="n" style="margin:0 0 3px"><b>Video analizado</b> · reprodúcelo para ver los movimientos contarse en vivo</div>
+      <div id="vw" style="position:relative;line-height:0"><video id="vp" controls playsinline muted></video><canvas id="ov"></canvas></div>
+      <div style="margin:5px 0"><button id="pick">Elegir persona</button> <span class="n" id="pickmsg"></span></div>
+      <div id="tlw" style="position:relative"><canvas id="tl"></canvas><div id="ph"></div></div>
+      <div class="n">Línea de tiempo: cada marca es un movimiento contado (rojo = mano derecha, azul = izquierda, gris = movimiento en la zona de la persona, medido en la imagen). Haz clic para ir a ese instante.</div>
+    </div>
+    <div id="al" style="flex:1.25 1 300px;min-width:270px"></div>
+    <div id="fi" class="box" style="flex:1 1 270px;min-width:250px"></div>
+  </div>
+
+  <h2>Movimientos y ciclos de cada mano</h2>
+  <label>Mano <select id="hand"><option value="R">Derecha</option><option value="L">Izquierda</option></select></label>
+  <label>Gráfico <select id="cmode"><option value="mov">Movimientos contados (velocidad de la mano)</option><option value="cyc">Ciclo regular (autocorrelación)</option></select></label>
+  <label>Señal del ciclo regular <select id="sig"></select></label>
+  <canvas id="ch" style="width:100%;height:230px;border:1px solid var(--bd)"></canvas>
+  <div class="n" id="sigtab"></div>
+
+  <h2>Supuestos para el Strain Index <span class="n">(valores por defecto, editables; el video no puede medirlos)</span></h2>
+  <div class="box" id="as"></div>
+  <p><button id="dl">Descargar mediciones (JSON)</button></p>
+</div>
+
+<div class="disc"><b>Aviso:</b> los valores (ciclos, frecuencias, porcentajes y puntuaciones) se estimaron automáticamente a partir del video y pueden contener errores, que aumentan con la calidad de la imagen, la posición de la cámara y las oclusiones. La intensidad del esfuerzo, la postura de muñeca, la velocidad de trabajo y la jornada son supuestos salvo que los confirme el evaluador. Esta herramienta es solo una estimación inicial y orientativa: no sustituye el análisis, la medición en terreno ni la evaluación de un profesional calificado, quien debe verificar los datos y validar las conclusiones.</div>
+
+<script type="module">
+import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
+const modelUrl = k => `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_${k}/float16/1/pose_landmarker_${k}.task`;
+
+// ==LOGIC-START==
+const fin = Number.isFinite, clamp = (v,a,b) => Math.max(a, Math.min(b, v)), deg = r => r*180/Math.PI;
+// ---- Strain Index: multiplicadores tomados de JOB_Strain_Index.xls (verificado con su ejemplo: SI = 3) ----
+const SI_T = {
+  ie:  [['Ligero (Borg 0-2)',1],['Algo duro (Borg 3)',3],['Difícil (Borg 4-5)',6],['Muy duro (Borg 6-7)',9],['Cercano al máximo (Borg 8-10)',13]],
+  hwp: [['Muy bueno (neutro)',1],['Bueno',1],['Justo (no neutro)',1.5],['Malo (desviación marcada)',2],['Muy malo (cerca del extremo)',3]],
+  sw:  [['Muy lento',1],['Lento',1],['Adecuado / justo',1],['Rápido',1.5],['Muy rápido',2]],
+  dd:  [['< 1 h',0.25],['1 a < 2 h',0.5],['2 a < 4 h',0.75],['4 a < 8 h',1],['≥ 8 h',1.5]],
+};
+const mDE = p => p < 10 ? 0.5 : p < 30 ? 1 : p < 50 ? 1.5 : p < 80 ? 2 : 3;              // duración del esfuerzo (% del ciclo)
+const mEM = e => e < 4 ? 0.5 : e < 9 ? 1 : e < 15 ? 1.5 : e < 20 ? 2 : 3;                // esfuerzos por minuto
+function strainIndex(o) { const m = { ie:o.ie, de:mDE(o.dePct), em:mEM(o.epm), hwp:o.hwp, sw:o.sw, dd:o.dd }; return { m, si: Object.values(m).reduce((a,b) => a*b, 1) }; }
+const siCat = si => si <= 3 ? [1,'BAJA','Probablemente seguro'] : si <= 7 ? [2,'MEDIA','Riesgo incierto: puede aumentar el riesgo de trastornos distales'] : [3,'ALTA','Probablemente peligroso'];
+
+// ---- Análisis de periodicidad ----
+function fillSeries(x) {
+  const n = x.length, idx = []; for (let i = 0; i < n; i++) if (fin(x[i])) idx.push(i);
+  if (idx.length < n*0.6 || idx.length < 8) return null;
+  const y = x.slice(), f = idx[0], l = idx[idx.length-1];
+  for (let i = 0; i < f; i++) y[i] = x[f]; for (let i = l+1; i < n; i++) y[i] = x[l];
+  let last = f; for (let i = f+1; i <= l; i++) if (fin(x[i])) { for (let k = last+1; k < i; k++) y[k] = x[last] + (x[i]-x[last])*(k-last)/(i-last); last = i; }
+  return { y, cover: idx.length/n };
+}
+function movAvg(y, w) { const n = y.length, h = Math.floor(w/2), pre = [0]; for (const v of y) pre.push(pre[pre.length-1] + v);
+  return y.map((_, i) => { const a = Math.max(0, i-h), b = Math.min(n-1, i+h); return (pre[b+1] - pre[a]) / (b-a+1); }); }
+function pctl(a, p) { const b = a.filter(fin).sort((x,y) => x-y); return b.length ? b[Math.min(b.length-1, Math.floor(p*(b.length-1) + 0.5))] : NaN; }
+const median = a => { const b = a.filter(fin).sort((x,y) => x-y); return b.length ? (b.length % 2 ? b[(b.length-1)/2] : (b[b.length/2-1] + b[b.length/2])/2) : NaN; };
+function analyzeSignal(x, fs, minAmp) {
+  const valid = x.filter(fin).length / (x.length || 1), F = fillSeries(x); if (!F) return { ok:false, why:'pocos datos', score:0, valid };
+  const n = F.y.length, w = Math.max(5, Math.min(Math.round(8*fs), Math.floor(n/2))) | 1;
+  const tr = movAvg(F.y, w), d = F.y.map((v, i) => v - tr[i]);
+  const amp = pctl(d, .95) - pctl(d, .05);
+  if (!(amp >= minAmp)) return { ok:false, why:'sin movimiento relevante', score:0, amp, d, valid };
+  const kmin = Math.max(2, Math.round(0.3*fs)), kmax = Math.floor(n/2);
+  if (kmax <= kmin + 2) return { ok:false, why:'video muy corto', score:0, amp, d, valid };
+  const e0 = d.reduce((a, v) => a + v*v, 0) || 1, r = new Array(kmax + 2).fill(0);
+  for (let k = kmin - 1; k <= kmax + 1 && k < n; k++) { let s = 0; for (let i = 0; i + k < n; i++) s += d[i]*d[i+k]; r[k] = s/e0 * n/(n-k); }
+  let rmax = 0; const cand = [];
+  for (let k = kmin; k <= kmax; k++) if (r[k] > r[k-1] && r[k] >= r[k+1] && r[k] > 0.15) { cand.push(k); rmax = Math.max(rmax, r[k]); }
+  if (!cand.length) return { ok:false, why:'sin periodicidad', score:0, amp, d, valid };
+  const k0 = cand.find(k => r[k] >= 0.85*rmax), a = r[k0-1], b = r[k0], c = r[k0+1], den = a - 2*b + c;
+  const tau = (k0 + clamp(den ? 0.5*(a-c)/den : 0, -.5, .5)) / fs, score = clamp(r[k0], 0, 1);
+  const sm = movAvg(d, 3), m = Math.max(1, Math.round(0.4*tau*fs)), thr = 0.2*amp, pk = [];
+  for (let i = m; i < n - m; i++) { if (sm[i] < thr) continue; let ok = true;
+    for (let j = i-m; j <= i+m; j++) if (sm[j] > sm[i] || (sm[j] === sm[i] && j < i)) { ok = false; break; }
+    if (ok) pk.push(i); }
+  const ct = []; for (let i = 1; i < pk.length; i++) ct.push((pk[i] - pk[i-1]) / fs);
+  const T = median(ct), cn = ct.filter(v => v <= 1.5*T);          // las pausas largas no cuentan como irregularidad del ciclo
+  const mean = cn.reduce((a, v) => a + v, 0) / (cn.length || 1), sd = Math.sqrt(cn.reduce((a, v) => a + (v-mean)**2, 0) / (cn.length || 1));
+  const rate = pk.length >= 3 ? (pk.length - 1) / ((pk[pk.length-1] - pk[0]) / fs) * 60 : NaN;     // esfuerzos/min entre el primer y el último esfuerzo (sin perder los de los bordes)
+  return { ok: pk.length >= 3, why: pk.length >= 3 ? '' : 'menos de 3 esfuerzos', score, amp, tau, peaks: pk, count: pk.length, rate, T, cv: mean ? sd/mean : NaN, d, cover: F.cover, valid };
+}
+// Eventos de movimiento: cada ráfaga de velocidad por encima de un umbral (con histéresis) es un movimiento. No exige regularidad.
+function moveEvents(sig, fs, floor, detrend) {
+  const F = fillSeries(sig); if (!F) return { events: [], thr: NaN, speed: [] };
+  let s = movAvg(F.y, fs >= 14 ? 3 : 1); if (detrend) { const b = movAvg(s, Math.round(3*fs) | 1); s = s.map((v, i) => v - b[i]); }   // detrend: quita la base (vibración de cámara, compresión) y cuenta solo los aumentos de movimiento
+  const hi = Math.max(floor, 0.3*pctl(s, .9)), lo = 0.6*hi, n = s.length, raw = [];
+  for (let i = 0; i < n;) { if (s[i] > hi) { let b = i, pk = i; while (b + 1 < n && s[b+1] > lo) { b++; if (s[b] > s[pk]) pk = b; } raw.push({ i0:i, i1:b, ip:pk }); i = b + 1; } else i++; }
+  const gap = Math.round(0.2*fs), out = [];
+  for (const e of raw) { const L_ = out[out.length-1]; if (L_ && e.i0 - L_.i1 <= gap) { L_.i1 = e.i1; if (s[e.ip] > s[L_.ip]) L_.ip = e.ip; } else out.push({ ...e }); }
+  const minLen = Math.max(1, Math.round(0.15*fs));          // al menos ~0,15 s por encima del umbral y un pico claro: así el ruido de la detección no cuenta como movimiento
+  const strong = e => { let c = 0; for (let i = e.i0; i <= e.i1; i++) if (s[i] > hi) c++; return c >= minLen && s[e.ip] >= 1.5*hi; };
+  return { events: out.filter(strong), thr: hi, speed: s };
+}
+function activity(wx, wy, fs) {
+  const n = wx.length, sp = new Array(n).fill(NaN);
+  for (let i = 1; i < n; i++) if (fin(wx[i]) && fin(wx[i-1]) && fin(wy[i]) && fin(wy[i-1])) sp[i] = Math.hypot(wx[i]-wx[i-1], wy[i]-wy[i-1]) * fs;
+  const F = fillSeries(sp); if (!F) return null;
+  const s = movAvg(F.y, 3), thr = Math.max(0.05, 0.2*pctl(s, .95)), act = s.map(v => v > thr), gap = Math.round(0.3*fs);
+  for (let i = 0; i < n;) { if (!act[i]) { let j = i; while (j < n && !act[j]) j++; if (i > 0 && j < n && j - i <= gap) for (let k = i; k < j; k++) act[k] = true; i = j; } else i++; }
+  let best = 0, run = 0; for (const a of act) { if (!a) { run++; best = Math.max(best, run); } else run = 0; }
+  const me = moveEvents(sp, fs, 0.5);
+  return { frac: act.filter(Boolean).length / n, longestPause: best/fs, act, events: me.events, evThr: me.thr, speed: me.speed };
+}
+// ---- Señales por fotograma (relativas al cuerpo: no dependen del paneo de la cámara) ----
+const KEYS = [11,12,13,14,15,16,23,24];
+function rawFrame(lm, W, H) { const o = {}; for (const i of [0,7,8,...KEYS]) o[i] = { x: lm[i].x*W, y: lm[i].y*H, v: lm[i].visibility ?? 1 }; return o; }
+function globalInfo(raws, vm) {
+  const R_ = raws.filter(Boolean), medVis = {}; for (const i of KEYS) medVis[i] = median(R_.map(r => r[i].v));
+  const tl = [], al = { R: [], L: [] }, face = [];
+  for (const r of R_) {
+    if ([11,12,23,24].every(i => r[i].v >= vm)) tl.push(Math.hypot((r[11].x+r[12].x)/2 - (r[23].x+r[24].x)/2, (r[11].y+r[12].y)/2 - (r[23].y+r[24].y)/2));
+    else for (const [s_, h_] of [[12,24],[11,23]]) if (r[s_].v >= vm && r[h_].v >= vm) { tl.push(Math.hypot(r[s_].x - r[h_].x, r[s_].y - r[h_].y)); break; }
+    for (const [sd, s_, e_, w_] of [['R',12,14,16],['L',11,13,15]]) if (Math.min(r[s_].v, r[e_].v, r[w_].v) >= vm) al[sd].push(Math.hypot(r[s_].x-r[e_].x, r[s_].y-r[e_].y) + Math.hypot(r[e_].x-r[w_].x, r[e_].y-r[w_].y));
+    if (Math.min(r[0].v, r[7].v, r[8].v) >= .3) { const dx = r[0].x - (r[7].x + r[8].x)/2; if (Math.abs(dx) > 6) face.push(Math.sign(dx)); }
+  }
+  let S = tl.length >= 8 ? median(tl) : NaN, how = 'tronco';
+  if (!fin(S)) { const a = Math.max(pctl(al.R, .9) || 0, pctl(al.L, .9) || 0); if (a > 0) { S = a/1.15; how = 'longitud del brazo (caderas no visibles)'; } }
+  const spans = []; if (fin(S)) for (const r of R_) if (r[11].v >= .15 && r[12].v >= .15) spans.push(Math.abs(r[11].x - r[12].x)/S);
+  const vis = ids => ids.map(i => medVis[i]).reduce((a, b) => a + b, 0) / 3;
+  return { S, how, span: median(spans), shLo: Math.min(medVis[11], medVis[12]), shHi: Math.max(medVis[11], medVis[12]), facing: face.length ? Math.sign(median(face)) : 0, medVis, visR: vis([12,14,16]), visL: vis([11,13,15]), n: R_.length };
+}
+const autoView = g => (g.shLo < 0.3 && g.shHi >= 0.5) ? 'perfil' : !fin(g.span) ? 'frontal' : g.span < 0.3 ? 'perfil' : g.span < 0.6 ? 'oblicua' : 'frontal';   // un hombro casi invisible = perfil
+function frameSignals(r, g, vm) {
+  if (!r || !fin(g.S)) return null; const S = g.S;
+  const ang = (a, b) => { const c = (a.x*b.x + a.y*b.y) / (Math.hypot(a.x, a.y) * Math.hypot(b.x, b.y) || 1); return deg(Math.acos(clamp(c, -1, 1))); }, sub = (a, b) => ({ x:a.x-b.x, y:a.y-b.y });
+  const side = (s_, e_, w_, h_) => { const o = { wx:NaN, wy:NaN, elbow:NaN, arm:NaN, vis: r[s_].v + r[e_].v + r[w_].v };
+    if (r[s_].v >= vm && r[w_].v >= vm) { o.wx = (r[w_].x - r[s_].x)/S; o.wy = (r[w_].y - r[s_].y)/S; }
+    if (r[s_].v >= vm && r[e_].v >= vm && r[w_].v >= vm) o.elbow = 180 - ang(sub(r[s_], r[e_]), sub(r[w_], r[e_]));
+    if (r[s_].v >= vm && r[e_].v >= vm && r[h_].v >= vm) o.arm = ang(sub(r[e_], r[s_]), sub(r[h_], r[s_]));
+    return o; };
+  const R = side(12,14,16,24), L = side(11,13,15,23), N = R.vis >= L.vis ? R : L;     // N = brazo más visible (el más cercano a la cámara)
+  let trunk = NaN;
+  if ([11,12,23,24].every(i => r[i].v >= vm)) trunk = deg(Math.atan2(Math.abs((r[11].x+r[12].x)/2 - (r[23].x+r[24].x)/2), -((r[11].y+r[12].y)/2 - (r[23].y+r[24].y)/2)));
+  else for (const [s_, h_] of [[12,24],[11,23]]) if (r[s_].v >= vm && r[h_].v >= vm) { trunk = deg(Math.atan2(Math.abs(r[s_].x - r[h_].x), -(r[s_].y - r[h_].y))); break; }
+  return { S, trunk, R, L, N };
+}
+const SIGS = { wx:['Muñeca · horizontal', .08], wy:['Muñeca · vertical', .08], elbow:['Codo · flexión', 8], arm:['Brazo respecto al tronco', 8] };
+function analyzeHand(frames, side, fs, only) {
+  const res = {};
+  for (const k of Object.keys(SIGS)) res[k] = analyzeSignal(frames.map(f => f ? f[side][k] : NaN), fs, SIGS[k][1]);
+  let best = null; for (const k of Object.keys(SIGS)) if (res[k].ok && res[k].score >= 0.3 && (!best || res[k].score > res[best].score)) best = k;
+  const use = (only && only !== 'auto') ? only : best;
+  return { res, best, use, sel: use ? res[use] : null,
+           act: activity(frames.map(f => f ? f[side].wx : NaN), frames.map(f => f ? f[side].wy : NaN), fs) };
+}
+function shares(frames, side) {
+  const g = (k) => frames.map(f => f ? (k === 'trunk' ? f.trunk : f[side][k]) : NaN).filter(fin);
+  const pc = (a, fn) => a.length ? a.filter(fn).length * 100 / a.length : NaN, arm = g('arm'), el = g('elbow'), tr = g('trunk');
+  return { arm45: pc(arm, v => v > 45), arm90: pc(arm, v => v > 90), elbowOut: pc(el, v => v < 60 || v > 100), trunk20: pc(tr, v => v > 20), trunk60: pc(tr, v => v > 60) };
+}
+// ==LOGIC-END==
+
+// ---------------- Interfaz ----------------
+const $ = id => document.getElementById(id);
+window.addEventListener('error', e => { $('st').textContent = 'Error en la página: ' + e.message; });
+window.addEventListener('unhandledrejection', e => { $('st').textContent = 'Error: ' + ((e.reason && e.reason.message) || e.reason); });
+let video, landmarker, lmKey = '', allPoses = [], samples = [], gray = [], ts = [], W = 0, H = 0, fs = 10, frames = [], HD = {}, ZN = { events: [] }, G = {}, VIEW = 'frontal', obs = 0,
+    seedSel = null, pickMode = false, trackInfo = { max: 0, multi: 0 }, assumed = { ie:true, hwp:true, sw:true, dd:true, de:true };
+const COLR = '#dc2626', COLL = '#2563eb', COLZ = '#6b7280', GC = ['', '#16a34a', '#f97316', '#dc2626'], tcol = l => l === 2 ? '#000' : '#fff';
+const A = { ie:1, hwp:2, sw:2, dd:3, de:'auto', ta:1, mpe:1 };   // por defecto: algo duro, justo, adecuado, 4 a <8 h; 1 acción técnica y 1 movimiento por esfuerzo
+const f1 = (v, d = 1) => fin(v) ? v.toFixed(d) : '—';
+const ZFLOOR = 2.5;   // piso de la señal de zona (niveles de gris sobre la base), calibrado con un video real
+
+$('f').addEventListener('change', async e => {
+  const file = e.target.files[0]; if (!file) return;
+  video = document.createElement('video'); video.muted = true; video.playsInline = true; video.preload = 'auto'; video.src = URL.createObjectURL(file);
+  await new Promise(r => video.addEventListener('loadeddata', r, { once:true }));
+  $('t0').value = 0; $('t1').value = video.duration.toFixed(1); seedSel = null;
+  $('vinfo').textContent = `${file.name} · ${video.videoWidth}×${video.videoHeight} · ${video.duration.toFixed(1)} s`; run();
+});
+function seekTo(v, t) { return new Promise(res => { if (Math.abs(v.currentTime - t) < 1e-3) return res();
+  const done = () => { v.removeEventListener('seeked', done); clearTimeout(to); res(); }, to = setTimeout(done, 2500); v.addEventListener('seeked', done); v.currentTime = t; }); }
+async function getLM() {
+  const key = $('mdl').value; if (landmarker && lmKey === key) return landmarker;
+  if (landmarker) { try { landmarker.close(); } catch (e) {} landmarker = null; }
+  const fsr = await FilesetResolver.forVisionTasks(WASM);
+  for (const delegate of ['GPU', 'CPU']) { try { landmarker = await PoseLandmarker.createFromOptions(fsr, { baseOptions:{ modelAssetPath:modelUrl(key), delegate }, runningMode:'IMAGE', numPoses:2 }); lmKey = key; return landmarker; } catch (e) { console.warn(delegate, e); } }
+  throw new Error('No se pudo cargar el modelo de pose (revisa la conexión).');
+}
+async function run() {
+  try {
+    $('res').hidden = true; $('pg').hidden = false; $('st').textContent = 'Cargando modelo de pose…';
+    const lm = await getLM(), sc = Math.min(1, 960 / video.videoWidth); W = Math.round(video.videoWidth*sc); H = Math.round(video.videoHeight*sc);
+    const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const g = cv.getContext('2d', { willReadFrequently:true });
+    const sg = document.createElement('canvas'); sg.width = 80; sg.height = 60; const sgx = sg.getContext('2d', { willReadFrequently:true });
+    fs = clamp(+$('fps').value || 10, 4, 20); const step = 1/fs, t0 = clamp(+$('t0').value || 0, 0, video.duration), t1 = clamp(+$('t1').value || video.duration, t0, video.duration);
+    allPoses = []; gray = []; ts = []; const total = Math.max(1, Math.floor((t1 - t0)/step) + 1);
+    for (let k = 0; k < total; k++) {
+      const t = Math.min(t1, t0 + k*step); await seekTo(video, t); g.drawImage(video, 0, 0, W, H);
+      const r = lm.detect(cv); allPoses.push(r.landmarks || []); ts.push(t);
+      sgx.drawImage(cv, 0, 0, 80, 60); const d = sgx.getImageData(0, 0, 80, 60).data, gr = new Uint8Array(4800); for (let q = 0; q < 4800; q++) gr[q] = d[q*4]*0.299 + d[q*4+1]*0.587 + d[q*4+2]*0.114; gray.push(gr);
+      $('pg').value = (k+1)/total; $('st').textContent = `Analizando… ${k+1}/${total} fotogramas`;
+      if (k % 4 === 0) await new Promise(r => setTimeout(r));
+    }
+    $('pg').hidden = true; obs = ts[ts.length-1] - ts[0] + step;
+    const vp = $('vp'); if (vp.dataset.src !== video.src) { vp.src = video.src; vp.dataset.src = video.src; }
+    retrack(); analyze(); $('st').textContent = `Listo: persona detectada en ${samples.filter(Boolean).length}/${total} fotogramas.`;
+  } catch (err) { $('st').textContent = 'Error: ' + err.message; console.error(err); $('pg').hidden = true; }
+}
+// ---- Seguimiento de la persona analizada (hay más de una en el encuadre) ----
+const bbox = p => { let x0 = 1, y0 = 1, x1 = 0, y1 = 0, c = 0; for (const q of p) if ((q.visibility ?? 1) >= .2) { x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x); y0 = Math.min(y0, q.y); y1 = Math.max(y1, q.y); c++; }
+  return c ? { x0, y0, x1, y1, cx:(x0+x1)/2, cy:(y0+y1)/2, h:y1-y0 } : null; };
+function retrack() {
+  const n = allPoses.length; samples = new Array(n).fill(null); let i0 = -1, k0 = -1;
+  if (seedSel) { i0 = seedSel.i; k0 = seedSel.k; }
+  else { let best = -1; for (let i = 0; i < Math.min(n, 40); i++) allPoses[i].forEach((p, k) => { const b = bbox(p); if (b && b.h > best) { best = b.h; i0 = i; k0 = k; } });   // la persona más grande (más cercana)
+         if (i0 < 0) for (let i = 0; i < n; i++) if (allPoses[i].length) { i0 = i; k0 = 0; break; } }
+  trackInfo = { max: Math.max(0, ...allPoses.map(a => a.length)), multi: allPoses.filter(a => a.length > 1).length / (n || 1) };
+  if (i0 < 0) return; samples[i0] = allPoses[i0][k0];
+  const walk = (from, to, d) => { let c = bbox(samples[i0]); for (let i = from; i !== to; i += d) { let bk = -1, bd = 0.22;
+      allPoses[i].forEach((p, k) => { const b = bbox(p); if (!b) return; const dd = Math.hypot(b.cx - c.cx, b.cy - c.cy); if (dd < bd) { bd = dd; bk = k; } });
+      if (bk >= 0) { samples[i] = allPoses[i][bk]; c = bbox(samples[i]); } } };
+  walk(i0 + 1, n, 1); walk(i0 - 1, -1, -1);
+}
+function zoneSignal() {                                                  // movimiento en la imagen, dentro de la zona de la persona (no depende de las articulaciones)
+  const n = samples.length, z = new Array(n).fill(NaN);
+  for (let i = 1; i < n; i++) { const p = samples[i]; if (!p || !gray[i] || !gray[i-1]) continue; const b = bbox(p); if (!b) continue;
+    const m = 0.1, x0 = Math.max(0, Math.floor((b.x0 - m)*80)), x1 = Math.min(79, Math.ceil((b.x1 + m)*80)), y0 = Math.max(0, Math.floor((b.y0 - m)*60)), y1 = Math.min(59, Math.ceil((b.y1 + m)*60));
+    if (x1 - x0 < 4 || y1 - y0 < 4) continue; let s_ = 0, c = 0; for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) { s_ += Math.abs(gray[i][y*80 + x] - gray[i-1][y*80 + x]); c++; } z[i] = s_ / c; }
+  return z;
+}
+const hiddenHand = () => ({ res: Object.fromEntries(Object.keys(SIGS).map(k => [k, { ok:false, why:'no visible en este perfil', score:0 }])), best:null, use:null, sel:null, act:null, stream:'', hidden:true });
+const VNAME = { frontal:'de frente', oblicua:'oblicua (3/4)', 'perfil-d':'perfil derecho', 'perfil-i':'perfil izquierdo' };
+function analyze() {
+  const vm = +$('vm').value || 0.3, raws = samples.map(p => p ? rawFrame(p, W, H) : null); G = globalInfo(raws, vm);
+  const pick = $('vista').value; let view = pick;
+  if (pick === 'auto') { view = autoView(G); if (view === 'perfil') view = G.facing > 0 ? 'perfil-d' : G.facing < 0 ? 'perfil-i' : (G.visR >= G.visL ? 'perfil-d' : 'perfil-i'); }
+  VIEW = view; frames = raws.map(r => frameSignals(r, G, vm));
+  const only = { R: HD.R && HD.R.only, L: HD.L && HD.L.only };
+  if (view === 'perfil-d' || view === 'perfil-i') { const k = view === 'perfil-d' ? 'R' : 'L', o = k === 'R' ? 'L' : 'R'; HD = { [k]: Object.assign(analyzeHand(frames, 'N', fs, only[k]), { stream:'N' }), [o]: hiddenHand() }; }
+  else HD = { R: Object.assign(analyzeHand(frames, 'R', fs, only.R), { stream:'R' }), L: Object.assign(analyzeHand(frames, 'L', fs, only.L), { stream:'L' }) };
+  HD.R.only = only.R; HD.L.only = only.L; ZN = moveEvents(zoneSignal(), fs, ZFLOOR, true); $('res').hidden = false; render();
+}
+const whyText = r => r.why === 'pocos datos' ? `la muñeca se ve solo en ${(100*(r.valid || 0)).toFixed(0)} % de los fotogramas` : r.why === 'sin movimiento relevante' ? `movimiento menor al umbral (amplitud ${(r.amp || 0).toFixed(2)})` : r.why;
+function whyHand(h) { const rs = Object.values(h.res), nd = rs.filter(r => r.why === 'pocos datos');
+  if (nd.length === rs.length) return whyText(nd.reduce((a, b) => (b.valid || 0) > (a.valid || 0) ? b : a));
+  const o = rs.find(r => r.why && r.why !== 'sin movimiento relevante' && r.why !== 'pocos datos'); return o ? whyText(o) : whyText(rs.reduce((a, b) => (b.amp || 0) > (a.amp || 0) ? b : a)); }
+// Esfuerzos de una mano: ciclo regular si es claro; si no, movimientos contados (el trabajo real casi nunca es periódico)
+function effortRate(h) {
+  const s = h.sel, ev = h.act ? h.act.events.length : 0;
+  if (s && s.ok && s.score >= 0.5 && s.cv < 0.35) return { rate: s.rate, count: s.count, basis: 'ciclos regulares' };
+  if (ev >= 4) { const c = ev / A.mpe; return { rate: c / obs * 60, count: Math.round(c), basis: 'movimientos contados (sin ciclo regular)' }; }
+  if (s && s.ok) return { rate: s.rate, count: s.count, basis: 'ciclos débiles' };
+  return null;
+}
+function handSI(h) {
+  const er = effortRate(h); if (!er) return null;
+  const dePct = A.de === 'auto' ? (h.act ? h.act.frac*100 : NaN) : +A.de; if (!fin(dePct)) return null;
+  const r = strainIndex({ ie: SI_T.ie[A.ie][1], hwp: SI_T.hwp[A.hwp][1], sw: SI_T.sw[A.sw][1], dd: SI_T.dd[A.dd][1], dePct, epm: er.rate });
+  return { ...r, epm: er.rate, count: er.count, basis: er.basis, dePct, cat: siCat(r.si) };
+}
+const gauge = l => { const cx = 120, cy = 114, r = 96, ir = 66, P = (rad, a) => [cx + rad*Math.cos(a), cy - rad*Math.sin(a)], f = n => n.toFixed(1), N = 3;
+  const arcs = [1,2,3].map(k => { const a0 = Math.PI - (k-1)*Math.PI/N, a1 = Math.PI - k*Math.PI/N, [x0,y0] = P(r,a0), [x1,y1] = P(r,a1), [x2,y2] = P(ir,a1), [x3,y3] = P(ir,a0);
+    return `<path d="M${f(x0)},${f(y0)} A${r},${r} 0 0 1 ${f(x1)},${f(y1)} L${f(x2)},${f(y2)} A${ir},${ir} 0 0 0 ${f(x3)},${f(y3)} Z" fill="${GC[k]}" opacity="${k === l ? 1 : .25}" stroke="#fff" stroke-width="1.5"/>`; }).join('');
+  const lb = ['Baja <3', 'Media 3-7', 'Alta >7'].map((t, k) => { const [x, y] = P(r + 12, Math.PI - (k + .5)*Math.PI/N); return `<text x="${f(x)}" y="${f(y)}" font-size="8.5" text-anchor="middle" fill="currentColor" opacity=".65">${t}</text>`; }).join('');
+  const [nx, ny] = P(84, Math.PI - ((l || 1) - .5)*Math.PI/N);
+  return `<svg viewBox="0 -12 240 146">${arcs}${lb}${l ? `<line x1="${cx}" y1="${cy}" x2="${f(nx)}" y2="${f(ny)}" stroke="currentColor" stroke-width="4.5" stroke-linecap="round"/>` : ''}<circle cx="${cx}" cy="${cy}" r="8" fill="currentColor"/><circle cx="${cx}" cy="${cy}" r="3" fill="${l ? GC[l] : '#999'}"/></svg>`; };
+function render() {
+  const si = { R: handSI(HD.R), L: handSI(HD.L) }, hs = [['R','Derecha',COLR], ['L','Izquierda',COLL]];
+  const any = [si.R, si.L].filter(Boolean), worst = any.length ? any.reduce((a, b) => b.si > a.si ? b : a) : null, lv = worst ? worst.cat[0] : 0;
+  const un = Object.entries(assumed).filter(([, v]) => v).map(([k]) => ({ ie:'intensidad', hwp:'postura de muñeca', sw:'velocidad', dd:'jornada', de:'duración del esfuerzo (estimada del movimiento)' }[k]));
+  const epmMax = Math.max(0, ...hs.map(([k]) => si[k] ? si[k].epm*A.ta : 0));
+  const row = ([k, nm]) => { const h = HD[k], s = si[k];
+    if (h.hidden) return `<div class="alc" style="border-left-color:#999"><div class="sc">—</div><div class="tx"><b>Mano ${nm}</b><br>No visible en este perfil (la cámara ve el otro lado)</div></div>`;
+    if (!s) return `<div class="alc" style="border-left-color:#999"><div class="sc">—</div><div class="tx"><b>Mano ${nm}</b><br>Menos de 4 movimientos contados en el tramo analizado (${h.act ? h.act.events.length : 0})</div></div>`;
+    return `<div class="alc" style="border-left-color:${GC[s.cat[0]]};background:${GC[s.cat[0]]}22"><div class="sc">SI ${f1(s.si)}</div><div class="tx"><b>Mano ${nm}</b> · <b>${s.count}</b> movimientos · ${f1(s.epm)}/min <span class="pri" style="background:${GC[s.cat[0]]};color:${tcol(s.cat[0])}">Prioridad ${s.cat[1]}</span><br>${s.cat[2]}</div></div>`; };
+  const fq = epmMax, fcol = fq <= 30 ? GC[1] : GC[2];
+  $('al').innerHTML = `<div class="ev"><div class="evh"><span class="evm">EE</span><div><div class="evt">ErgoEval</div><div class="evs">Repetitividad de movimientos desde video</div></div></div>
+   <div class="evb"><div class="evg">${gauge(lv)}</div>
+   ${worst ? `<div class="evp" style="background:${GC[lv]};color:${tcol(lv)}">PRIORIDAD ${worst.cat[1]}</div><div class="evq">Strain Index (mano más cargada): ${f1(worst.si)}</div>` : `<div class="evp" style="background:#999;color:#fff">SIN MOVIMIENTOS SUFICIENTES</div><div class="evq">Se contaron menos de 4 movimientos por mano</div>`}
+   ${hs.map(row).join('')}
+   ${epmMax ? `<div class="n" style="margin-top:6px">Frecuencia de acciones técnicas: <b>${f1(fq)}/min</b> (${A.ta} acción/es por esfuerzo) · referencia OCRA / ISO 11228-3: 30/min</div><div class="bar" style="color:var(--mut)"><i style="width:${clamp(fq/60*100, 2, 100)}%;background:${fcol}"></i><b style="left:50%"></b></div><div class="n">${fq <= 30 ? 'Dentro de la frecuencia de referencia' : 'Supera la frecuencia de referencia (no es el índice OCRA completo)'}</div>` : ''}
+   ${trackInfo.max > 1 ? `<div class="warn" style="color:var(--mut);border-color:var(--bd);background:none">Hay ${trackInfo.max} personas en el encuadre. Se analiza la marcada en azul; para cambiarla usa «Elegir persona».</div>` : ''}
+   ${un.length ? `<div class="warn">SUPUESTOS NO CONFIRMADOS: ${un.join(', ')}</div>` : ''}
+   ${obs < 12 ? `<div class="warn">Video corto (${f1(obs, 0)} s): conviene observar al menos 10 ciclos.</div>` : ''}
+   <div class="evf">Estimación automática y orientativa: requiere la validación de un profesional.</div></div></div>`;
+  fillTable(si); fillAssumptions(); fillSig(); drawChart(); drawTimeline(); drawOverlay();
+}
+function fillTable(si) {
+  const L_ = [], zn = ZN.events.length;
+  L_.push('<h3>Observación</h3>', `<div class="l">Tiempo: <b>${f1(obs, 1)} s</b> · fotogramas: ${samples.length} (${f1(fs, 0)} fps)</div>`,
+    `<div class="l">Vista: <b>${VNAME[VIEW]}</b> ${$('vista').value === 'auto' ? '(detectada)' : '(indicada)'}${VIEW.startsWith('perfil') ? ' · solo se analiza el brazo más cercano a la cámara' : ''}</div>`,
+    `<div class="l">Personas en el encuadre: hasta <b>${trackInfo.max}</b>${trackInfo.max > 1 ? ` (en ${f1(trackInfo.multi*100, 0)} % de los fotogramas)` : ''}</div>`);
+  for (const [k, nm] of [['R','Mano derecha'], ['L','Mano izquierda']]) {
+    const h = HD[k], s = h.sel, sh = si[k]; L_.push(`<h3>${nm}</h3>`);
+    if (h.hidden) { L_.push('<div class="l">No visible en este perfil</div>'); continue; }
+    const ev = h.act ? h.act.events.length : 0;
+    L_.push(`<div class="l">Movimientos detectados: <b>${ev}</b> en ${f1(obs, 1)} s (${f1(ev/obs*60)}/min)</div>`);
+    if (sh) L_.push(`<div class="l">Esfuerzos usados: <b>${sh.count}</b> → <b>${f1(sh.epm)}/min</b> · base: ${sh.basis}</div>`);
+    L_.push(s && s.ok ? `<div class="l">Ciclo regular: sí · ${f1(s.T, 2)} s · periodicidad ${f1(s.score*100, 0)} % · regularidad (CV) ${f1(s.cv*100, 0)} %</div>` : `<div class="l">Ciclo regular: no se detecta (trabajo irregular o sin patrón fijo)</div>`);
+    if (h.act) L_.push(`<div class="l">En movimiento: ${f1(h.act.frac*100, 0)} % · pausa más larga: ${f1(h.act.longestPause, 1)} s</div>`);
+    if (sh) L_.push(`<div class="l">SI = ${sh.m.ie} × ${sh.m.de} × ${sh.m.em} × ${sh.m.hwp} × ${sh.m.sw} × ${sh.m.dd} = <b>${f1(sh.si)}</b></div>`);
+  }
+  L_.push('<h3>Zona de la persona (medido en la imagen)</h3>', `<div class="l">Movimientos: <b>${zn}</b> (${f1(zn/obs*60)}/min)</div>`, '<div class="n">Sirve para contrastar el conteo de las manos; se contamina si la cámara se mueve.</div>');
+  const ref = (si.R && (!si.L || si.R.epm >= si.L.epm)) ? 'R' : 'L', sp = shares(frames, HD[ref].stream || HD.R.stream || HD.L.stream || 'R');
+  L_.push(`<h3>Posturas repetidas (lado ${ref === 'R' ? 'derecho' : 'izquierdo'}, % del tiempo)</h3>`,
+    `<div class="l">Brazo &gt; 45° del tronco: <b>${f1(sp.arm45, 0)} %</b> · &gt; 90°: <b>${f1(sp.arm90, 0)} %</b></div>`,
+    `<div class="l">Codo fuera de 60–100°: <b>${f1(sp.elbowOut, 0)} %</b></div>`,
+    `<div class="l">Tronco &gt; 20°: <b>${f1(sp.trunk20, 0)} %</b> · &gt; 60°: <b>${f1(sp.trunk60, 0)} %</b></div>`,
+    `<div class="n">Muñeca/mano: no medida (se supone según el supuesto de postura).</div>`);
+  $('fi').innerHTML = L_.join('');
+}
+function sens() {
+  const hs = ['R', 'L'].map(k => [k, effortRate(HD[k])]).filter(x => x[1]); if (!hs.length) return '';
+  const [k, er] = hs.reduce((a, b) => (b[1].rate > a[1].rate ? b : a));
+  const v = [[5, '< 10 %'], [20, '10–29 %'], [40, '30–49 %'], [65, '50–79 %'], [90, '≥ 80 %']].map(([p, t]) => { const r = strainIndex({ ie:SI_T.ie[A.ie][1], hwp:SI_T.hwp[A.hwp][1], sw:SI_T.sw[A.sw][1], dd:SI_T.dd[A.dd][1], dePct:p, epm:er.rate }); return `${t}: <b>${f1(r.si)}</b>`; }).join(' · ');
+  return `<div class="n" style="margin-top:6px"><b>Sensibilidad</b> (mano ${k === 'R' ? 'derecha' : 'izquierda'}): según cuánto del ciclo dura realmente el esfuerzo, el SI sería → ${v}. La duración del esfuerzo es el dato que el video solo puede aproximar (se estima con el tiempo en movimiento, que es una cota conservadora).</div>`; }
+function fillAssumptions() {
+  const sel = (id, arr, v) => `<select id="a_${id}">${arr.map((x, i) => `<option value="${i}"${i === v ? ' selected' : ''}>${x[0]} (×${x[1]})</option>`).join('')}</select>`;
+  $('as').innerHTML = `<label>Intensidad del esfuerzo ${sel('ie', SI_T.ie, A.ie)}</label><label>Postura mano/muñeca ${sel('hwp', SI_T.hwp, A.hwp)}</label>
+   <label>Velocidad de trabajo ${sel('sw', SI_T.sw, A.sw)}</label><label>Duración de la tarea por día ${sel('dd', SI_T.dd, A.dd)}</label><br>
+   <label>Duración del esfuerzo (% del ciclo) <input type="number" id="a_de" min="0" max="100" placeholder="auto" value="${A.de === 'auto' ? '' : A.de}"> <span class="n">vacío = estimada del tiempo en movimiento</span></label>
+   <label>Movimientos por esfuerzo <input type="number" id="a_mpe" min="1" max="10" value="${A.mpe}"> <span class="n">ida y vuelta = 2</span></label>
+   <label>Acciones técnicas por esfuerzo <input type="number" id="a_ta" min="1" max="10" value="${A.ta}"></label>
+   ${sens()}`;
+  for (const id of ['ie', 'hwp', 'sw', 'dd']) $('a_' + id).onchange = e => { A[id] = +e.target.value; assumed[id] = false; render(); };
+  $('a_de').onchange = e => { const v = e.target.value.trim(); A.de = v === '' ? 'auto' : clamp(+v, 0, 100); assumed.de = v === ''; render(); };
+  $('a_ta').onchange = e => { A.ta = clamp(+e.target.value || 1, 1, 10); render(); };
+  $('a_mpe').onchange = e => { A.mpe = clamp(+e.target.value || 1, 1, 10); render(); };
+}
+function fillSig() {
+  const h = $('hand').value, H_ = HD[h];
+  $('sig').innerHTML = `<option value="auto">Automática (${H_.best ? SIGS[H_.best][0] : 'ninguna'})</option>` + Object.keys(SIGS).map(k => `<option value="${k}"${H_.only === k ? ' selected' : ''}>${SIGS[k][0]}</option>`).join('');
+  if (!H_.only || H_.only === 'auto') $('sig').value = 'auto';
+  $('sigtab').innerHTML = 'Periodicidad por señal (ciclo regular): ' + Object.keys(SIGS).map(k => { const r = H_.res[k]; return `${SIGS[k][0]} <b>${r.ok ? f1(r.score*100, 0) + ' %' : '—'}</b>${r.ok ? '' : ' (' + whyText(r) + ')'}`; }).join(' · ');
+}
+$('hand').onchange = () => { fillSig(); drawChart(); };
+$('cmode').onchange = () => drawChart();
+$('sig').onchange = () => { const h = $('hand').value; HD[h].only = $('sig').value; analyze(); };
+function drawChart() {
+  const h = $('hand').value, H_ = HD[h], mode = $('cmode').value, c = $('ch'), dpr = devicePixelRatio || 1, Wc = c.clientWidth, Hc = 230; c.width = Wc*dpr; c.height = Hc*dpr;
+  const g = c.getContext('2d'); g.scale(dpr, dpr); g.clearRect(0, 0, Wc, Hc); const fg = getComputedStyle(document.body).color, col = h === 'R' ? COLR : COLL;
+  const msg = t => { g.fillStyle = fg; g.font = '13px system-ui'; g.fillText(t, 14, 24); };
+  if (H_.hidden) return msg('Mano no visible en este perfil.');
+  if (mode === 'mov') {
+    const a = H_.act; if (!a) return msg('Sin datos suficientes de la muñeca.');
+    const v = a.speed, n = v.length, hi = Math.max(pctl(v, .99), a.evThr*1.3), X = i => 36 + (Wc - 46)*i/(n - 1), Y = x => Hc - 22 - (Hc - 58)*clamp(x, 0, hi)/hi;
+    g.strokeStyle = '#8886'; g.setLineDash([4, 4]); g.beginPath(); g.moveTo(36, Y(a.evThr)); g.lineTo(Wc - 10, Y(a.evThr)); g.stroke(); g.setLineDash([]);
+    g.strokeStyle = col; g.lineWidth = 1.8; g.beginPath(); v.forEach((x, i) => i ? g.lineTo(X(i), Y(x)) : g.moveTo(X(i), Y(x))); g.stroke();
+    g.fillStyle = '#16a34a'; for (const e of a.events) { g.beginPath(); g.arc(X(e.ip), Y(v[e.ip]), 4.5, 0, 7); g.fill(); }
+    g.fillStyle = fg; g.font = '11px system-ui'; g.fillText('0 s', 36, Hc - 6); g.fillText(f1((n - 1)/fs, 0) + ' s', Wc - 34, Hc - 6); g.fillText('velocidad de la muñeca (cuerpos/s)', 40, Hc - 6 - 0);
+    g.fillText(`${a.events.length} movimientos contados (punto verde = un movimiento) · línea punteada = umbral`, 44, 14); return;
+  }
+  const s = H_.sel; if (!s || !s.d) return msg('Sin ciclo regular para esta mano (el trabajo no es periódico). Use el gráfico de movimientos contados.');
+  const d = s.d, n = d.length, lo = pctl(d, .01), hi = pctl(d, .99), X = i => 36 + (Wc - 46)*i/(n - 1), Y = x => Hc - 22 - (Hc - 58)*(x - lo)/((hi - lo) || 1);
+  g.strokeStyle = col; g.lineWidth = 2; g.beginPath(); d.forEach((x, i) => i ? g.lineTo(X(i), Y(clamp(x, lo, hi))) : g.moveTo(X(i), Y(clamp(x, lo, hi)))); g.stroke();
+  g.fillStyle = '#16a34a'; for (const i of s.peaks) { g.beginPath(); g.arc(X(i), Y(clamp(d[i], lo, hi)), 4.5, 0, 7); g.fill(); }
+  g.fillStyle = fg; g.font = '11px system-ui'; g.fillText('0 s', 36, Hc - 6); g.fillText(f1((n - 1)/fs, 0) + ' s', Wc - 34, Hc - 6); g.fillText(`${s.count} ciclos · ciclo ${f1(s.T, 2)} s`, 44, 14);
+}
+// ---- Línea de tiempo de movimientos y visor sincronizado ----
+function drawTimeline() {
+  const c = $('tl'), dpr = devicePixelRatio || 1, Wc = c.clientWidth, Hc = 104; c.width = Wc*dpr; c.height = Hc*dpr; const g = c.getContext('2d'); g.scale(dpr, dpr); g.clearRect(0, 0, Wc, Hc);
+  if (!ts.length) return; const fg = getComputedStyle(document.body).color, X = i => 62 + (Wc - 72)*i/Math.max(1, ts.length - 1);
+  const lanes = [['Derecha', COLR, HD.R && HD.R.act && !HD.R.hidden ? HD.R.act.events : null], ['Izquierda', COLL, HD.L && HD.L.act && !HD.L.hidden ? HD.L.act.events : null], ['Zona', COLZ, ZN.events]];
+  g.font = '11px system-ui'; lanes.forEach(([nm, col, ev], k) => { const y = 14 + k*30; g.fillStyle = fg; g.fillText(`${nm}${ev ? ' ' + ev.length : ''}`, 4, y + 4);
+    g.strokeStyle = '#8884'; g.beginPath(); g.moveTo(62, y + 11); g.lineTo(Wc - 10, y + 11); g.stroke();
+    if (!ev) { g.fillStyle = '#8886'; g.fillText('no visible', 66, y + 4); return; } g.strokeStyle = col; g.lineWidth = 2.5; for (const e of ev) { g.beginPath(); g.moveTo(X(e.ip), y - 6); g.lineTo(X(e.ip), y + 11); g.stroke(); } });
+  g.fillStyle = fg; g.fillText('0 s', 62, Hc - 3); g.fillText(f1(obs, 0) + ' s', Wc - 30, Hc - 3);
+}
+function idxAt(t) { return clamp(Math.round((t - ts[0]) * fs), 0, ts.length - 1); }
+const CONN = [[11,12],[11,23],[12,24],[23,24],[11,13],[13,15],[12,14],[14,16]];
+function drawOverlay() {
+  const v = $('vp'), cv = $('ov'), dpr = devicePixelRatio || 1, w = v.clientWidth, h = v.clientHeight; if (!w || !h) return;
+  if (cv.width !== Math.round(w*dpr) || cv.height !== Math.round(h*dpr)) { cv.width = Math.round(w*dpr); cv.height = Math.round(h*dpr); }
+  const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h); if (!samples.length) return;
+  const i = idxAt(v.currentTime), p = samples[i], X = (q) => q.x*w, Y = (q) => q.y*h;
+  allPoses[i].forEach(q => { if (q === p) return; const b = bbox(q); if (!b) return; g.strokeStyle = '#9ca3afcc'; g.lineWidth = 1.5; g.setLineDash([5, 4]); g.strokeRect(b.x0*w, b.y0*h, (b.x1-b.x0)*w, (b.y1-b.y0)*h); g.setLineDash([]); });
+  if (p) { const b = bbox(p);
+    if (b) { g.strokeStyle = '#38bdf8'; g.lineWidth = 2; g.strokeRect(b.x0*w, b.y0*h, (b.x1-b.x0)*w, (b.y1-b.y0)*h); g.fillStyle = '#38bdf8'; g.font = 'bold 11px system-ui'; g.fillText('persona analizada', b.x0*w + 3, Math.max(11, b.y0*h - 4)); }
+    g.lineWidth = 2; g.strokeStyle = '#38bdf8aa'; for (const [a, c] of CONN) { g.beginPath(); g.moveTo(X(p[a]), Y(p[a])); g.lineTo(X(p[c]), Y(p[c])); g.stroke(); }
+    for (const [wr, col, key] of [[16, COLR, 'R'], [15, COLL, 'L']]) { if (HD[key] && HD[key].hidden) continue; g.strokeStyle = col; g.lineWidth = 3; g.beginPath(); let pen = false;
+      for (let k = Math.max(0, i - Math.round(2*fs)); k <= i; k++) { const q = samples[k]; if (!q) { pen = false; continue; } pen ? g.lineTo(X(q[wr]), Y(q[wr])) : g.moveTo(X(q[wr]), Y(q[wr])); pen = true; } g.stroke();
+      const ev = HD[key] && HD[key].act ? HD[key].act.events : [], flash = ev.some(e => i >= e.i0 && i <= e.i1);
+      g.fillStyle = col; g.beginPath(); g.arc(X(p[wr]), Y(p[wr]), flash ? 10 : 6, 0, 7); g.fill(); if (flash) { g.strokeStyle = '#fff'; g.lineWidth = 2; g.stroke(); } } }
+  const cnt = k => { const a = HD[k] && HD[k].act && !HD[k].hidden ? HD[k].act.events.filter(e => e.ip <= i).length : null; return a === null ? '—' : a; };
+  g.fillStyle = '#000b'; g.fillRect(6, 6, 224, 62); g.fillStyle = '#fff'; g.font = 'bold 12px system-ui'; g.fillText(`t = ${(v.currentTime).toFixed(1)} s`, 14, 22);
+  g.fillStyle = '#fca5a5'; g.fillText(`Movimientos mano derecha: ${cnt('R')}`, 14, 40); g.fillStyle = '#93c5fd'; g.fillText(`Movimientos mano izquierda: ${cnt('L')}`, 14, 58);
+  if (pickMode) { g.fillStyle = '#000a'; g.fillRect(0, h - 28, w, 28); g.fillStyle = '#fff'; g.font = 'bold 13px system-ui'; g.fillText('Haz clic sobre la persona que quieres analizar', 12, h - 9); }
+}
+let lastT = -1, lastW = 0; const vp = $('vp');
+(function loop() {
+  if (!$('res').hidden && samples.length) { const t = vp.currentTime, w = vp.clientWidth; if (t !== lastT || w !== lastW) { lastT = t; lastW = w; drawOverlay(); }
+    $('ph').style.left = (62 / Math.max(1, $('tl').clientWidth) * 100 + clamp((t - ts[0]) / obs, 0, 1) * (1 - 72 / Math.max(1, $('tl').clientWidth)) * 100) + '%'; }
+  requestAnimationFrame(loop);
+})();
+$('tl').addEventListener('click', e => { if (!ts.length) return; const r = $('tl').getBoundingClientRect(), x = clamp(((e.clientX - r.left) - 62) / (r.width - 72), 0, 1); vp.currentTime = ts[0] + x*(ts.length - 1)/fs; });
+$('pick').onclick = () => { pickMode = !pickMode; $('ov').style.pointerEvents = pickMode ? 'auto' : 'none'; $('ov').style.cursor = pickMode ? 'crosshair' : 'default';
+  $('pickmsg').textContent = pickMode ? 'Modo elegir persona: haz clic sobre ella en el video.' : ''; if (pickMode) vp.pause(); drawOverlay(); };
+$('ov').addEventListener('click', e => { if (!pickMode || !samples.length) return; const r = $('ov').getBoundingClientRect(), x = (e.clientX - r.left)/r.width, y = (e.clientY - r.top)/r.height, i = idxAt(vp.currentTime);
+  let bk = -1, ba = 9; allPoses[i].forEach((q, k) => { const b = bbox(q); if (b && x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1) { const a = (b.x1 - b.x0)*(b.y1 - b.y0); if (a < ba) { ba = a; bk = k; } } });
+  if (bk < 0) { $('pickmsg').textContent = 'No hay una persona detectada ahí; prueba en otro punto o en otro instante.'; return; }
+  seedSel = { i, k: bk }; pickMode = false; $('ov').style.pointerEvents = 'none'; $('pickmsg').textContent = 'Persona cambiada.'; retrack(); analyze(); });
+vp.addEventListener('seeked', drawOverlay); vp.addEventListener('loadeddata', drawOverlay);
+for (const id of ['vm', 'vista']) $(id).addEventListener('change', () => { if (samples.length) analyze(); });
+$('dl').onclick = () => {
+  const o = { version:'v3', archivo:$('vinfo').textContent, observacion_s:obs, fps:fs, supuestos:{ A, sinConfirmar:assumed }, manos:{}, personas_max:trackInfo.max };
+  for (const k of ['R','L']) { const h = HD[k], s = h.sel, sh = handSI(h), ev = h.act ? h.act.events : [];
+    o.manos[k] = h.hidden ? null : { movimientos:ev.length, tiempos_s:ev.map(e => +ts[e.ip].toFixed(2)), esfuerzos_min:sh && sh.epm, base:sh && sh.basis, ciclo_regular:s && s.ok ? { T:s.T, cv:s.cv, periodicidad:s.score } : null, en_movimiento:h.act && h.act.frac, strain_index:sh && sh.si }; }
+  o.zona = { movimientos:ZN.events.length, tiempos_s:ZN.events.map(e => +ts[e.ip].toFixed(2)) };
+  o.diagnostico = { vista:VIEW, escala_px:G.S, escala_desde:G.how, relacion_hombros:G.span, mirando:G.facing, visibilidad_der:G.visR, visibilidad_izq:G.visL, visibilidad_mediana:G.medVis, fotogramas_con_persona:G.n };
+  o.muestras = ts.map((t, i) => ({ t:+t.toFixed(3), R:frames[i] ? frames[i].R : null, L:frames[i] ? frames[i].L : null, N:frames[i] ? frames[i].N : null, tronco:frames[i] ? frames[i].trunk : null }));
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(o)], { type:'application/json' })); a.download = 'repetitividad.json'; a.click();
+};
+window.addEventListener('resize', () => { if (samples.length) { drawChart(); drawTimeline(); drawOverlay(); } });
+</script>
+</body>
+</html>
