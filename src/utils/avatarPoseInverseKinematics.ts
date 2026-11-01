@@ -1,5 +1,9 @@
 import { PosturePose3D } from '../types/figurePlan';
 import { makeNeutralPose } from './figurePlanCatalog';
+import {
+  clampPoseToNormativeWorkAgeLimits,
+  NORMATIVE_JOINT_LIMITS,
+} from './normativeJointLimits';
 
 export type LiftPostureStyle = 'hygienic_squat' | 'observed' | 'stoop';
 
@@ -77,15 +81,19 @@ export function normalizeAnatomicalElbowFlexion(rawElbowDeg: number, vCm: number
   if (!Number.isFinite(rawElbowDeg)) return 35;
   const clamped = clamp(rawElbowDeg, 0, 175);
   if (vCm < 82 && clamped > 122) {
-    return clamp(Math.round(180 - clamped), 8, 75);
+    return clamp(Math.round(180 - clamped), NORMATIVE_JOINT_LIMITS.elbow.flexionMinDeg, 75);
   }
-  return clamp(Math.round(clamped), 5, 142);
+  return clamp(
+    Math.round(clamped),
+    NORMATIVE_JOINT_LIMITS.elbow.flexionMinDeg,
+    NORMATIVE_JOINT_LIMITS.elbow.flexionMaxDeg,
+  );
 }
 
 /**
  * Calcula la posición mundial aproximada (z adelante desde tobillo, y vertical desde el suelo)
  * de la articulación del hombro derecho/izquierdo en el plano sagital para `ergo_avatar.glb`,
- * permitiendo cuclillas profundas reales con pie apoyado (dorsiflexión 0°..36° y cadera hasta 106°).
+ * permitiendo cuclillas profundas reales con pie apoyado (dorsiflexión 0°..31.5° y cadera hasta 118°).
  */
 function computeShoulderSagittalWorld(
   trunkDeg: number,
@@ -96,12 +104,22 @@ function computeShoulderSagittalWorld(
   hipDeg: number;
   ankleDeg: number;
 } {
-  // Con la planta del pie apoyada en el suelo: ankleDeg = kneeDeg - hipDeg (dorsiflexión fisiológica hasta 36°)
+  // Con la planta del pie apoyada plana en el suelo (y = 0): hipDeg = kneeDeg - ankleDeg (cero levantamiento de puntas)
   const ankleDeg =
-    kneeDeg <= 6
+    kneeDeg <= 4
       ? 0
-      : clamp(kneeDeg * 0.27 + Math.max(0, 26 - trunkDeg) * 0.1, 0, 36);
-  const hipDeg = clamp(kneeDeg - ankleDeg + Math.max(0, trunkDeg - 45) * 0.08, -10, 108);
+      : clamp(
+          kneeDeg * 0.28 + Math.max(0, 26 - trunkDeg) * 0.08,
+          0,
+          NORMATIVE_JOINT_LIMITS.ankle.dorsiflexionMaxDeg,
+        );
+  const maxHipByAbdomen =
+    NORMATIVE_JOINT_LIMITS.hip.maxTrunkPlusHipClosureHardDeg - Math.max(0, trunkDeg);
+  const hipDeg = clamp(
+    kneeDeg - ankleDeg,
+    NORMATIVE_JOINT_LIMITS.hip.extensionMaxDeg,
+    Math.min(NORMATIVE_JOINT_LIMITS.hip.flexionMaxDeg, maxHipByAbdomen),
+  );
 
   // Desde tobillo (z = 0, y = ANKLE_HEIGHT_M) hacia arriba por la tibia:
   // En mundo, la tibia se inclina hacia adelante (+Z) el ángulo (kneeDeg - hipDeg)
@@ -172,7 +190,11 @@ export function solveAvatarLiftPoseForTarget(input: LiftTargetPoseInput): Solved
             : 6;
 
   let kneeDeg = hasExplicitKnee
-    ? clamp(input.kneeFlexHintDeg!, 0, 138)
+    ? clamp(
+        input.kneeFlexHintDeg!,
+        NORMATIVE_JOINT_LIMITS.knee.flexionMinDeg,
+        NORMATIVE_JOINT_LIMITS.knee.flexionMaxDeg,
+      )
     : effectiveStyle === 'stoop'
       ? 10
       : vCm < 35
@@ -192,10 +214,10 @@ export function solveAvatarLiftPoseForTarget(input: LiftTargetPoseInput): Solved
   // Coherencia física en colocación alta (pecho, hombros o sobre cabeza):
   if (vCm >= 125) {
     trunkDeg = clamp(trunkDeg, -8, 12);
-    kneeDeg = clamp(kneeDeg, 0, 14);
+    kneeDeg = clamp(kneeDeg, NORMATIVE_JOINT_LIMITS.knee.flexionMinDeg, 14);
   } else if (vCm >= 105) {
     trunkDeg = clamp(trunkDeg, -5, 18);
-    kneeDeg = clamp(kneeDeg, 0, 22);
+    kneeDeg = clamp(kneeDeg, NORMATIVE_JOINT_LIMITS.knee.flexionMinDeg, 22);
   }
 
   // Descenso cinemático del hombro para que brazo + antebrazo alcancen targetY sin deformar la postura:
@@ -243,10 +265,14 @@ export function solveAvatarLiftPoseForTarget(input: LiftTargetPoseInput): Solved
   const L2 = FOREARM_GRIP_LEN_M;
   const d = clamp(rawDist, Math.abs(L1 - L2) + 0.025, L1 + L2 - 0.01);
 
-  // Ley de cosenos para flexión anatómica del codo (0° = recto, 90° = ángulo recto)
+  // Ley de cosenos para flexión anatómica del codo (8.5° mín ext .. 149.5° máx flex)
   const cosInterior = clamp((L1 * L1 + L2 * L2 - d * d) / (2 * L1 * L2), -1, 1);
   const interiorRad = Math.acos(cosInterior);
-  const elbowFlexDeg = clamp(Math.round((Math.PI - interiorRad) * RAD2DEG), 6, 138);
+  const elbowFlexDeg = clamp(
+    Math.round((Math.PI - interiorRad) * RAD2DEG),
+    NORMATIVE_JOINT_LIMITS.elbow.flexionMinDeg,
+    NORMATIVE_JOINT_LIMITS.elbow.flexionMaxDeg,
+  );
 
   // Ángulo mundial de la línea hombro->mano medido hacia adelante (+Z) desde la vertical descendente (0, -1, 0)
   const lineWorldAngleRad = Math.atan2(dz, -dy);
@@ -259,7 +285,7 @@ export function solveAvatarLiftPoseForTarget(input: LiftTargetPoseInput): Solved
   const trunkWorldPitchDeg = trunkDeg;
   const shoulderLocalFlexDeg = clamp(Math.round(upperArmWorldDeg + trunkWorldPitchDeg), -25, 172);
 
-  // En levantamiento higiénico con espalda recta, mirada al frente (cuello neutro 4°–10°)
+  // Alineación cervical natural: cuando el tronco se inclina >35°, el cuello extiende levemente (-4°..-12°) para mirar la carga y no enterrar el mentón
   const neckFlexDeg =
     vCm >= 145
       ? -12
@@ -267,9 +293,11 @@ export function solveAvatarLiftPoseForTarget(input: LiftTargetPoseInput): Solved
         ? -4
         : isSquatPattern && trunkDeg <= 26
           ? 6
-          : vCm < 55
-            ? clamp(Math.round(20 - trunkDeg * 0.16), 4, 24)
-            : 8;
+          : trunkDeg >= 48
+            ? clamp(Math.round(12 - (trunkDeg - 36) * 0.65), -14, 8)
+            : vCm < 55
+              ? clamp(Math.round(14 - trunkDeg * 0.22), 2, 14)
+              : 6;
 
   const achievedArmWorldRad = (shoulderLocalFlexDeg - trunkWorldPitchDeg) * DEG2RAD;
   const elbowWorldZ = fk.shoulderZ + L1 * Math.sin(achievedArmWorldRad);
@@ -283,33 +311,37 @@ export function solveAvatarLiftPoseForTarget(input: LiftTargetPoseInput): Solved
   const finalHip = Math.round(fk.hipDeg);
   const finalAnkle = Math.round(fk.ankleDeg);
 
-  // Convergencia bimanual (-8° de abducción = aducción suave) para abrazar lateralmente la caja de 31 cm
-  const pose = makeNeutralPose({
-    trunkFlexionDeg: finalTrunk,
-    trunkTwistDeg: Math.round(asymDeg),
-    neckFlexionDeg: neckFlexDeg,
-    shoulderRFlexionDeg: shoulderLocalFlexDeg,
-    shoulderLFlexionDeg: shoulderLocalFlexDeg,
-    shoulderRAbductionDeg: -8,
-    shoulderLAbductionDeg: -8,
-    shoulderRElevated: vCm >= 142,
-    elbowRFlexionDeg: elbowFlexDeg,
-    elbowLFlexionDeg: elbowFlexDeg,
-    forearmRPronationDeg: vCm < 65 ? 12 : 20,
-    wristRFlexionDeg: vCm >= 140 ? -10 : 4,
-    wristLFlexionDeg: vCm >= 140 ? -10 : 4,
-    hipRFlexionDeg: finalHip,
-    hipLFlexionDeg: finalHip,
-    kneeRFlexionDeg: finalKnee,
-    kneeLFlexionDeg: finalKnee,
-    ankleRDorsiflexionDeg: finalAnkle,
-    ankleLDorsiflexionDeg: finalAnkle,
-    stanceMode: finalKnee >= 50 ? 'squatting' : 'standing',
-    prop: 'box_load',
-    handGripMode: 'power_grip',
-    loadKg,
-    highlightGroup: 'l5s1_disc',
-  });
+  const pose = clampPoseToNormativeWorkAgeLimits(
+    makeNeutralPose({
+      trunkFlexionDeg: finalTrunk,
+      trunkTwistDeg: Math.round(asymDeg),
+      neckFlexionDeg: neckFlexDeg,
+      shoulderRFlexionDeg: shoulderLocalFlexDeg,
+      shoulderLFlexionDeg: shoulderLocalFlexDeg,
+      shoulderRAbductionDeg: -6,
+      shoulderLAbductionDeg: -6,
+      shoulderRElevated: vCm >= 142,
+      elbowRFlexionDeg: elbowFlexDeg,
+      elbowLFlexionDeg: elbowFlexDeg,
+      forearmRPronationDeg: -18,
+      forearmLPronationDeg: 18,
+      wristRFlexionDeg: vCm >= 140 ? -8 : -4,
+      wristLFlexionDeg: vCm >= 140 ? -8 : -4,
+      wristRDeviationDeg: 6,
+      wristLDeviationDeg: -6,
+      hipRFlexionDeg: finalHip,
+      hipLFlexionDeg: finalHip,
+      kneeRFlexionDeg: finalKnee,
+      kneeLFlexionDeg: finalKnee,
+      ankleRDorsiflexionDeg: finalAnkle,
+      ankleLDorsiflexionDeg: finalAnkle,
+      stanceMode: finalKnee >= 50 ? 'squatting' : 'standing',
+      prop: 'box_load',
+      handGripMode: 'box_cradle',
+      loadKg,
+      highlightGroup: 'l5s1_disc',
+    }),
+  );
 
   return {
     pose,
@@ -387,18 +419,19 @@ export function parseAvatarQuickTextCorrection(rawText: string): ParsedQuickText
     summaryApplied.push('Preset óptimo: Carga en nudillos-cintura (V=78 cm, H=26 cm)');
   }
 
-  if (/\bconductor|volante|autobus|autobús\b/.test(txt)) {
+  if (/\bconductor|chofer|volante|omnibus|ómnibus|colectivo|autobus|autobús\b/.test(txt)) {
     posePatch.stanceMode = 'seated';
     posePatch.prop = 'bus_driver_seat';
     posePatch.trunkFlexionDeg = -10;
-    posePatch.neckFlexionDeg = 8;
-    posePatch.shoulderRFlexionDeg = 38;
-    posePatch.shoulderLFlexionDeg = 38;
-    posePatch.shoulderRAbductionDeg = -12;
-    posePatch.shoulderLAbductionDeg = -12;
-    posePatch.elbowRFlexionDeg = 64;
-    posePatch.elbowLFlexionDeg = 64;
-    posePatch.forearmRPronationDeg = 35;
+    posePatch.neckFlexionDeg = 6;
+    posePatch.shoulderRFlexionDeg = 22;
+    posePatch.shoulderLFlexionDeg = 22;
+    posePatch.shoulderRAbductionDeg = 6;
+    posePatch.shoulderLAbductionDeg = 6;
+    posePatch.elbowRFlexionDeg = 58;
+    posePatch.elbowLFlexionDeg = 58;
+    posePatch.forearmRPronationDeg = 34;
+    posePatch.forearmLPronationDeg = -34;
     posePatch.wristRFlexionDeg = -6;
     posePatch.wristLFlexionDeg = -6;
     posePatch.handGripMode = 'power_grip';
@@ -408,7 +441,7 @@ export function parseAvatarQuickTextCorrection(rawText: string): ParsedQuickText
     posePatch.kneeLFlexionDeg = 64;
     posePatch.ankleRDorsiflexionDeg = -12;
     posePatch.ankleLDorsiflexionDeg = -8;
-    summaryApplied.push('Postura Ideal: Conductor sentado (Ángulos A–F, manos en volante)');
+    summaryApplied.push('Postura Ideal: Chofer de ómnibus/colectivo (volante bajo 35°, Ángulos A–F)');
   } else if (/\bsentad[oa]\b/.test(txt)) {
     posePatch.stanceMode = 'seated';
     posePatch.prop = 'chair';
