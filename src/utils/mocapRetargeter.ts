@@ -98,7 +98,8 @@ async function resolveVisionTasks(): Promise<Awaited<ReturnType<typeof FilesetRe
 }
 
 let heavyLandmarker: PoseLandmarker | null = null;
-let loadedModelTier: 'heavy' | 'full' | 'lite' = 'heavy';
+let loadedModelTier: 'heavy' | 'full' | 'lite' = 'lite';
+let loadedPreferFast: boolean | null = null;
 let heavyInitPromise: Promise<{ landmarker: PoseLandmarker; tier: 'heavy' | 'full' | 'lite' } | null> | null =
   null;
 /**
@@ -225,27 +226,44 @@ class Landmark33OneEuroBank {
 }
 
 /**
- * Carga MediaPipe PoseLandmarker priorizando el modelo HEAVY (máxima fidelidad 3D)
- * con respaldo automático a FULL y LITE según disponibilidad de GPU/red.
+ * Carga MediaPipe PoseLandmarker priorizando por defecto el modelo rápido LITE/FULL en GPU
+ * (8x más veloz para vídeos largos de 30-60 s) o HEAVY si se desactiva `preferFastModel`.
  */
-export async function initHeavyPoseMoCap(): Promise<{
+export async function initHeavyPoseMoCap(preferFastModel = true): Promise<{
   landmarker: PoseLandmarker;
   tier: 'heavy' | 'full' | 'lite';
 } | null> {
-  if (heavyLandmarker) {
+  const isMobile = isMobileViewportDevice();
+  const effectiveFast = isMobile ? true : preferFastModel;
+
+  if (heavyLandmarker && loadedPreferFast === effectiveFast) {
     return { landmarker: heavyLandmarker, tier: loadedModelTier };
+  }
+  if (heavyLandmarker && loadedPreferFast !== effectiveFast) {
+    try {
+      heavyLandmarker.close();
+    } catch {
+      // Ignorar cierre al cambiar tier
+    }
+    heavyLandmarker = null;
+    heavyInitPromise = null;
+    lastGlobalMocapTimestampMs = Math.max(
+      lastGlobalMocapTimestampMs + 5000,
+      Math.round(performance.now()) + 150,
+    );
   }
   if (heavyInitPromise) return heavyInitPromise;
 
   heavyInitPromise = (async () => {
     try {
       const vision = await resolveVisionTasks();
-      const isMobile = isMobileViewportDevice();
-      // En dispositivos móviles se utiliza estrictamente LITE -> FULL y delegado CPU (WASM SIMD)
-      // para eliminar la colisión de contextos WebGL con Three.js que satura el driver GPU de Android y congela/cierra la app.
+      // En móviles: LITE -> FULL con CPU WASM para evitar colisión de contexto WebGL con Three.js.
+      // En escritorio con modo rápido activo: LITE -> FULL en GPU (~5 ms por cuadro, sin descargar 30 MB de Heavy).
       const orderedModels = isMobile
         ? [MODEL_URLS[2], MODEL_URLS[1]]
-        : MODEL_URLS;
+        : effectiveFast
+          ? [MODEL_URLS[2], MODEL_URLS[1], MODEL_URLS[0]]
+          : MODEL_URLS;
       const delegates = isMobile ? (['CPU'] as const) : (['GPU', 'CPU'] as const);
       for (const candidate of orderedModels) {
         for (const delegate of delegates) {
@@ -257,12 +275,13 @@ export async function initHeavyPoseMoCap(): Promise<{
               },
               runningMode: 'VIDEO',
               numPoses: 1,
-              minPoseDetectionConfidence: 0.42,
-              minPosePresenceConfidence: 0.42,
-              minTrackingConfidence: 0.42,
+              minPoseDetectionConfidence: isMobile ? 0.28 : 0.32,
+              minPosePresenceConfidence: isMobile ? 0.28 : 0.32,
+              minTrackingConfidence: isMobile ? 0.28 : 0.32,
             });
             heavyLandmarker = lm;
             loadedModelTier = candidate.tier;
+            loadedPreferFast = effectiveFast;
             return { landmarker: lm, tier: candidate.tier };
           } catch {
             // Probar siguiente combinación delegate / modelo
@@ -281,7 +300,10 @@ export async function initHeavyPoseMoCap(): Promise<{
   return heavyInitPromise;
 }
 
-export async function resetHeavyPoseMoCap(preferCpuFallback = false): Promise<{
+export async function resetHeavyPoseMoCap(
+  preferCpuFallback = false,
+  preferFastModel = true,
+): Promise<{
   landmarker: PoseLandmarker;
   tier: 'heavy' | 'full' | 'lite';
 } | null> {
@@ -293,6 +315,7 @@ export async function resetHeavyPoseMoCap(preferCpuFallback = false): Promise<{
     }
   }
   heavyLandmarker = null;
+  loadedPreferFast = null;
   heavyInitPromise = null;
   lastGlobalMocapTimestampMs = Math.max(
     lastGlobalMocapTimestampMs + 5000,
@@ -300,15 +323,18 @@ export async function resetHeavyPoseMoCap(preferCpuFallback = false): Promise<{
   );
 
   if (!preferCpuFallback) {
-    return initHeavyPoseMoCap();
+    return initHeavyPoseMoCap(preferFastModel);
   }
 
   try {
     const vision = await resolveVisionTasks();
     const isMobile = isMobileViewportDevice();
+    const effectiveFast = isMobile ? true : preferFastModel;
     const orderedModels = isMobile
       ? [MODEL_URLS[2], MODEL_URLS[1]]
-      : MODEL_URLS;
+      : effectiveFast
+        ? [MODEL_URLS[2], MODEL_URLS[1], MODEL_URLS[0]]
+        : MODEL_URLS;
     const delegates = isMobile ? (['CPU'] as const) : (['CPU', 'GPU'] as const);
     for (const candidate of orderedModels) {
       for (const delegate of delegates) {
@@ -320,12 +346,13 @@ export async function resetHeavyPoseMoCap(preferCpuFallback = false): Promise<{
             },
             runningMode: 'VIDEO',
             numPoses: 1,
-            minPoseDetectionConfidence: 0.42,
-            minPosePresenceConfidence: 0.42,
-            minTrackingConfidence: 0.42,
+            minPoseDetectionConfidence: isMobile ? 0.28 : 0.32,
+            minPosePresenceConfidence: isMobile ? 0.28 : 0.32,
+            minTrackingConfidence: isMobile ? 0.28 : 0.32,
           });
           heavyLandmarker = lm;
           loadedModelTier = candidate.tier;
+          loadedPreferFast = effectiveFast;
           return { landmarker: lm, tier: candidate.tier };
         } catch {
           // Intentar siguiente modelo
@@ -338,7 +365,7 @@ export async function resetHeavyPoseMoCap(preferCpuFallback = false): Promise<{
   return null;
 }
 
-async function ensureVideoFrameDecoded(video: HTMLVideoElement, timeoutMs = 1400): Promise<void> {
+async function ensureVideoFrameDecoded(video: HTMLVideoElement, timeoutMs = 1100): Promise<void> {
   if (video.readyState >= 2 && video.videoWidth > 0) return;
   await new Promise<void>((resolve) => {
     let done = false;
@@ -347,14 +374,23 @@ async function ensureVideoFrameDecoded(video: HTMLVideoElement, timeoutMs = 1400
       done = true;
       video.removeEventListener('loadeddata', finish);
       video.removeEventListener('canplay', finish);
+      video.removeEventListener('seeked', finish);
       window.clearTimeout(timer);
       resolve();
     };
     const timer = window.setTimeout(finish, timeoutMs);
     video.addEventListener('loadeddata', finish, { once: true });
     video.addEventListener('canplay', finish, { once: true });
+    video.addEventListener('seeked', finish, { once: true });
     try {
-      if (video.readyState === 0) video.load();
+      if (video.preload === 'metadata' || video.preload === 'none') {
+        video.preload = 'auto';
+      }
+      if (video.readyState === 0) {
+        video.load();
+      } else if (video.readyState === 1) {
+        video.currentTime = 0.001;
+      }
     } catch {
       finish();
     }
@@ -362,13 +398,17 @@ async function ensureVideoFrameDecoded(video: HTMLVideoElement, timeoutMs = 1400
 }
 
 function seekVideoExact(video: HTMLVideoElement, timeSec: number): Promise<void> {
-  return ensureVideoFrameDecoded(video, 1200).then(
+  const prep =
+    video.videoWidth > 0 && video.readyState >= 1
+      ? Promise.resolve()
+      : ensureVideoFrameDecoded(video, 700);
+  return prep.then(
     () =>
       new Promise<void>((resolve) => {
         const dur = Number.isFinite(video.duration) && video.duration > 0.05 ? video.duration : 1;
         const safeMax = Math.max(0, dur - 0.025);
         const target = clamp(timeSec, 0, safeMax);
-        if (Math.abs(video.currentTime - target) < 0.008 && video.readyState >= 2) {
+        if (Math.abs(video.currentTime - target) < 0.012 && video.readyState >= 2) {
           resolve();
           return;
         }
@@ -381,15 +421,10 @@ function seekVideoExact(video: HTMLVideoElement, timeSec: number): Promise<void>
           resolve();
         };
         const onSeeked = () => {
-          window.clearTimeout(timer);
-          // Un único ciclo de composición tras `seeked` garantiza que el buffer de píxeles esté listo en vídeos pausados sin bloquear 80ms por fotograma
-          if (typeof window.requestAnimationFrame === 'function') {
-            window.requestAnimationFrame(() => finish());
-          } else {
-            finish();
-          }
+          // En cuanto `seeked` se dispara el frame decodificado ya está disponible en el buffer de textura del <video>
+          finish();
         };
-        const timer = window.setTimeout(finish, 260);
+        const timer = window.setTimeout(finish, 115);
         video.addEventListener('seeked', onSeeked, { once: true });
         try {
           video.currentTime = target;
@@ -1338,13 +1373,20 @@ function alignWorldChainToScreen2D(
   const shLOrig = world3D[11];
   const shROrig = world3D[12];
   if (hipLOrig && hipROrig && shLOrig && shROrig && norm2D[11] && norm2D[12] && norm2D[23] && norm2D[24]) {
+    const hipsInFrame =
+      norm2D[23].y >= 0.05 &&
+      norm2D[23].y <= 0.93 &&
+      norm2D[24].y >= 0.05 &&
+      norm2D[24].y <= 0.93 &&
+      norm2D[11].y >= 0.04 &&
+      norm2D[12].y >= 0.04;
     const trunkVis = Math.min(
       hipLOrig.visibility,
       hipROrig.visibility,
       shLOrig.visibility,
       shROrig.visibility,
     );
-    if (trunkVis >= 0.45) {
+    if (hipsInFrame && trunkVis >= 0.52) {
       const midHipW = vecMid(hipLOrig, hipROrig);
       const midShW = vecMid(shLOrig, shROrig);
       const tDxW = midShW.x - midHipW.x;
@@ -2128,23 +2170,794 @@ export async function extractSingleMocapFrame(
   }
 }
 
+export interface MocapExtractionOptions {
+  targetFps?: number;
+  /** Tope explícito de fotogramas a evaluar en todo el vídeo (ej. 20, 40, 75, 140) */
+  maxTotalSamples?: number;
+  /** Usa modelo rápido LITE/FULL en GPU (~8x más rápido que Heavy). Por defecto `true`. */
+  preferFastModel?: boolean;
+  /** Bloquea pelvis y piernas en bipedestación fija si están tapadas por mesa o fuera de plano. Por defecto `true`. */
+  lockWorkbenchLowerBody?: boolean;
+  /** Congela torso/cabeza/hombros en planos cerrados (zoom de manos) y fundidos a negro. Por defecto `true`. */
+  stabilizeCloseupCuts?: boolean;
+  /** Impide inversiones súbitas de 180° en vistas de perfil con ropa holgada. Por defecto `true`. */
+  antiProfileSpin180?: boolean;
+  abortSignal?: { aborted: boolean };
+  onProgress?: (pct: number, phaseText?: string) => void;
+  onFirstFrameSample?: (sample: MocapFrameSample) => void;
+  onPartialTimeline?: (partial: MocapTimelineResult) => void;
+}
+
+function isLandmarkInsideCleanFrame2D(
+  p: MocapVec3 | undefined,
+  minY = 0.025,
+  maxY = 0.935,
+): boolean {
+  if (!p) return false;
+  return p.x >= 0.02 && p.x <= 0.98 && p.y >= minY && p.y <= maxY;
+}
+
+function computeTinyFrameLuma(
+  lumaCtx: CanvasRenderingContext2D | null,
+  source: HTMLVideoElement | HTMLCanvasElement,
+): number {
+  if (!lumaCtx) return 128;
+  try {
+    lumaCtx.drawImage(source, 0, 0, 8, 6);
+    const data = lumaCtx.getImageData(0, 0, 8, 6).data;
+    let sum = 0;
+    const count = data.length >> 2;
+    for (let i = 0; i < data.length; i += 4) {
+      sum += data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+    }
+    return count > 0 ? sum / count : 128;
+  } catch {
+    return 128;
+  }
+}
+
+interface WorkbenchAnchor3D {
+  frontXZ: { x: number; y: number; z: number };
+  leftXZ: { x: number; y: number; z: number };
+  worldTemplate: MocapVec3[];
+}
+
+function buildStandingWorkbenchAnchor(
+  frontDirXZ: { x: number; y: number; z: number },
+  limbs: CalibratedLimbLengths,
+  trunkLeanRad = 0.14,
+): WorkbenchAnchor3D {
+  const upY = { x: 0, y: 1, z: 0 };
+  const fLen = Math.hypot(frontDirXZ.x, frontDirXZ.z);
+  const frontXZ =
+    fLen > 1e-4
+      ? { x: frontDirXZ.x / fLen, y: 0, z: frontDirXZ.z / fLen }
+      : { x: 0, y: 0, z: 1 };
+  const leftXZ = vecNorm(vecCross(upY, frontXZ));
+
+  const pts: MocapVec3[] = Array.from({ length: 33 }, () => ({
+    x: 0,
+    y: 0,
+    z: 0,
+    visibility: 0.9,
+  }));
+
+  const halfPelvis = 0.105;
+  const halfShoulder = 0.175;
+  const torsoLen = 0.46;
+  const sinLean = Math.sin(trunkLeanRad);
+  const cosLean = Math.cos(trunkLeanRad);
+
+  const midHip = { x: 0, y: 0, z: 0 };
+  const midSh = {
+    x: frontXZ.x * torsoLen * sinLean,
+    y: torsoLen * cosLean,
+    z: frontXZ.z * torsoLen * sinLean,
+  };
+
+  pts[23] = {
+    x: midHip.x + leftXZ.x * halfPelvis,
+    y: midHip.y,
+    z: midHip.z + leftXZ.z * halfPelvis,
+    visibility: 0.9,
+  };
+  pts[24] = {
+    x: midHip.x - leftXZ.x * halfPelvis,
+    y: midHip.y,
+    z: midHip.z - leftXZ.z * halfPelvis,
+    visibility: 0.9,
+  };
+
+  pts[11] = {
+    x: midSh.x + leftXZ.x * halfShoulder,
+    y: midSh.y,
+    z: midSh.z + leftXZ.z * halfShoulder,
+    visibility: 0.95,
+  };
+  pts[12] = {
+    x: midSh.x - leftXZ.x * halfShoulder,
+    y: midSh.y,
+    z: midSh.z - leftXZ.z * halfShoulder,
+    visibility: 0.95,
+  };
+
+  // Cabeza ergonómica mirando suavemente hacia la mesa (~16° flexión cervical)
+  const midEar = {
+    x: midSh.x + frontXZ.x * 0.055,
+    y: midSh.y + 0.165,
+    z: midSh.z + frontXZ.z * 0.055,
+  };
+  pts[7] = {
+    x: midEar.x + leftXZ.x * 0.065,
+    y: midEar.y,
+    z: midEar.z + leftXZ.z * 0.065,
+    visibility: 0.92,
+  };
+  pts[8] = {
+    x: midEar.x - leftXZ.x * 0.065,
+    y: midEar.y,
+    z: midEar.z - leftXZ.z * 0.065,
+    visibility: 0.92,
+  };
+  pts[0] = {
+    x: midEar.x + frontXZ.x * 0.105,
+    y: midEar.y - 0.032,
+    z: midEar.z + frontXZ.z * 0.105,
+    visibility: 0.92,
+  };
+
+  // Piernas erguidas simétricas sobre el suelo
+  const buildLeg = (hip: MocapVec3, kneeIdx: number, ankIdx: number, heelIdx: number, toeIdx: number) => {
+    const knee: MocapVec3 = {
+      x: hip.x + frontXZ.x * 0.022,
+      y: hip.y - limbs.thigh,
+      z: hip.z + frontXZ.z * 0.022,
+      visibility: 0.9,
+    };
+    const ank: MocapVec3 = {
+      x: hip.x,
+      y: knee.y - limbs.shank,
+      z: hip.z,
+      visibility: 0.9,
+    };
+    pts[kneeIdx] = knee;
+    pts[ankIdx] = ank;
+    pts[heelIdx] = {
+      x: ank.x - frontXZ.x * 0.055,
+      y: ank.y - 0.045,
+      z: ank.z - frontXZ.z * 0.055,
+      visibility: 0.9,
+    };
+    pts[toeIdx] = {
+      x: ank.x + frontXZ.x * 0.145,
+      y: ank.y - 0.045,
+      z: ank.z + frontXZ.z * 0.145,
+      visibility: 0.9,
+    };
+  };
+  buildLeg(pts[24], 26, 28, 30, 32);
+  buildLeg(pts[23], 25, 27, 29, 31);
+
+  // Brazos base neutros frente a la mesa
+  for (const [shIdx, elbIdx, wrIdx, pIdx, iIdx, sideSign] of [
+    [12, 14, 16, 18, 20, -1],
+    [11, 13, 15, 17, 19, 1],
+  ] as const) {
+    const sh = pts[shIdx];
+    const elb: MocapVec3 = {
+      x: sh.x + frontXZ.x * 0.06 + leftXZ.x * (sideSign * 0.02),
+      y: sh.y - limbs.upperArm * 0.96,
+      z: sh.z + frontXZ.z * 0.06 + leftXZ.z * (sideSign * 0.02),
+      visibility: 0.9,
+    };
+    const wr: MocapVec3 = {
+      x: elb.x + frontXZ.x * (limbs.foreArm * 0.92),
+      y: elb.y - limbs.foreArm * 0.28,
+      z: elb.z + frontXZ.z * (limbs.foreArm * 0.92),
+      visibility: 0.9,
+    };
+    pts[elbIdx] = elb;
+    pts[wrIdx] = wr;
+    pts[pIdx] = {
+      x: wr.x + frontXZ.x * 0.075 + leftXZ.x * (sideSign * 0.018),
+      y: wr.y - 0.015,
+      z: wr.z + frontXZ.z * 0.075 + leftXZ.z * (sideSign * 0.018),
+      visibility: 0.85,
+    };
+    pts[iIdx] = {
+      x: wr.x + frontXZ.x * 0.082 - leftXZ.x * (sideSign * 0.018),
+      y: wr.y - 0.01,
+      z: wr.z + frontXZ.z * 0.082 - leftXZ.z * (sideSign * 0.018),
+      visibility: 0.85,
+    };
+  }
+
+  return { frontXZ, leftXZ, worldTemplate: pts };
+}
+
+/**
+ * Estabiliza secuencias industriales reales con:
+ * 1) Detección automática de mesa / tren inferior oculto (cero patadas fantasma ni caminatas por zoom).
+ * 2) Consistencia de hemisferio frontal (nariz + zona de manos) que elimina giros de 180° en perfil / bata blanca.
+ * 3) Anclaje de tronco/cabeza en cortes de zoom cerrado a manos (ej. 00:14-00:32) con retargeting de antebrazos invariante al zoom.
+ * 4) Filtro anti-intrusión de manos de terceros en bordes del encuadre.
+ */
+function preprocessIndustrialStabilization(
+  rawTimes: number[],
+  repairedWorld: MocapVec3[][],
+  rawNorm: MocapVec3[][],
+  videoAspect: number,
+  limbs: CalibratedLimbLengths,
+  opts: {
+    lockWorkbenchLowerBody: boolean;
+    stabilizeCloseupCuts: boolean;
+    antiProfileSpin180: boolean;
+  },
+): {
+  worldSeq: MocapVec3[][];
+  normSeq: MocapVec3[][];
+  suppressRootMotion: boolean[];
+} {
+  const n = repairedWorld.length;
+  const worldSeq = repairedWorld.map((f) => f.map((p) => ({ ...p })));
+  const normSeq = rawNorm.map((f) => f.map((p) => ({ ...p })));
+  const suppressRootMotion = new Array<boolean>(n).fill(false);
+  if (n === 0) return { worldSeq, normSeq, suppressRootMotion };
+
+  // 1. Limpiar visibilidad 2D de puntos fuera de cuadro o sobre barras de reproductor inferiores (y > 0.895)
+  let validLowerFrames = 0;
+  const isReliableUpper: boolean[] = new Array<boolean>(n).fill(false);
+
+  for (let i = 0; i < n; i++) {
+    const nm = normSeq[i];
+    const wd = worldSeq[i];
+
+    const kneesIn =
+      isLandmarkInsideCleanFrame2D(nm[25], 0.12, 0.895) &&
+      isLandmarkInsideCleanFrame2D(nm[26], 0.12, 0.895) &&
+      Math.min(wd[25].visibility, wd[26].visibility) >= 0.56;
+    const anklesIn =
+      isLandmarkInsideCleanFrame2D(nm[27], 0.18, 0.935) &&
+      isLandmarkInsideCleanFrame2D(nm[28], 0.18, 0.935) &&
+      Math.min(wd[27].visibility, wd[28].visibility) >= 0.50;
+    const legSpan2D =
+      Math.min(nm[27]?.y ?? 0, nm[28]?.y ?? 0) - Math.max(nm[23]?.y ?? 0, nm[24]?.y ?? 0);
+    if (kneesIn && anklesIn && legSpan2D >= 0.15) {
+      validLowerFrames++;
+    }
+
+    const headIn =
+      isLandmarkInsideCleanFrame2D(nm[0], 0.03, 0.72) &&
+      (isLandmarkInsideCleanFrame2D(nm[7], 0.03, 0.72) ||
+        isLandmarkInsideCleanFrame2D(nm[8], 0.03, 0.72)) &&
+      wd[0].visibility >= 0.50;
+    const shIn =
+      isLandmarkInsideCleanFrame2D(nm[11], 0.07, 0.78) &&
+      isLandmarkInsideCleanFrame2D(nm[12], 0.07, 0.78) &&
+      Math.min(wd[11].visibility, wd[12].visibility) >= 0.50;
+    isReliableUpper[i] = headIn && shIn;
+
+    // Penalizar puntos que caen fuera del encuadre real para no contaminar vectores 2D ni IK
+    for (let idx = 0; idx < 33; idx++) {
+      const maxY = idx >= 25 ? 0.935 : 0.895;
+      if (!isLandmarkInsideCleanFrame2D(nm[idx], 0.02, maxY)) {
+        nm[idx].visibility = Math.min(nm[idx].visibility, 0.05);
+        wd[idx].visibility = Math.min(wd[idx].visibility, 0.18);
+      }
+    }
+  }
+
+  const clipHasHiddenLowerBody =
+    opts.lockWorkbenchLowerBody && validLowerFrames < Math.max(2, Math.round(n * 0.25));
+
+  // 2. Estimar hemisferio frontal dominante del operario (hacia dónde mira la cara y hacia dónde trabajan las manos)
+  let sumFrontX = 0;
+  let sumFrontZ = 0;
+  let sumTrunkLean = 0;
+  let countUpper = 0;
+
+  for (let i = 0; i < n; i++) {
+    const nm = normSeq[i];
+    const wd = worldSeq[i];
+    const midShX = (nm[11].x + nm[12].x) * 0.5;
+    const midHandsX = (nm[13].x + nm[14].x + nm[15].x + nm[16].x) * 0.25;
+    const dxWork = (midHandsX - midShX) * videoAspect;
+
+    if (isReliableUpper[i]) {
+      const midEarX = (nm[7].x + nm[8].x) * 0.5;
+      const dxFace = (nm[0].x - midEarX) * videoAspect;
+      const shSpan2D = Math.abs(nm[11].x - nm[12].x) * videoAspect;
+      const cueX = clamp(dxFace * 2.4 + dxWork * 1.25, -1.25, 1.25);
+      // Si los hombros se ven anchos en 2D el plano es frontal (+Z); si son estrechos es perfil/oblicuo (domina cueX)
+      const zBias = shSpan2D >= 0.17 ? 0.92 : 0.44;
+      const v = vecNorm({ x: cueX, y: 0, z: zBias });
+      sumFrontX += v.x;
+      sumFrontZ += v.z;
+      const midSh3 = vecMid(wd[11], wd[12]);
+      const midHip3 = vecMid(wd[23], wd[24]);
+      const lean = clamp(
+        Math.atan2(
+          (midSh3.x - midHip3.x) * v.x + (midSh3.z - midHip3.z) * v.z,
+          Math.max(0.2, midSh3.y - midHip3.y),
+        ),
+        0.04,
+        0.32,
+      );
+      sumTrunkLean += lean;
+      countUpper++;
+    }
+  }
+
+  // Si todo el vídeo es un primer plano sin cabeza (ej. solo manos), inferir frente desde antebrazos codo->muñeca
+  if (countUpper === 0) {
+    for (let i = 0; i < n; i++) {
+      const nm = normSeq[i];
+      const dxFore =
+        ((nm[15].x - nm[13].x) + (nm[16].x - nm[14].x)) * 0.5 * videoAspect;
+      sumFrontX += clamp(dxFore * 2.2, -1, 1);
+      sumFrontZ += 0.48;
+    }
+  }
+
+  const dominantFrontXZ = vecNorm({
+    x: sumFrontX || 0,
+    y: 0,
+    z: sumFrontZ || 1,
+  });
+  const avgLeanRad = countUpper > 0 ? clamp(sumTrunkLean / countUpper, 0.08, 0.28) : 0.14;
+  const workbenchAnchor = buildStandingWorkbenchAnchor(dominantFrontXZ, limbs, avgLeanRad);
+
+  // 3. Recorrido cuadro a cuadro: anti-giro 180°, bloqueo de mesa y retargeting limpio en zoom de manos
+  const upY = { x: 0, y: 1, z: 0 };
+  let prevFrontXZ = { ...dominantFrontXZ };
+  let prevWrL: MocapVec3 | null = null;
+  let prevWrR: MocapVec3 | null = null;
+
+  for (let i = 0; i < n; i++) {
+    const wd = worldSeq[i];
+    const nm = normSeq[i];
+    const dt = i > 0 ? Math.max(0.02, rawTimes[i] - rawTimes[i - 1]) : 0.04;
+
+    const isCloseup = opts.stabilizeCloseupCuts && !isReliableUpper[i];
+
+    if (isCloseup) {
+      // Corte de cámara a primer plano de manos/brazos (ej. 00:14 - 00:32):
+      // Congelar cabeza, cuello, hombros, tronco, pelvis y piernas en el ancla ergonómica estable
+      suppressRootMotion[i] = true;
+      const tpl = workbenchAnchor.worldTemplate;
+      for (const fixedIdx of [0, 7, 8, 11, 12, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]) {
+        wd[fixedIdx] = { ...tpl[fixedIdx] };
+      }
+      // Ocultar en el overlay 2D cabeza y piernas fuera de plano para dibujar solo los brazos visibles
+      for (const hideIdx of [0, 7, 8, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]) {
+        nm[hideIdx].visibility = 0;
+      }
+
+      // Escala local invariante al zoom medida directamente sobre los antebrazos visibles en 2D
+      const dForeL = Math.hypot((nm[15].x - nm[13].x) * videoAspect, nm[15].y - nm[13].y);
+      const dForeR = Math.hypot((nm[16].x - nm[14].x) * videoAspect, nm[16].y - nm[14].y);
+      const localZoomScale = clamp(Math.max(dForeL, dForeR) / Math.max(0.2, limbs.foreArm * 0.86), 0.52, 2.5);
+
+      const retargetZoomedArm = (
+        side: 'L' | 'R',
+        shIdx: number,
+        elbIdx: number,
+        wrIdx: number,
+        pIdx: number,
+        iIdx: number,
+      ) => {
+        const sh3 = wd[shIdx];
+        const sideSign = side === 'L' ? 1 : -1;
+        const elb2 = nm[elbIdx];
+        const wr2 = nm[wrIdx];
+        const elbVis = elb2.visibility;
+        const wrVis = wr2.visibility;
+
+        if (elbVis < 0.12 && wrVis < 0.12) {
+          wd[elbIdx] = { ...tpl[elbIdx] };
+          wd[wrIdx] = { ...tpl[wrIdx] };
+          wd[pIdx] = { ...tpl[pIdx] };
+          wd[iIdx] = { ...tpl[iIdx] };
+          return;
+        }
+
+        // Posicionar codo bajo su hombro respetando posición relativa en el encuadre con el frente del operario
+        const relElbX = clamp((elb2.x - 0.58) * videoAspect / localZoomScale, -0.26, 0.26);
+        const relElbY = clamp(-(elb2.y - 0.12) / localZoomScale, -limbs.upperArm * 0.98, -0.10);
+        const uDir = vecNorm({
+          x: workbenchAnchor.frontXZ.x * 0.08 + relElbX * 0.55 + workbenchAnchor.leftXZ.x * (sideSign * 0.02),
+          y: relElbY,
+          z: workbenchAnchor.frontXZ.z * 0.08 + workbenchAnchor.leftXZ.z * (sideSign * 0.02),
+        });
+        const elb3: MocapVec3 = {
+          x: sh3.x + uDir.x * limbs.upperArm,
+          y: sh3.y + uDir.y * limbs.upperArm,
+          z: sh3.z + uDir.z * limbs.upperArm,
+          visibility: Math.max(0.75, elbVis),
+        };
+
+        // Vector 2D exacto codo -> muñeca sobre la mesa (captura cada ciclo repetitivo de empaquetado)
+        const dxFW = ((wr2.x - elb2.x) * videoAspect) / localZoomScale;
+        const dyFW = -(wr2.y - elb2.y) / localZoomScale;
+        const planarLen = Math.hypot(dxFW, dyFW);
+        // Si el antebrazo se acorta en 2D es por proyección en profundidad Z hacia el centro de la mesa
+        const remZ = Math.sqrt(Math.max(0.002, limbs.foreArm * limbs.foreArm - Math.min(limbs.foreArm * 0.94, planarLen) ** 2));
+        const fDir = vecNorm({
+          x: dxFW,
+          y: clamp(dyFW, -limbs.foreArm * 0.75, limbs.foreArm * 0.55),
+          z: workbenchAnchor.frontXZ.z * remZ * 0.65 - sideSign * remZ * 0.25,
+        });
+        const wr3: MocapVec3 = {
+          x: elb3.x + fDir.x * limbs.foreArm,
+          y: elb3.y + fDir.y * limbs.foreArm,
+          z: elb3.z + fDir.z * limbs.foreArm,
+          visibility: Math.max(0.75, wrVis),
+        };
+
+        wd[elbIdx] = elb3;
+        wd[wrIdx] = wr3;
+        wd[pIdx] = {
+          x: wr3.x + fDir.x * 0.075 + workbenchAnchor.leftXZ.x * (sideSign * 0.016),
+          y: wr3.y + fDir.y * 0.05 - 0.012,
+          z: wr3.z + fDir.z * 0.075 + workbenchAnchor.leftXZ.z * (sideSign * 0.016),
+          visibility: 0.78,
+        };
+        wd[iIdx] = {
+          x: wr3.x + fDir.x * 0.080 - workbenchAnchor.leftXZ.x * (sideSign * 0.016),
+          y: wr3.y + fDir.y * 0.05 - 0.008,
+          z: wr3.z + fDir.z * 0.080 - workbenchAnchor.leftXZ.z * (sideSign * 0.016),
+          visibility: 0.78,
+        };
+      };
+
+      retargetZoomedArm('L', 11, 13, 15, 17, 19);
+      retargetZoomedArm('R', 12, 14, 16, 18, 20);
+      prevWrL = { ...wd[15] };
+      prevWrR = { ...wd[16] };
+      continue;
+    }
+
+    // Fotograma con tren superior visible: estabilizar rumbo anti-180° en perfil / bata holgada
+    let curFrontXZ = { ...prevFrontXZ };
+    if (opts.antiProfileSpin180) {
+      const shLeftRaw = vecSub(wd[11], wd[12]);
+      let rawFwd = vecCross(shLeftRaw, upY);
+      rawFwd.y = 0;
+      const rawFwdLen = vecLen(rawFwd);
+      rawFwd = rawFwdLen > 1e-4 ? vecNorm(rawFwd) : { ...dominantFrontXZ };
+
+      const shSpan2D = Math.abs(nm[11].x - nm[12].x) * videoAspect;
+      const midEarX = (nm[7].x + nm[8].x) * 0.5;
+      const dxFace = (nm[0].x - midEarX) * videoAspect;
+      const midShX = (nm[11].x + nm[12].x) * 0.5;
+      const midHandsX = (nm[13].x + nm[14].x + nm[15].x + nm[16].x) * 0.25;
+      const dxWork = (midHandsX - midShX) * videoAspect;
+      const frameHintXZ = vecNorm({
+        x: clamp(dxFace * 2.4 + dxWork * 1.25, -1.25, 1.25),
+        y: 0,
+        z: shSpan2D >= 0.17 ? 0.92 : 0.44,
+      });
+
+      // Si los hombros están proyectados en perfil (shSpan2D < 0.16) o MediaPipe invirtió el eje Z (dot < 0.25),
+      // anclar el frente del tórax al hemisferio real de cara+manos sin permitir giros súbitos > 60°/s
+      const candidateXZ =
+        shSpan2D < 0.16 || vecDot(rawFwd, frameHintXZ) < 0.25
+          ? frameHintXZ
+          : vecNorm({
+              x: rawFwd.x * 0.65 + frameHintXZ.x * 0.35,
+              y: 0,
+              z: rawFwd.z * 0.65 + frameHintXZ.z * 0.35,
+            });
+
+      const maxBlend = clamp(dt * 3.2, 0.08, 0.45);
+      curFrontXZ = vecNorm({
+        x: prevFrontXZ.x * (1 - maxBlend) + candidateXZ.x * maxBlend,
+        y: 0,
+        z: prevFrontXZ.z * (1 - maxBlend) + candidateXZ.z * maxBlend,
+      });
+      prevFrontXZ = curFrontXZ;
+
+      // Reconstruir posición simétrica de hombros si estaban invertidos o aplastados en perfil
+      if (shSpan2D < 0.16 || vecDot(rawFwd, curFrontXZ) < 0.35) {
+        const midSh3 = vecMid(wd[11], wd[12]);
+        const cleanLeft = vecNorm(vecCross(upY, curFrontXZ));
+        const halfSh = 0.175;
+        wd[11] = {
+          x: midSh3.x + cleanLeft.x * halfSh,
+          y: wd[11].y * 0.5 + midSh3.y * 0.5,
+          z: midSh3.z + cleanLeft.z * halfSh,
+          visibility: wd[11].visibility,
+        };
+        wd[12] = {
+          x: midSh3.x - cleanLeft.x * halfSh,
+          y: wd[12].y * 0.5 + midSh3.y * 0.5,
+          z: midSh3.z - cleanLeft.z * halfSh,
+          visibility: wd[12].visibility,
+        };
+        // Asegurar coherencia de orejas con el hemisferio frontal para evitar torsión cervical falsa
+        const midEar3 = vecMid(wd[7], wd[8]);
+        wd[7] = {
+          x: midEar3.x + cleanLeft.x * 0.065,
+          y: midEar3.y,
+          z: midEar3.z + cleanLeft.z * 0.065,
+          visibility: wd[7].visibility,
+        };
+        wd[8] = {
+          x: midEar3.x - cleanLeft.x * 0.065,
+          y: midEar3.y,
+          z: midEar3.z - cleanLeft.z * 0.065,
+          visibility: wd[8].visibility,
+        };
+      }
+    }
+
+    // Si el tren inferior está oculto tras mesa de trabajo: fijar pelvis y piernas erguidas (cero sacudidas)
+    if (clipHasHiddenLowerBody) {
+      suppressRootMotion[i] = true;
+      const midSh3 = vecMid(wd[11], wd[12]);
+      const cleanLeft = vecNorm(vecCross(upY, curFrontXZ));
+      const midHip3 = {
+        x: midSh3.x - curFrontXZ.x * 0.055,
+        y: midSh3.y - 0.46,
+        z: midSh3.z - curFrontXZ.z * 0.055,
+      };
+      wd[23] = {
+        x: midHip3.x + cleanLeft.x * 0.105,
+        y: midHip3.y,
+        z: midHip3.z + cleanLeft.z * 0.105,
+        visibility: 0.9,
+      };
+      wd[24] = {
+        x: midHip3.x - cleanLeft.x * 0.105,
+        y: midHip3.y,
+        z: midHip3.z - cleanLeft.z * 0.105,
+        visibility: 0.9,
+      };
+      const setFixedLeg = (hip: MocapVec3, kIdx: number, aIdx: number, hIdx: number, tIdx: number) => {
+        const kn: MocapVec3 = {
+          x: hip.x + curFrontXZ.x * 0.022,
+          y: hip.y - limbs.thigh,
+          z: hip.z + curFrontXZ.z * 0.022,
+          visibility: 0.9,
+        };
+        const an: MocapVec3 = {
+          x: hip.x,
+          y: kn.y - limbs.shank,
+          z: hip.z,
+          visibility: 0.9,
+        };
+        wd[kIdx] = kn;
+        wd[aIdx] = an;
+        wd[hIdx] = {
+          x: an.x - curFrontXZ.x * 0.055,
+          y: an.y - 0.045,
+          z: an.z - curFrontXZ.z * 0.055,
+          visibility: 0.9,
+        };
+        wd[tIdx] = {
+          x: an.x + curFrontXZ.x * 0.145,
+          y: an.y - 0.045,
+          z: an.z + curFrontXZ.z * 0.145,
+          visibility: 0.9,
+        };
+      };
+      setFixedLeg(wd[24], 26, 28, 30, 32);
+      setFixedLeg(wd[23], 25, 27, 29, 31);
+
+      // No dibujar piernas invisibles sobre la mesa metálica en el vídeo original
+      for (const hideLegIdx of [23, 24, 25, 26, 27, 28, 29, 30, 31, 32]) {
+        nm[hideLegIdx].visibility = 0;
+      }
+    }
+
+    // Protección anti-salto de muñecas (ej. mano de segunda persona en el borde izquierdo x < 0.08)
+    const maxArmReach = (limbs.upperArm + limbs.foreArm) * 1.04;
+    const guardWristJump = (
+      wrIdx: number,
+      shIdx: number,
+      prevWr: MocapVec3 | null,
+    ): MocapVec3 => {
+      const wr = wd[wrIdx];
+      const sh = wd[shIdx];
+      const edgeIntrusion = nm[wrIdx].x < 0.06 || nm[wrIdx].x > 0.94;
+      const distFromSh = vecLen(vecSub(wr, sh));
+      if (prevWr && edgeIntrusion && vecLen(vecSub(wr, prevWr)) > 0.36) {
+        wd[wrIdx] = { ...prevWr, visibility: wr.visibility * 0.6 };
+        return wd[wrIdx];
+      }
+      if (distFromSh > maxArmReach && distFromSh > 1e-4) {
+        const dir = vecNorm(vecSub(wr, sh));
+        wd[wrIdx] = {
+          x: sh.x + dir.x * maxArmReach,
+          y: sh.y + dir.y * maxArmReach,
+          z: sh.z + dir.z * maxArmReach,
+          visibility: wr.visibility,
+        };
+      }
+      return wd[wrIdx];
+    };
+    prevWrL = { ...guardWristJump(15, 11, prevWrL) };
+    prevWrR = { ...guardWristJump(16, 12, prevWrR) };
+  }
+
+  return { worldSeq, normSeq, suppressRootMotion };
+}
+
+/**
+ * Rastreador incremental en tiempo real (0 s de pre-escaneo) para cuando el usuario activa
+ * el tilde "Rastreo en Vivo al Reproducir". Evalúa directamente el <video> en curso sin búsquedas `seek`.
+ */
+export class LiveMocapStreamTracker {
+  private readonly worldBank = new Landmark33OneEuroBank(1.12, 0.50, 0.72, 0.22);
+  private readonly normBank = new Landmark33OneEuroBank(1.35, 0.55, 0.90, 0.25);
+  private readonly frameCanvas: HTMLCanvasElement;
+  private readonly frameCtx: CanvasRenderingContext2D | null;
+  private readonly lumaCanvas: HTMLCanvasElement;
+  private readonly lumaCtx: CanvasRenderingContext2D | null;
+  private prevFrontXZ: { x: number; y: number; z: number } | null = null;
+  private lastSample: MocapFrameSample | null = null;
+  private lastDetectVideoTime = -1;
+
+  constructor() {
+    this.frameCanvas = document.createElement('canvas');
+    this.frameCanvas.width = 352;
+    this.frameCanvas.height = 264;
+    this.frameCtx = this.frameCanvas.getContext('2d', { willReadFrequently: false });
+
+    this.lumaCanvas = document.createElement('canvas');
+    this.lumaCanvas.width = 8;
+    this.lumaCanvas.height = 6;
+    this.lumaCtx = this.lumaCanvas.getContext('2d', { willReadFrequently: true });
+  }
+
+  reset(): void {
+    this.prevFrontXZ = null;
+    this.lastSample = null;
+    this.lastDetectVideoTime = -1;
+    nextMonotonicMocapTimestampMs(42, true);
+  }
+
+  detectCurrentPlayingFrame(
+    videoElement: HTMLVideoElement,
+    opts?: {
+      lockWorkbenchLowerBody?: boolean;
+      stabilizeCloseupCuts?: boolean;
+      antiProfileSpin180?: boolean;
+    },
+  ): MocapFrameSample | null {
+    if (!heavyLandmarker || videoElement.videoWidth <= 0 || videoElement.readyState < 2) {
+      return this.lastSample;
+    }
+    const tSec = videoElement.currentTime || 0;
+    if (this.lastSample && Math.abs(tSec - this.lastDetectVideoTime) < 0.045) {
+      return this.lastSample;
+    }
+    this.lastDetectVideoTime = tSec;
+
+    const vw = videoElement.videoWidth;
+    const vh = videoElement.videoHeight || 1;
+    const aspect = vw / vh;
+    const scale = Math.min(1, 352 / Math.max(vw, vh));
+    const cw = Math.max(64, Math.round(vw * scale));
+    const ch = Math.max(64, Math.round(vh * scale));
+    if (this.frameCanvas.width !== cw || this.frameCanvas.height !== ch) {
+      this.frameCanvas.width = cw;
+      this.frameCanvas.height = ch;
+    }
+
+    let detectInput: HTMLCanvasElement | HTMLVideoElement = videoElement;
+    if (this.frameCtx) {
+      try {
+        this.frameCtx.drawImage(videoElement, 0, 0, cw, ch);
+        detectInput = this.frameCanvas;
+      } catch {
+        detectInput = videoElement;
+      }
+    }
+
+    const luma = computeTinyFrameLuma(this.lumaCtx, detectInput);
+    if (luma < 17 && this.lastSample) {
+      return { ...this.lastSample, timeSec: tSec };
+    }
+
+    try {
+      const ts = nextMonotonicMocapTimestampMs(45, false);
+      const res = heavyLandmarker.detectForVideo(detectInput, ts);
+      if (!res.worldLandmarks?.length || !res.landmarks?.length) {
+        return this.lastSample ? { ...this.lastSample, timeSec: tSec } : null;
+      }
+
+      const rawW: MocapVec3[] = res.worldLandmarks[0].map((p) => ({
+        x: p.x,
+        y: -p.y,
+        z: -p.z,
+        visibility: clamp(p.visibility ?? 0.85, 0, 1),
+      }));
+      const rawN: MocapVec3[] = res.landmarks[0].map((p) => ({
+        x: p.x,
+        y: p.y,
+        z: p.z,
+        visibility: clamp(p.visibility ?? 0.85, 0, 1),
+      }));
+
+      const limbs = calibrateSubjectLimbLengths([rawW]);
+      const prep = preprocessIndustrialStabilization(
+        [tSec],
+        [rawW],
+        [rawN],
+        aspect,
+        limbs,
+        {
+          lockWorkbenchLowerBody: opts?.lockWorkbenchLowerBody !== false,
+          stabilizeCloseupCuts: opts?.stabilizeCloseupCuts !== false,
+          antiProfileSpin180: opts?.antiProfileSpin180 !== false,
+        },
+      );
+      const stW = prep.worldSeq[0];
+      const stN = prep.normSeq[0];
+      if (this.prevFrontXZ) {
+        // Suavizar rumbo continuo entre cuadros en vivo
+        const shLeft = vecNorm(vecSub(stW[11], stW[12]));
+        const curFwd = vecNorm(vecCross(shLeft, { x: 0, y: 1, z: 0 }));
+        this.prevFrontXZ = vecNorm({
+          x: this.prevFrontXZ.x * 0.8 + curFwd.x * 0.2,
+          y: 0,
+          z: this.prevFrontXZ.z * 0.8 + curFwd.z * 0.2,
+        });
+      } else {
+        const shLeft = vecNorm(vecSub(stW[11], stW[12]));
+        this.prevFrontXZ = vecNorm(vecCross(shLeft, { x: 0, y: 1, z: 0 }));
+      }
+
+      const filtN = this.normBank.filterLandmarks(stN, tSec);
+      const aligned = prep.suppressRootMotion[0]
+        ? stW
+        : alignWorldChainToScreen2D(stW, filtN, aspect, limbs, 0.52);
+      const stabilized = enforceAnatomicalLimitsAndLegCoherence(
+        aligned,
+        stW,
+        filtN,
+        aspect,
+        limbs,
+        0.52,
+      );
+      const filtW = this.worldBank.filterLandmarks(stabilized, tSec);
+      const rootTranslation = { x: 0, y: 0, z: 0 };
+      const rConf = ((rawW[14]?.visibility ?? 0) + (rawW[16]?.visibility ?? 0)) * 0.5;
+      const lConf = ((rawW[13]?.visibility ?? 0) + (rawW[15]?.visibility ?? 0)) * 0.5;
+
+      const sample: MocapFrameSample = {
+        timeSec: Math.round(tSec * 1000) / 1000,
+        world3D: filtW,
+        norm2D: filtN,
+        rawNorm2D: rawN,
+        rootTranslation,
+        rightArmConfidence: rConf,
+        leftArmConfidence: lConf,
+        hasOcclusion: Math.min(rConf, lConf) < 0.45,
+        ergonomicPose: computeErgonomicPoseFromWorld3D(filtW, rootTranslation),
+      };
+      this.lastSample = sample;
+      return sample;
+    } catch {
+      return this.lastSample;
+    }
+  }
+}
+
 /**
  * Extrae la secuencia cinemática 3D real con MediaPipe Pose,
- * reparación de oclusiones, fusión 2D-3D de perspectiva, Root Motion métrico
- * y filtrado adaptativo One-Euro (1€ Filter).
+ * muestreando solo los fotogramas necesarios e interpolando a 60 FPS con estabilización industrial.
  */
 export async function extractTrueMocapTimeline(
   videoElement: HTMLVideoElement,
-  options?: {
-    targetFps?: number;
-    onProgress?: (pct: number, phaseText?: string) => void;
-    onFirstFrameSample?: (sample: MocapFrameSample) => void;
-  },
+  options?: MocapExtractionOptions,
 ): Promise<MocapTimelineResult | null> {
-  let activeLoaded = await initHeavyPoseMoCap();
+  const preferFast = options?.preferFastModel !== false;
+  let activeLoaded = await initHeavyPoseMoCap(preferFast);
   if (!activeLoaded) return null;
 
-  await ensureVideoFrameDecoded(videoElement, 1500);
+  await ensureVideoFrameDecoded(videoElement, 900);
 
   let { landmarker, tier } = activeLoaded;
   const duration =
@@ -2156,18 +2969,27 @@ export async function extractTrueMocapTimeline(
   const videoAspect = vw / Math.max(1, vh);
   const mobileMode = isMobileViewportDevice();
 
-  // Lienzo 2D RGBA intermedio: normaliza rotación MP4/MOV de móviles y evita fallos de texturas de vídeo GPU
-  const maxDetectDim = mobileMode ? 640 : 960;
+  // Lienzo compacto de 352-384 px: coincide con el tensor 256x256 de MediaPipe y acelera 4x la transferencia RGBA
+  const maxDetectDim = mobileMode ? 320 : 384;
   const detectScale = Math.min(1, maxDetectDim / Math.max(vw, vh, 1));
   const frameCanvas = document.createElement('canvas');
   frameCanvas.width = Math.max(64, Math.round(vw * detectScale));
   frameCanvas.height = Math.max(64, Math.round(vh * detectScale));
   const frameCtx = frameCanvas.getContext('2d', { willReadFrequently: false });
 
-  const defaultFps = mobileMode ? 18 : 24;
-  const requestedFps = clamp(options?.targetFps ?? defaultFps, 12, 30);
-  const maxTotalSamples = mobileMode ? 300 : 480;
-  const totalSamples = Math.max(16, Math.min(maxTotalSamples, Math.ceil(duration * requestedFps)));
+  const lumaCanvas = document.createElement('canvas');
+  lumaCanvas.width = 8;
+  lumaCanvas.height = 6;
+  const lumaCtx = lumaCanvas.getContext('2d', { willReadFrequently: true });
+
+  const maxCap = options?.maxTotalSamples
+    ? clamp(Math.round(options.maxTotalSamples), 8, 240)
+    : mobileMode
+      ? 40
+      : 48;
+  const defaultFps = duration <= 8 ? 8 : duration <= 20 ? 5 : 3.5;
+  const requestedFps = clamp(options?.targetFps ?? defaultFps, 1, 24);
+  const totalSamples = Math.max(8, Math.min(maxCap, Math.ceil(duration * requestedFps)));
   const effectiveFps = totalSamples / Math.max(0.2, duration);
   const stepMs = Math.max(20, Math.round(1000 / effectiveFps));
 
@@ -2175,16 +2997,18 @@ export async function extractTrueMocapTimeline(
   const rawWorld3D: MocapVec3[][] = [];
   const rawNorm2D: MocapVec3[][] = [];
 
-  // Salto >= 5000 ms respecto al último vídeo procesado: garantiza monotonía estricta y reinicia el ROI interno de MediaPipe
   nextMonotonicMocapTimestampMs(stepMs, true);
   let didAttemptRecovery = false;
   let emittedFirstPreview = false;
 
   for (let i = 0; i < totalSamples; i++) {
+    if (options?.abortSignal?.aborted) {
+      break;
+    }
     const tSec =
       totalSamples <= 1
         ? 0
-        : (i / (totalSamples - 1)) * Math.max(0.05, duration - 0.03);
+        : (i / (totalSamples - 1)) * Math.max(0.05, duration - 0.04);
     await seekVideoExact(videoElement, tSec);
     const frameTs = nextMonotonicMocapTimestampMs(stepMs, false);
 
@@ -2198,11 +3022,23 @@ export async function extractTrueMocapTimeline(
       }
     }
 
+    // Si el vídeo hace fundido a negro al final (ej. 00:33 en Trabajo_repetitivo), mantener última pose limpia sin espasmos
+    const meanLuma = computeTinyFrameLuma(lumaCtx, detectInput);
+    if (meanLuma < 17 && rawWorld3D.length > 0) {
+      rawTimes.push(tSec);
+      rawWorld3D.push(rawWorld3D[rawWorld3D.length - 1].map((p) => ({ ...p })));
+      rawNorm2D.push(rawNorm2D[rawNorm2D.length - 1].map((p) => ({ ...p, visibility: 0 })));
+      options?.onProgress?.(
+        Math.round(((i + 1) / totalSamples) * 92),
+        `Fotograma ${i + 1}/${totalSamples} (cierre en negro omitido)`,
+      );
+      continue;
+    }
+
     const runSingleFrameDetect = (tsVal: number) => landmarker.detectForVideo(detectInput, tsVal);
 
     try {
       let res = runSingleFrameDetect(frameTs);
-      // Si en los primeros fotogramas no detecta nada tras cambiar de vídeo, reiniciar instancia una vez
       if (
         !didAttemptRecovery &&
         i === 3 &&
@@ -2210,7 +3046,7 @@ export async function extractTrueMocapTimeline(
         (!res.worldLandmarks || res.worldLandmarks.length === 0)
       ) {
         didAttemptRecovery = true;
-        const recovered = await resetHeavyPoseMoCap(false);
+        const recovered = await resetHeavyPoseMoCap(false, preferFast);
         if (recovered) {
           landmarker = recovered.landmarker;
           tier = recovered.tier;
@@ -2246,17 +3082,27 @@ export async function extractTrueMocapTimeline(
         if (!emittedFirstPreview && options?.onFirstFrameSample) {
           emittedFirstPreview = true;
           const previewLimbs = calibrateSubjectLimbLengths([convertedWorld]);
-          const previewAligned = alignWorldChainToScreen2D(
-            convertedWorld,
-            convertedNorm,
+          const previewPrep = preprocessIndustrialStabilization(
+            [tSec],
+            [convertedWorld],
+            [convertedNorm],
             videoAspect,
             previewLimbs,
-            0.55,
+            {
+              lockWorkbenchLowerBody: options?.lockWorkbenchLowerBody !== false,
+              stabilizeCloseupCuts: options?.stabilizeCloseupCuts !== false,
+              antiProfileSpin180: options?.antiProfileSpin180 !== false,
+            },
           );
+          const pW = previewPrep.worldSeq[0];
+          const pN = previewPrep.normSeq[0];
+          const previewAligned = previewPrep.suppressRootMotion[0]
+            ? pW
+            : alignWorldChainToScreen2D(pW, pN, videoAspect, previewLimbs, 0.55);
           const previewStab = enforceAnatomicalLimitsAndLegCoherence(
             previewAligned,
-            convertedWorld,
-            convertedNorm,
+            pW,
+            pN,
             videoAspect,
             previewLimbs,
             0.55,
@@ -2266,7 +3112,7 @@ export async function extractTrueMocapTimeline(
           options.onFirstFrameSample({
             timeSec: Math.round(tSec * 1000) / 1000,
             world3D: previewStab,
-            norm2D: convertedNorm,
+            norm2D: pN,
             rawNorm2D: convertedNorm,
             rootTranslation: { x: 0, y: 0, z: 0 },
             rightArmConfidence: rConf,
@@ -2284,7 +3130,7 @@ export async function extractTrueMocapTimeline(
       if (!didAttemptRecovery) {
         didAttemptRecovery = true;
         console.warn('[mocapRetargeter] Re-inicializando PoseLandmarker tras excepción:', frameErr);
-        const recovered = await resetHeavyPoseMoCap(true);
+        const recovered = await resetHeavyPoseMoCap(true, preferFast);
         if (recovered) {
           landmarker = recovered.landmarker;
           tier = recovered.tier;
@@ -2327,32 +3173,42 @@ export async function extractTrueMocapTimeline(
       }
     }
 
-    // Ceder el hilo principal cada 4 fotogramas para mantener respuesta táctil fluida en móviles
-    if (i % 4 === 3) {
+    if (i % 6 === 5) {
       await new Promise<void>((r) => window.setTimeout(r, 0));
     }
 
     options?.onProgress?.(
       Math.round(((i + 1) / totalSamples) * 92),
-      `Rastreando esqueleto 3D (${tier.toUpperCase()}) · fotograma ${i + 1}/${totalSamples}`,
+      `Evaluando fotograma ${i + 1} de ${totalSamples} (${tier.toUpperCase()})`,
     );
   }
 
   if (rawWorld3D.length === 0) return null;
 
-  options?.onProgress?.(96, 'Aplicando reparación de oclusiones y filtro cinemático 1€...');
+  options?.onProgress?.(96, 'Aplicando estabilización de mesa/zoom y filtro cinemático 1€...');
 
-  // 1. Reparar huecos severos de oclusión temporal antes del filtrado (umbral conservador 0.22 para no borrar brazo lejano en perfil)
+  // 1. Reparar huecos severos de oclusión temporal + estabilización industrial (mesa, perfil 180°, zoom de manos)
   const repairedWorldSeq = repairSevereOcclusionsTemporal(rawWorld3D, 0.22);
   const calibratedLimbs = calibrateSubjectLimbLengths(rawWorld3D);
+  const industrialPrep = preprocessIndustrialStabilization(
+    rawTimes,
+    repairedWorldSeq,
+    rawNorm2D,
+    videoAspect,
+    calibratedLimbs,
+    {
+      lockWorkbenchLowerBody: options?.lockWorkbenchLowerBody !== false,
+      stabilizeCloseupCuts: options?.stabilizeCloseupCuts !== false,
+      antiProfileSpin180: options?.antiProfileSpin180 !== false,
+    },
+  );
 
-  // 2. Filtrar con banco One-Euro (1€) + estimar Root Motion métrico (caminata X/Z)
+  // 2. Filtrar con banco One-Euro (1€) + estimar Root Motion métrico solo cuando el cuerpo entero es visible
   const worldBank = new Landmark33OneEuroBank(1.08, 0.52, 0.68, 0.22);
   const normBank = new Landmark33OneEuroBank(1.35, 0.55, 0.90, 0.25);
   const rootXFilter = new OneEuroScalarFilter(0.95, 0.28, 1.0);
   const rootZFilter = new OneEuroScalarFilter(0.65, 0.16, 1.0);
 
-  // Calibrar escala píxel/metro priorizando tronco y brazos cuando las piernas están en sombra/ocluidas
   const measureScaleRatio = (wPts: MocapVec3[], nPts: MocapVec3[]): number => {
     const upperPairs: Array<[number, number]> = [
       [11, 23],
@@ -2367,46 +3223,58 @@ export async function extractTrueMocapTimeline(
       [26, 28],
     ];
     const legVis = Math.min(
-      wPts[25]?.visibility ?? 0,
-      wPts[26]?.visibility ?? 0,
-      wPts[27]?.visibility ?? 0,
-      wPts[28]?.visibility ?? 0,
+      nPts[25]?.visibility ?? 0,
+      nPts[26]?.visibility ?? 0,
+      nPts[27]?.visibility ?? 0,
+      nPts[28]?.visibility ?? 0,
     );
-    const pairs = legVis >= 0.5 ? [...upperPairs, ...lowerPairs] : upperPairs;
+    const pairs = legVis >= 0.5 ? [...upperPairs, ...lowerPairs] : [[11, 13], [12, 14], [13, 15], [14, 16]];
     let sum2D = 0;
     let sum3D = 0;
     for (const [a, b] of pairs) {
-      if (Math.min(wPts[a].visibility, wPts[b].visibility) < 0.42) continue;
+      if (Math.min(nPts[a]?.visibility ?? 0, nPts[b]?.visibility ?? 0) < 0.35) continue;
       const d2 = Math.hypot((nPts[b].x - nPts[a].x) * videoAspect, nPts[b].y - nPts[a].y);
-      const d3 = Math.hypot(wPts[b].x - wPts[a].x, wPts[b].y - wPts[a].y);
+      const d3 = Math.hypot(wPts[b].x - wPts[a].x, wPts[b].y - wPts[a].y, wPts[b].z - wPts[a].z);
       if (d3 > 0.1) {
         sum2D += d2;
         sum3D += d3;
       }
     }
-    return sum3D > 0.15 ? clamp(sum2D / sum3D, 0.22, 1.65) : 0.52;
+    return sum3D > 0.12 ? clamp(sum2D / sum3D, 0.22, 1.85) : 0.52;
   };
 
-  const refScale = measureScaleRatio(repairedWorldSeq[0], rawNorm2D[0]);
-  const refHip2DX = (rawNorm2D[0][11].x + rawNorm2D[0][12].x) * 0.5 * videoAspect;
+  const stWorldSeq = industrialPrep.worldSeq;
+  const stNormSeq = industrialPrep.normSeq;
+  const refScale = measureScaleRatio(stWorldSeq[0], stNormSeq[0]);
+  const refHip2DX = (stNormSeq[0][11].x + stNormSeq[0][12].x) * 0.5 * videoAspect;
 
   const frames: MocapFrameSample[] = [];
   const occlusionSegments: OcclusionSegment[] = [];
   let activeOcc: OcclusionSegment | null = null;
 
-  for (let i = 0; i < repairedWorldSeq.length; i++) {
+  for (let i = 0; i < stWorldSeq.length; i++) {
     const tSec = rawTimes[i];
-    const filtNorm = normBank.filterLandmarks(rawNorm2D[i], tSec);
-    const alignedWorld = alignWorldChainToScreen2D(
-      repairedWorldSeq[i],
-      filtNorm,
-      videoAspect,
-      calibratedLimbs,
-      refScale,
-    );
+    const filtNorm = normBank.filterLandmarks(stNormSeq[i], tSec);
+    // Preservar visibilidad 0 explícita en segmentos ocultados (piernas bajo mesa o corte de zoom)
+    for (let k = 0; k < 33; k++) {
+      if (stNormSeq[i][k].visibility <= 0.05) {
+        filtNorm[k].visibility = 0;
+      }
+    }
+
+    const noRoot = industrialPrep.suppressRootMotion[i];
+    const alignedWorld = noRoot
+      ? stWorldSeq[i]
+      : alignWorldChainToScreen2D(
+          stWorldSeq[i],
+          filtNorm,
+          videoAspect,
+          calibratedLimbs,
+          refScale,
+        );
     const stabilizedWorld = enforceAnatomicalLimitsAndLegCoherence(
       alignedWorld,
-      rawWorld3D[i],
+      stWorldSeq[i],
       filtNorm,
       videoAspect,
       calibratedLimbs,
@@ -2414,16 +3282,18 @@ export async function extractTrueMocapTimeline(
     );
     const filtWorld = worldBank.filterLandmarks(stabilizedWorld, tSec);
 
-    const curHip2DX = (filtNorm[11].x + filtNorm[12].x) * 0.5 * videoAspect;
-    const rawRootX = clamp((curHip2DX - refHip2DX) / Math.max(0.18, refScale), -1.8, 1.8);
-    const curScale = measureScaleRatio(filtWorld, filtNorm);
-    const rawRootZ = clamp(((curScale - refScale) / Math.max(0.18, refScale)) * 1.35, -1.1, 1.1);
-
-    const rootTranslation = {
-      x: rootXFilter.filter(rawRootX, tSec),
-      y: 0,
-      z: rootZFilter.filter(rawRootZ, tSec),
-    };
+    let rootTranslation = { x: 0, y: 0, z: 0 };
+    if (!noRoot) {
+      const curHip2DX = (filtNorm[11].x + filtNorm[12].x) * 0.5 * videoAspect;
+      const rawRootX = clamp((curHip2DX - refHip2DX) / Math.max(0.18, refScale), -1.4, 1.4);
+      const curScale = measureScaleRatio(filtWorld, filtNorm);
+      const rawRootZ = clamp(((curScale - refScale) / Math.max(0.18, refScale)) * 1.15, -0.9, 0.9);
+      rootTranslation = {
+        x: rootXFilter.filter(rawRootX, tSec),
+        y: 0,
+        z: rootZFilter.filter(rawRootZ, tSec),
+      };
+    }
 
     const rightArmConfidence =
       ((rawWorld3D[i][14]?.visibility ?? 0) + (rawWorld3D[i][16]?.visibility ?? 0)) * 0.5;
@@ -2634,7 +3504,13 @@ export function drawDetectedSkeletonOverlay(
     const pb = pts[b];
     if (!pa || !pb) continue;
     const minVis = Math.min(pa.visibility, pb.visibility);
-    if (minVis < 0.12) continue;
+    if (
+      minVis < 0.24 ||
+      !isLandmarkInsideCleanFrame2D(pa, 0.015, 0.94) ||
+      !isLandmarkInsideCleanFrame2D(pb, 0.015, 0.94)
+    ) {
+      continue;
+    }
 
     ctx.beginPath();
     ctx.moveTo(rect.x + pa.x * rect.w, rect.y + pa.y * rect.h);
@@ -2648,7 +3524,7 @@ export function drawDetectedSkeletonOverlay(
   const keyNodes = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 31, 32];
   for (const idx of keyNodes) {
     const p = pts[idx];
-    if (!p || p.visibility < 0.15) continue;
+    if (!p || p.visibility < 0.24 || !isLandmarkInsideCleanFrame2D(p, 0.015, 0.94)) continue;
     const x = rect.x + p.x * rect.w;
     const y = rect.y + p.y * rect.h;
     ctx.beginPath();

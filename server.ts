@@ -1962,15 +1962,22 @@ CONVENCIÓN GONIOMÉTRICA OBLIGATORIA DEL AVATAR 3D (0° = posición anatómica 
     }
   });
 
+  const applyStaticHeaders = (res: Response, filePath: string) => {
+    if (filePath.endsWith('.glb')) {
+      res.setHeader('Content-Type', 'model/gltf-binary');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    } else if (filePath.includes(`${path.sep}assets${path.sep}`) || filePath.endsWith('.mp4')) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+    }
+  };
+
   const publicPath = path.resolve(__dirname, 'public');
   if (fs.existsSync(publicPath)) {
     app.use(
       express.static(publicPath, {
-        setHeaders: (res, filePath) => {
-          if (filePath.endsWith('.glb')) {
-            res.setHeader('Content-Type', 'model/gltf-binary');
-          }
-        },
+        setHeaders: applyStaticHeaders,
       }),
     );
   }
@@ -1981,11 +1988,7 @@ CONVENCIÓN GONIOMÉTRICA OBLIGATORIA DEL AVATAR 3D (0° = posición anatómica 
   if (isProd) {
     app.use(
       express.static(distPath, {
-        setHeaders: (res, filePath) => {
-          if (filePath.endsWith('.glb')) {
-            res.setHeader('Content-Type', 'model/gltf-binary');
-          }
-        },
+        setHeaders: applyStaticHeaders,
       }),
     );
     app.get('*', (_req: Request, res: Response) => {

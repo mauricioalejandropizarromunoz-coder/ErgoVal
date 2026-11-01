@@ -9,12 +9,6 @@ import {
   Panel3DSpec,
   PosturePose3D,
 } from '../types/figurePlan';
-import {
-  DEFAULT_ORBIT_OVERRIDE,
-  ensureAvatarGlbLoaded,
-  renderBookFigureToCanvas,
-  renderInteractivePose3DToCanvas,
-} from './biomech3dRenderer';
 import { makeNeutralPose } from './figurePlanCatalog';
 
 export interface MethodAvatarSheetSpec {
@@ -644,6 +638,11 @@ export async function renderMethodAvatarStudyPhotos(tab: StudyTab): Promise<Stud
   const sheetSpecs = buildMethodAvatarSheetSpecs(tab);
   if (sheetSpecs.length === 0) return [];
 
+  const {
+    DEFAULT_ORBIT_OVERRIDE,
+    ensureAvatarGlbLoaded,
+    renderBookFigureToCanvas,
+  } = await import('./biomech3dRenderer');
   await ensureAvatarGlbLoaded();
   const out: StudyPhoto[] = [];
 
@@ -699,6 +698,11 @@ export async function renderSinglePanelAvatarJpeg(
   widthPx = 640,
   heightPx = 500,
 ): Promise<string> {
+  const {
+    DEFAULT_ORBIT_OVERRIDE,
+    ensureAvatarGlbLoaded,
+    renderInteractivePose3DToCanvas,
+  } = await import('./biomech3dRenderer');
   await ensureAvatarGlbLoaded();
   const rawCanvas = document.createElement('canvas');
   renderInteractivePose3DToCanvas(

@@ -985,17 +985,28 @@ export const VideoBiomechExtractor: React.FC<VideoBiomechExtractorProps> = ({
       try {
         await new Promise<void>((resolve, reject) => {
           const timer = window.setTimeout(() => {
-            if (videoEl.videoWidth > 0 && videoEl.readyState >= 2) resolve();
+            if (videoEl.videoWidth > 0 && videoEl.readyState >= 1) resolve();
             else reject(new Error('timeout'));
-          }, 9000);
+          }, 4500);
           const onReady = () => {
             if (videoEl.videoWidth > 0 && videoEl.readyState >= 2) {
               window.clearTimeout(timer);
               resolve();
             }
           };
+          videoEl.onloadedmetadata = () => {
+            if (videoEl.readyState < 2) {
+              try {
+                videoEl.currentTime = 0.001;
+              } catch {
+                // ignore
+              }
+            }
+            onReady();
+          };
           videoEl.onloadeddata = onReady;
           videoEl.oncanplay = onReady;
+          videoEl.onseeked = onReady;
           videoEl.onerror = () => {
             window.clearTimeout(timer);
             reject(new Error('codec'));
@@ -1051,15 +1062,29 @@ export const VideoBiomechExtractor: React.FC<VideoBiomechExtractorProps> = ({
         videoEl.src = workingUrl;
         videoEl.load();
         await new Promise<void>((resolve, reject) => {
-          const timer = window.setTimeout(() => reject(new Error('Tiempo agotado al leer vídeo.')), 9000);
+          const timer = window.setTimeout(() => {
+            if (videoEl.videoWidth > 0 && videoEl.readyState >= 1) resolve();
+            else reject(new Error('Tiempo agotado al leer vídeo.'));
+          }, 4500);
           const onReady = () => {
             if (videoEl.videoWidth > 0 && videoEl.readyState >= 2) {
               window.clearTimeout(timer);
               resolve();
             }
           };
+          videoEl.onloadedmetadata = () => {
+            if (videoEl.readyState < 2) {
+              try {
+                videoEl.currentTime = 0.001;
+              } catch {
+                // ignore
+              }
+            }
+            onReady();
+          };
           videoEl.onloadeddata = onReady;
           videoEl.oncanplay = onReady;
+          videoEl.onseeked = onReady;
           videoEl.onerror = () => {
             window.clearTimeout(timer);
             reject(new Error('No se pudo reproducir el archivo de vídeo.'));

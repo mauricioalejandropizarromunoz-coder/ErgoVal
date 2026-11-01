@@ -24,7 +24,8 @@ import type { MocapFrameSample } from './mocapRetargeter';
 import { NORMATIVE_JOINT_LIMITS } from './normativeJointLimits';
 import type { PredictiveAvatarOverlaySpec } from './predictiveKinematicsV26';
 
-export const AVATAR_GLB_URL = '/models/ergo_avatar.glb';
+export const AVATAR_GLB_URL = '/models/ergo_avatar.glb?v=2';
+export const AVATAR_GLB_MOBILE_URL = '/models/ergo_avatar_mobile.glb?v=2';
 
 export interface CameraOrbitOverride {
   azimuthDeg: number;
@@ -859,10 +860,15 @@ export function ensureAvatarGlbLoaded(): Promise<void> {
   if (engine.rig.isReady) return Promise.resolve();
   if (avatarLoadPromise) return avatarLoadPromise;
 
+  const isMobileScreen =
+    typeof window !== 'undefined' &&
+    (window.innerWidth < 768 || Boolean(window.matchMedia?.('(pointer: coarse)').matches));
+  const primaryUrl = isMobileScreen ? AVATAR_GLB_MOBILE_URL : AVATAR_GLB_URL;
+
   avatarLoadPromise = new Promise<void>((resolve) => {
     const loader = new GLTFLoader();
     loader.load(
-      AVATAR_GLB_URL,
+      primaryUrl,
       (gltf) => {
         bindLoadedGlbToRig(gltf.scene, engine);
         resolve();
@@ -870,6 +876,23 @@ export function ensureAvatarGlbLoaded(): Promise<void> {
       },
       undefined,
       (err) => {
+        if (primaryUrl !== AVATAR_GLB_URL) {
+          loader.load(
+            AVATAR_GLB_URL,
+            (gltfFallback) => {
+              bindLoadedGlbToRig(gltfFallback.scene, engine);
+              resolve();
+              notifyAvatarLoaded();
+            },
+            undefined,
+            (fallbackErr) => {
+              console.error('Failed to load anatomical GLB avatar:', fallbackErr);
+              avatarLoadPromise = null;
+              resolve();
+            },
+          );
+          return;
+        }
         console.error('Failed to load anatomical GLB avatar:', err);
         avatarLoadPromise = null;
         resolve();
@@ -3479,6 +3502,372 @@ function drawProjectedPredictiveArrows2D(
   ctx.restore();
 }
 
+const _fallbackPerspCam = new THREE.PerspectiveCamera(PERSPECTIVE_FOV_DEG, 1, 0.05, 30);
+
+function getFallbackProjectionCamera(
+  engine: StudioEngine3D | null,
+  preset: CameraPreset,
+  aspect: number,
+  orbit: CameraOrbitOverride,
+): THREE.Camera {
+  const center = new THREE.Vector3(0, 0.88, 0);
+  const halfExtent = 1.12;
+  if (engine) {
+    return configureCameraForPanel(engine, preset, center, halfExtent, aspect, orbit);
+  }
+  const zoom = Math.max(0.35, orbit.zoom);
+  const baseAz =
+    preset === 'sagittal_right'
+      ? -90
+      : preset === 'sagittal_left'
+        ? 90
+        : preset === 'dorsal'
+          ? 180
+          : preset === 'frontal'
+            ? 0
+            : -46;
+  const baseEl = preset === 'isometric' ? 18 : 4;
+  const az = (baseAz + orbit.azimuthDeg) * DEG2RAD;
+  const el = Math.max(-85, Math.min(85, baseEl + orbit.elevationDeg)) * DEG2RAD;
+  const paddedHalf = (halfExtent * 1.16) / zoom;
+  const fitDist = paddedHalf / (Math.tan((PERSPECTIVE_FOV_DEG * DEG2RAD) / 2) * Math.min(1, aspect));
+  _fallbackPerspCam.fov = PERSPECTIVE_FOV_DEG;
+  _fallbackPerspCam.aspect = aspect;
+  _fallbackPerspCam.position.set(
+    center.x + fitDist * Math.cos(el) * Math.sin(az),
+    center.y + fitDist * Math.sin(el),
+    center.z + fitDist * Math.cos(el) * Math.cos(az),
+  );
+  _fallbackPerspCam.up.set(0, 1, 0);
+  _fallbackPerspCam.lookAt(center);
+  _fallbackPerspCam.updateProjectionMatrix();
+  _fallbackPerspCam.updateMatrixWorld(true);
+  return _fallbackPerspCam;
+}
+
+function drawProjectedMannequinSkeleton(
+  ctx: CanvasRenderingContext2D,
+  pts3D: Record<string, THREE.Vector3>,
+  camera: THREE.Camera,
+  rect: { x: number; y: number; w: number; h: number },
+  transparentBg: boolean,
+): Record<string, { x: number; y: number; z: number }> {
+  ctx.save();
+  if (!transparentBg) {
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+  }
+
+  const proj = (v: THREE.Vector3) => {
+    const p = v.clone().project(camera);
+    return {
+      x: rect.x + (p.x * 0.5 + 0.5) * rect.w,
+      y: rect.y + (-p.y * 0.5 + 0.5) * rect.h,
+      z: p.z,
+    };
+  };
+
+  // Grilla de suelo métrico
+  ctx.strokeStyle = '#e2e8f0';
+  ctx.lineWidth = 1;
+  for (let gx = -1.2; gx <= 1.201; gx += 0.3) {
+    const a = proj(new THREE.Vector3(gx, 0.002, -0.9));
+    const b = proj(new THREE.Vector3(gx, 0.002, 0.9));
+    if (a.z <= 1 && b.z <= 1) {
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+  }
+  for (let gz = -0.9; gz <= 0.901; gz += 0.3) {
+    const a = proj(new THREE.Vector3(-1.2, 0.002, gz));
+    const b = proj(new THREE.Vector3(1.2, 0.002, gz));
+    if (a.z <= 1 && b.z <= 1) {
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+  }
+
+  const screenPts: Record<string, { x: number; y: number; z: number }> = {};
+  for (const [k, v] of Object.entries(pts3D)) {
+    screenPts[k] = proj(v);
+  }
+
+  const unitScale = Math.min(rect.w, rect.h) / 480;
+  const limbs: Array<{
+    a: string;
+    b: string;
+    w: number;
+    fill: string;
+    stroke: string;
+  }> = [
+    { a: 'hipL', b: 'kneeL', w: 18, fill: '#334155', stroke: '#1e293b' },
+    { a: 'kneeL', b: 'ankL', w: 14, fill: '#475569', stroke: '#1e293b' },
+    { a: 'ankL', b: 'toeL', w: 11, fill: '#1e293b', stroke: '#0f172a' },
+    { a: 'hipR', b: 'kneeR', w: 18, fill: '#334155', stroke: '#1e293b' },
+    { a: 'kneeR', b: 'ankR', w: 14, fill: '#475569', stroke: '#1e293b' },
+    { a: 'ankR', b: 'toeR', w: 11, fill: '#1e293b', stroke: '#0f172a' },
+    { a: 'hipL', b: 'hipR', w: 20, fill: '#334155', stroke: '#1e293b' },
+    { a: 'midHip', b: 'midSh', w: 28, fill: '#0369a1', stroke: '#0c4a6e' },
+    { a: 'shL', b: 'shR', w: 22, fill: '#0284c7', stroke: '#0c4a6e' },
+    { a: 'midSh', b: 'head', w: 12, fill: '#d6a584', stroke: '#9a6b4c' },
+    { a: 'shL', b: 'elbL', w: 14, fill: '#0284c7', stroke: '#0c4a6e' },
+    { a: 'elbL', b: 'wrL', w: 11.5, fill: '#d6a584', stroke: '#9a6b4c' },
+    { a: 'wrL', b: 'handL', w: 9, fill: '#d6a584', stroke: '#9a6b4c' },
+    { a: 'shR', b: 'elbR', w: 14, fill: '#0284c7', stroke: '#0c4a6e' },
+    { a: 'elbR', b: 'wrR', w: 11.5, fill: '#e0b190', stroke: '#9a6b4c' },
+    { a: 'wrR', b: 'handR', w: 9, fill: '#e0b190', stroke: '#9a6b4c' },
+  ];
+
+  // Ordenar por profundidad Z de cámara (pintor: más lejano primero)
+  const sorted = limbs
+    .map((seg) => {
+      const pa = screenPts[seg.a];
+      const pb = screenPts[seg.b];
+      const depth = pa && pb ? (pa.z + pb.z) * 0.5 : 0;
+      return { ...seg, pa, pb, depth };
+    })
+    .filter((s) => s.pa && s.pb)
+    .sort((x, y) => y.depth - x.depth);
+
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (const s of sorted) {
+    const lw = Math.max(4, s.w * unitScale);
+    ctx.strokeStyle = s.stroke;
+    ctx.lineWidth = lw + 2;
+    ctx.beginPath();
+    ctx.moveTo(s.pa.x, s.pa.y);
+    ctx.lineTo(s.pb.x, s.pb.y);
+    ctx.stroke();
+
+    ctx.strokeStyle = s.fill;
+    ctx.lineWidth = lw;
+    ctx.beginPath();
+    ctx.moveTo(s.pa.x, s.pa.y);
+    ctx.lineTo(s.pb.x, s.pb.y);
+    ctx.stroke();
+  }
+
+  const headPt = screenPts.head;
+  if (headPt) {
+    const hr = Math.max(10, 17 * unitScale);
+    ctx.fillStyle = '#e0b190';
+    ctx.strokeStyle = '#7c5338';
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.arc(headPt.x, headPt.y, hr, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  for (const jk of ['shR', 'elbR', 'wrR', 'shL', 'elbL', 'wrL', 'hipR', 'kneeR', 'ankR', 'hipL', 'kneeL', 'ankL']) {
+    const jp = screenPts[jk];
+    if (!jp) continue;
+    ctx.fillStyle = '#f8fafc';
+    ctx.strokeStyle = '#0284c7';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(jp.x, jp.y, Math.max(2.8, 4 * unitScale), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  ctx.restore();
+  return screenPts;
+}
+
+function renderFastMocapSampleFallback(
+  ctx: CanvasRenderingContext2D,
+  engine: StudioEngine3D | null,
+  sample: MocapFrameSample,
+  preset: CameraPreset,
+  orbit: CameraOrbitOverride,
+  rect: { x: number; y: number; w: number; h: number },
+  showAngleHUD: boolean,
+): void {
+  const w = sample.world3D;
+  if (!w || w.length < 33) return;
+
+  const rawMinY = Math.min(w[27].y, w[28].y, w[29].y, w[30].y, w[31].y, w[32].y);
+  const yShift = 0.025 - rawMinY;
+  const tx = sample.rootTranslation.x;
+  const tz = sample.rootTranslation.z;
+  const V = (idx: number) => new THREE.Vector3(w[idx].x + tx, w[idx].y + yShift, w[idx].z + tz);
+
+  const hipL = V(23);
+  const hipR = V(24);
+  const shL = V(11);
+  const shR = V(12);
+  const midHip = hipL.clone().add(hipR).multiplyScalar(0.5);
+  const midSh = shL.clone().add(shR).multiplyScalar(0.5);
+  const head = V(7).add(V(8)).multiplyScalar(0.5).lerp(V(0), 0.35);
+
+  const pts3D: Record<string, THREE.Vector3> = {
+    midHip,
+    midSh,
+    head,
+    shL,
+    shR,
+    elbL: V(13),
+    elbR: V(14),
+    wrL: V(15),
+    wrR: V(16),
+    handL: V(17).add(V(19)).multiplyScalar(0.5),
+    handR: V(18).add(V(20)).multiplyScalar(0.5),
+    hipL,
+    hipR,
+    kneeL: V(25),
+    kneeR: V(26),
+    ankL: V(27),
+    ankR: V(28),
+    toeL: V(31),
+    toeR: V(32),
+  };
+
+  const cam = getFallbackProjectionCamera(engine, preset, rect.w / Math.max(1, rect.h), orbit);
+  const scr = drawProjectedMannequinSkeleton(ctx, pts3D, cam, rect, false);
+
+  if (showAngleHUD) {
+    const ep = sample.ergonomicPose;
+    const elbIntR = Math.max(30, Math.min(170, Math.round(180 - ep.elbowRFlexionDeg)));
+    ctx.save();
+    ctx.font = '700 11px "IBM Plex Mono", monospace';
+    const bounds = { x: rect.x + 8, y: rect.y + 8, w: rect.w - 16, h: rect.h - 16 };
+    const boxes: OverlayBoxRect[] = [];
+    if (scr.midSh) {
+      drawWhiteBackedTag(
+        ctx,
+        `Tronco ${Math.round(ep.trunkFlexionDeg)}°`,
+        scr.midSh.x + 18,
+        scr.midSh.y - 10,
+        PALETTE.arcOrange,
+        PALETTE.arcText,
+        bounds,
+        '700 11px "IBM Plex Mono", monospace',
+        boxes,
+      );
+    }
+    if (scr.elbR) {
+      drawWhiteBackedTag(
+        ctx,
+        `Codo D ${elbIntR}°`,
+        scr.elbR.x + 18,
+        scr.elbR.y + 12,
+        PALETTE.vecBlue,
+        '#1e3a8a',
+        bounds,
+        '700 11px "IBM Plex Mono", monospace',
+        boxes,
+      );
+    }
+    ctx.restore();
+  }
+}
+
+function renderFastArticulatedPoseFallback(
+  ctx: CanvasRenderingContext2D,
+  engine: StudioEngine3D | null,
+  pose: PosturePose3D,
+  preset: CameraPreset,
+  orbit: CameraOrbitOverride,
+  rect: { x: number; y: number; w: number; h: number },
+  transparentBg: boolean,
+): void {
+  const yawRad = ((pose.rootYawDeg ?? 0) * Math.PI) / 180;
+  const fwd = new THREE.Vector3(Math.sin(yawRad), 0, Math.cos(yawRad));
+  const up = new THREE.Vector3(0, 1, 0);
+  const left = new THREE.Vector3().crossVectors(up, fwd).normalize();
+
+  const kneeAvgRad = (Math.max(0, (pose.kneeRFlexionDeg + pose.kneeLFlexionDeg) * 0.5) * Math.PI) / 180;
+  const hipY = Math.max(0.52, 0.89 - (1 - Math.cos(kneeAvgRad * 0.6)) * 0.42);
+  const midHip = new THREE.Vector3(0, hipY, 0);
+  const hipL = midHip.clone().addScaledVector(left, 0.105);
+  const hipR = midHip.clone().addScaledVector(left, -0.105);
+
+  const kR = (Math.max(0, pose.kneeRFlexionDeg) * Math.PI) / 180;
+  const kL = (Math.max(0, pose.kneeLFlexionDeg) * Math.PI) / 180;
+  const kneeR = hipR
+    .clone()
+    .addScaledVector(up, -0.42 * Math.cos(kR * 0.55))
+    .addScaledVector(fwd, 0.42 * Math.sin(kR * 0.55));
+  const kneeL = hipL
+    .clone()
+    .addScaledVector(up, -0.42 * Math.cos(kL * 0.55))
+    .addScaledVector(fwd, 0.42 * Math.sin(kL * 0.55));
+  const ankR = new THREE.Vector3(hipR.x, 0.06, hipR.z);
+  const ankL = new THREE.Vector3(hipL.x, 0.06, hipL.z);
+  const toeR = ankR.clone().addScaledVector(fwd, 0.16).setY(0.02);
+  const toeL = ankL.clone().addScaledVector(fwd, 0.16).setY(0.02);
+
+  const trRad = ((pose.trunkFlexionDeg || 0) * Math.PI) / 180;
+  const trunkDir = up
+    .clone()
+    .multiplyScalar(Math.cos(trRad))
+    .addScaledVector(fwd, Math.sin(trRad))
+    .normalize();
+  const midSh = midHip.clone().addScaledVector(trunkDir, 0.49);
+  const shL = midSh.clone().addScaledVector(left, 0.175);
+  const shR = midSh.clone().addScaledVector(left, -0.175);
+
+  const hdRad = (((pose.trunkFlexionDeg || 0) + (pose.neckFlexionDeg || 0)) * Math.PI) / 180;
+  const head = midSh
+    .clone()
+    .addScaledVector(up, 0.22 * Math.cos(hdRad))
+    .addScaledVector(fwd, 0.22 * Math.sin(hdRad));
+
+  const buildArm = (sh: THREE.Vector3, shFlexDeg: number, elbFlexDeg: number, sideSign: number) => {
+    const sRad = (shFlexDeg * Math.PI) / 180;
+    const uDir = up
+      .clone()
+      .multiplyScalar(-Math.cos(sRad))
+      .addScaledVector(fwd, Math.sin(sRad))
+      .addScaledVector(left, sideSign * 0.06)
+      .normalize();
+    const elb = sh.clone().addScaledVector(uDir, 0.29);
+    const fRad = ((shFlexDeg + Math.max(8, elbFlexDeg)) * Math.PI) / 180;
+    const fDir = up
+      .clone()
+      .multiplyScalar(-Math.cos(fRad))
+      .addScaledVector(fwd, Math.sin(fRad))
+      .normalize();
+    const wr = elb.clone().addScaledVector(fDir, 0.26);
+    const hand = wr.clone().addScaledVector(fDir, 0.08);
+    return { elb, wr, hand };
+  };
+
+  const armR = buildArm(shR, pose.shoulderRFlexionDeg || 0, pose.elbowRFlexionDeg || 12, -1);
+  const armL = buildArm(shL, pose.shoulderLFlexionDeg || 0, pose.elbowLFlexionDeg || 12, 1);
+
+  const pts3D: Record<string, THREE.Vector3> = {
+    midHip,
+    midSh,
+    head,
+    shL,
+    shR,
+    elbL: armL.elb,
+    elbR: armR.elb,
+    wrL: armL.wr,
+    wrR: armR.wr,
+    handL: armL.hand,
+    handR: armR.hand,
+    hipL,
+    hipR,
+    kneeL,
+    kneeR,
+    ankL,
+    ankR,
+    toeL,
+    toeR,
+  };
+
+  const cam = getFallbackProjectionCamera(engine, preset, rect.w / Math.max(1, rect.h), orbit);
+  drawProjectedMannequinSkeleton(ctx, pts3D, cam, rect, transparentBg);
+}
+
 function renderSingle3DPanelIntoRect(
   ctx: CanvasRenderingContext2D,
   engine: StudioEngine3D,
@@ -3509,17 +3898,15 @@ function renderSingle3DPanelIntoRect(
   const viewH = Math.max(80, rect.h - headerH - footerH);
 
   if (!engine.rig.isReady) {
-    if (!transparentBg) {
-      ctx.save();
-      ctx.fillStyle = '#f8fafc';
-      ctx.fillRect(viewX, viewY, viewW, viewH);
-      ctx.fillStyle = PALETTE.muted;
-      ctx.font = '600 12px "Public Sans", system-ui, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('Cargando avatar anatómico 3D (.glb)...', viewX + viewW / 2, viewY + viewH / 2);
-      ctx.restore();
-    }
+    renderFastArticulatedPoseFallback(
+      ctx,
+      engine,
+      panel.pose,
+      panel.cameraPreset,
+      orbit,
+      { x: viewX, y: viewY, w: viewW, h: viewH },
+      transparentBg,
+    );
     return;
   }
 
@@ -4602,12 +4989,15 @@ export function renderMocapTwinFrameToCanvas(
 
   const engine = getSharedEngine();
   if (!engine || !engine.rig.isReady) {
-    ctx.save();
-    ctx.fillStyle = '#64748b';
-    ctx.font = '600 12px "Public Sans", system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('Inicializando gemelo anatómico 3D (.glb)...', widthPx / 2, heightPx / 2);
-    ctx.restore();
+    renderFastMocapSampleFallback(
+      ctx,
+      engine,
+      sample,
+      options?.cameraPreset ?? 'frontal',
+      orbitOverride,
+      { x: 0, y: 0, w: widthPx, h: heightPx },
+      options?.showAngleHUD !== false,
+    );
     return;
   }
 

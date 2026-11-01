@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   AlertTriangle,
@@ -34,8 +34,6 @@ import {
 import { createInitialGeneralData, createNewStudyTab } from './utils/defaults';
 import { buildBlankStudy, buildPresetEmpresaX, buildPresetLibroEjemplos } from './utils/presets';
 import { evaluateStudyTab } from './utils/calculations';
-import { exportSingleTabToPdf, exportStudyToPdf, exportStudyToWord } from './utils/reportExport';
-import { exportUserManualPdf } from './utils/manualExport';
 import { countModifiedFormulaMethods, subscribeFormulaChanges } from './utils/formulaConfig';
 import { GeneralDataForm } from './components/GeneralDataForm';
 import { StudyTabWorkspace } from './components/StudyTabWorkspace';
@@ -43,20 +41,58 @@ import { SummarySection } from './components/SummarySection';
 import { ReferenceViewerModal } from './components/ReferenceViewerModal';
 import { DisplayControlsModal } from './components/DisplayControlsModal';
 import { AboutModal } from './components/AboutModal';
-import { FigurePlanStudio } from './components/FigurePlanStudio';
-import { FormulaStudio } from './components/FormulaStudio';
-import { VideoBiomechExtractor } from './components/VideoBiomechExtractor';
-import { TwinAvatarVideoStudio } from './components/TwinAvatarVideoStudio';
-import { AvatarTesterWorkspace } from './components/AvatarTesterWorkspace';
-import { FreeAvatarStudioWorkspace } from './components/FreeAvatarStudioWorkspace';
-import { OnionSkinAvatarWorkspace } from './components/OnionSkinAvatarWorkspace';
-import { QuickAngleMeterWorkspace } from './components/QuickAngleMeterWorkspace';
-import { HandRepetitionTesterWorkspace } from './components/HandRepetitionTesterWorkspace';
-import {
-  EnvironmentalMethodId,
-  EnvironmentalMethodsWorkspace,
-} from './components/EnvironmentalMethodsWorkspace';
+import type { EnvironmentalMethodId } from './components/EnvironmentalMethodsWorkspace';
 import { ErrorBoundary } from './components/ErrorBoundary';
+
+const FigurePlanStudio = lazy(() =>
+  import('./components/FigurePlanStudio').then((m) => ({ default: m.FigurePlanStudio })),
+);
+const FormulaStudio = lazy(() =>
+  import('./components/FormulaStudio').then((m) => ({ default: m.FormulaStudio })),
+);
+const VideoBiomechExtractor = lazy(() =>
+  import('./components/VideoBiomechExtractor').then((m) => ({ default: m.VideoBiomechExtractor })),
+);
+const TwinAvatarVideoStudio = lazy(() =>
+  import('./components/TwinAvatarVideoStudio').then((m) => ({ default: m.TwinAvatarVideoStudio })),
+);
+const AvatarTesterWorkspace = lazy(() =>
+  import('./components/AvatarTesterWorkspace').then((m) => ({ default: m.AvatarTesterWorkspace })),
+);
+const FreeAvatarStudioWorkspace = lazy(() =>
+  import('./components/FreeAvatarStudioWorkspace').then((m) => ({
+    default: m.FreeAvatarStudioWorkspace,
+  })),
+);
+const OnionSkinAvatarWorkspace = lazy(() =>
+  import('./components/OnionSkinAvatarWorkspace').then((m) => ({
+    default: m.OnionSkinAvatarWorkspace,
+  })),
+);
+const QuickAngleMeterWorkspace = lazy(() =>
+  import('./components/QuickAngleMeterWorkspace').then((m) => ({
+    default: m.QuickAngleMeterWorkspace,
+  })),
+);
+const HandRepetitionTesterWorkspace = lazy(() =>
+  import('./components/HandRepetitionTesterWorkspace').then((m) => ({
+    default: m.HandRepetitionTesterWorkspace,
+  })),
+);
+const EnvironmentalMethodsWorkspace = lazy(() =>
+  import('./components/EnvironmentalMethodsWorkspace').then((m) => ({
+    default: m.EnvironmentalMethodsWorkspace,
+  })),
+);
+
+function WorkspaceLoadingCard({ label }: { label: string }) {
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-8 flex flex-col items-center justify-center gap-3 text-center min-h-[280px]">
+      <div className="w-7 h-7 rounded-full border-2 border-slate-300 border-t-sky-600 animate-spin" />
+      <p className="text-xs font-semibold text-slate-700">Abriendo módulo: {label}...</p>
+    </div>
+  );
+}
 
 const STORAGE_KEY = 'ergoeval_workspace_v1';
 const PREFS_STORAGE_KEY = 'ergoeval_display_prefs_v1';
@@ -210,6 +246,14 @@ export default function App() {
     return unsub;
   }, []);
 
+  // Precarga en inactividad del módulo Vídeo Mellizo 3D tras pintar la interfaz inicial
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void import('./components/TwinAvatarVideoStudio');
+    }, 1400);
+    return () => window.clearTimeout(timer);
+  }, []);
+
   void formulaRevision;
   const modifiedFormulaCount = countModifiedFormulaMethods();
 
@@ -343,6 +387,7 @@ export default function App() {
   const handleExportPdf = async () => {
     try {
       setIsExportingPdf(true);
+      const { exportStudyToPdf } = await import('./utils/reportExport');
       await exportStudyToPdf(general, tabs);
       showTempBanner('Informe PDF detallado generado y descargado correctamente.');
     } catch (err) {
@@ -355,6 +400,7 @@ export default function App() {
   const handleExportWord = async () => {
     try {
       setIsExportingWord(true);
+      const { exportStudyToWord } = await import('./utils/reportExport');
       await exportStudyToWord(general, tabs);
       showTempBanner('Informe Word (.docx) detallado generado y descargado correctamente.');
     } catch (err) {
@@ -364,8 +410,9 @@ export default function App() {
     }
   };
 
-  const handleDownloadManualPdf = () => {
+  const handleDownloadManualPdf = async () => {
     try {
+      const { exportUserManualPdf } = await import('./utils/manualExport');
       exportUserManualPdf();
       showTempBanner('Manual de uso y procedimiento de métodos descargado en PDF.');
     } catch (err) {
@@ -437,6 +484,7 @@ export default function App() {
     if (autoDownloadPdf) {
       setIsExportingPdf(true);
       try {
+        const { exportStudyToPdf } = await import('./utils/reportExport');
         await exportStudyToPdf(updatedGeneral, nextTabs);
         showTempBanner(
           `Vídeo procesado: ${incomingTabs.length} pestañas generadas con fotos reales y Avatar 3D e Informe PDF emitido.`,
@@ -1015,91 +1063,109 @@ export default function App() {
       {activeWorkspace === 'avatar_libre' ? (
         <main className="flex-1 max-w-[1440px] w-full mx-auto px-3 sm:px-6 py-3 sm:py-6 overflow-x-hidden">
           <ErrorBoundary>
-            <FreeAvatarStudioWorkspace
-              onBackToEvaluator={() => setActiveWorkspace('evaluador')}
-              onAddPoseTabToStudy={handleAddTestedTabToStudy}
-            />
+            <Suspense fallback={<WorkspaceLoadingCard label={workspaceLabelMap[activeWorkspace]} />}>
+              <FreeAvatarStudioWorkspace
+                onBackToEvaluator={() => setActiveWorkspace('evaluador')}
+                onAddPoseTabToStudy={handleAddTestedTabToStudy}
+              />
+            </Suspense>
           </ErrorBoundary>
         </main>
       ) : activeWorkspace === 'avatar_cebolla' ? (
         <main className="flex-1 max-w-[1440px] w-full mx-auto px-3 sm:px-6 py-3 sm:py-6 overflow-x-hidden">
           <ErrorBoundary>
-            <OnionSkinAvatarWorkspace
-              onBackToEvaluator={() => setActiveWorkspace('evaluador')}
-              onAddPoseTabToStudy={handleAddTestedTabToStudy}
-            />
+            <Suspense fallback={<WorkspaceLoadingCard label={workspaceLabelMap[activeWorkspace]} />}>
+              <OnionSkinAvatarWorkspace
+                onBackToEvaluator={() => setActiveWorkspace('evaluador')}
+                onAddPoseTabToStudy={handleAddTestedTabToStudy}
+              />
+            </Suspense>
           </ErrorBoundary>
         </main>
       ) : activeWorkspace === 'medidor_angulos' ? (
         <main className="flex-1 max-w-[1440px] w-full mx-auto px-3 sm:px-6 py-3 sm:py-6 overflow-x-hidden">
           <ErrorBoundary>
-            <QuickAngleMeterWorkspace
-              onBackToEvaluator={() => setActiveWorkspace('evaluador')}
-              onAddMeasuredTabToStudy={handleAddTestedTabToStudy}
-            />
+            <Suspense fallback={<WorkspaceLoadingCard label={workspaceLabelMap[activeWorkspace]} />}>
+              <QuickAngleMeterWorkspace
+                onBackToEvaluator={() => setActiveWorkspace('evaluador')}
+                onAddMeasuredTabToStudy={handleAddTestedTabToStudy}
+              />
+            </Suspense>
           </ErrorBoundary>
         </main>
       ) : activeWorkspace === 'testeo_repetitividad' ? (
         <main className="flex-1 max-w-[1440px] w-full mx-auto px-3 sm:px-6 py-3 sm:py-6 overflow-x-hidden">
           <ErrorBoundary>
-            <HandRepetitionTesterWorkspace
-              general={general}
-              onBackToEvaluator={() => setActiveWorkspace('evaluador')}
-              onAddRepetitionTabToStudy={handleAddTestedTabToStudy}
-            />
+            <Suspense fallback={<WorkspaceLoadingCard label={workspaceLabelMap[activeWorkspace]} />}>
+              <HandRepetitionTesterWorkspace
+                general={general}
+                onBackToEvaluator={() => setActiveWorkspace('evaluador')}
+                onAddRepetitionTabToStudy={handleAddTestedTabToStudy}
+              />
+            </Suspense>
           </ErrorBoundary>
         </main>
       ) : activeWorkspace === 'testeo_avatar' ? (
         <main className="flex-1 max-w-[1440px] w-full mx-auto px-3 sm:px-6 py-3 sm:py-6 overflow-x-hidden">
           <ErrorBoundary>
-            <AvatarTesterWorkspace
-              onBackToEvaluator={() => setActiveWorkspace('evaluador')}
-              onAddTestedTabToStudy={handleAddTestedTabToStudy}
-              onOpenEnvironmentalWorkspace={() => {
-                setEnvWorkspaceMethodId(MethodId.FANGER);
-                setActiveWorkspace('ambiente_fisico');
-              }}
-            />
+            <Suspense fallback={<WorkspaceLoadingCard label={workspaceLabelMap[activeWorkspace]} />}>
+              <AvatarTesterWorkspace
+                onBackToEvaluator={() => setActiveWorkspace('evaluador')}
+                onAddTestedTabToStudy={handleAddTestedTabToStudy}
+                onOpenEnvironmentalWorkspace={() => {
+                  setEnvWorkspaceMethodId(MethodId.FANGER);
+                  setActiveWorkspace('ambiente_fisico');
+                }}
+              />
+            </Suspense>
           </ErrorBoundary>
         </main>
       ) : activeWorkspace === 'ambiente_fisico' ? (
         <main className="flex-1 max-w-[1400px] w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 overflow-x-hidden">
           <ErrorBoundary>
-            <EnvironmentalMethodsWorkspace
-              initialMethodId={envWorkspaceMethodId}
-              onBackToEvaluator={() => setActiveWorkspace('evaluador')}
-              onAddEnvironmentalTabToStudy={handleAddTestedTabToStudy}
-              onOpenReference={(mId) => handleOpenReference(mId)}
-              onOpenFormulaEditor={(mId) => handleOpenFormulaEditor(mId)}
-            />
+            <Suspense fallback={<WorkspaceLoadingCard label={workspaceLabelMap[activeWorkspace]} />}>
+              <EnvironmentalMethodsWorkspace
+                initialMethodId={envWorkspaceMethodId}
+                onBackToEvaluator={() => setActiveWorkspace('evaluador')}
+                onAddEnvironmentalTabToStudy={handleAddTestedTabToStudy}
+                onOpenReference={(mId) => handleOpenReference(mId)}
+                onOpenFormulaEditor={(mId) => handleOpenFormulaEditor(mId)}
+              />
+            </Suspense>
           </ErrorBoundary>
         </main>
       ) : activeWorkspace === 'figuras3d' ? (
         <main className="flex-1 max-w-[1400px] w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 overflow-x-hidden">
           <ErrorBoundary>
-            <FigurePlanStudio onBackToEvaluator={() => setActiveWorkspace('evaluador')} />
+            <Suspense fallback={<WorkspaceLoadingCard label={workspaceLabelMap[activeWorkspace]} />}>
+              <FigurePlanStudio onBackToEvaluator={() => setActiveWorkspace('evaluador')} />
+            </Suspense>
           </ErrorBoundary>
         </main>
       ) : activeWorkspace === 'formulas' ? (
         <main className="flex-1 max-w-[1400px] w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 overflow-x-hidden">
           <ErrorBoundary>
-            <FormulaStudio
-              initialMethodId={formulaStudioMethodId}
-              tabs={tabs}
-              onBackToEvaluator={() => setActiveWorkspace('evaluador')}
-              onOpenReference={(mId) => handleOpenReference(mId)}
-              onNotify={showTempBanner}
-            />
+            <Suspense fallback={<WorkspaceLoadingCard label={workspaceLabelMap[activeWorkspace]} />}>
+              <FormulaStudio
+                initialMethodId={formulaStudioMethodId}
+                tabs={tabs}
+                onBackToEvaluator={() => setActiveWorkspace('evaluador')}
+                onOpenReference={(mId) => handleOpenReference(mId)}
+                onNotify={showTempBanner}
+              />
+            </Suspense>
           </ErrorBoundary>
         </main>
       ) : activeWorkspace === 'video_mellizo' ? (
         <main className="flex-1 max-w-[1440px] w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 overflow-x-hidden">
           <ErrorBoundary>
-            <TwinAvatarVideoStudio
-              general={general}
-              onBackToEvaluator={() => setActiveWorkspace('evaluador')}
-              onEmitTwinFramesToStudy={handleAddTestedTabToStudy}
-            />
+            <Suspense fallback={<WorkspaceLoadingCard label={workspaceLabelMap[activeWorkspace]} />}>
+              <TwinAvatarVideoStudio
+                general={general}
+                onBackToEvaluator={() => setActiveWorkspace('evaluador')}
+                onEmitTwinFramesToStudy={handleAddTestedTabToStudy}
+              />
+            </Suspense>
           </ErrorBoundary>
         </main>
       ) : activeWorkspace === 'video_ia' ? (
@@ -1109,21 +1175,23 @@ export default function App() {
           } w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 overflow-x-hidden`}
         >
           <ErrorBoundary>
-            <VideoBiomechExtractor
-              general={general}
-              onBackToEvaluator={() => setActiveWorkspace('evaluador')}
-              onEmitTabsAndReport={handleEmitTabsAndReportFromVideo}
-              onExportCurrentPdf={handleExportPdf}
-              onExportCurrentWord={handleExportWord}
-              onOpenTwinVideoStudio={() => setActiveWorkspace('video_mellizo')}
-              isExpandedView={isVideoExpanded}
-              onToggleExpandedView={() => setIsVideoExpanded((prev) => !prev)}
-              onOpenGeneratedTabsInEvaluator={() => {
-                setActiveWorkspace('evaluador');
-                const firstVidIdx = tabs.findIndex((t) => t.id.startsWith('tab-video-ia-'));
-                navigateToSlide(firstVidIdx >= 0 ? firstVidIdx + 1 : Math.max(1, tabs.length));
-              }}
-            />
+            <Suspense fallback={<WorkspaceLoadingCard label={workspaceLabelMap[activeWorkspace]} />}>
+              <VideoBiomechExtractor
+                general={general}
+                onBackToEvaluator={() => setActiveWorkspace('evaluador')}
+                onEmitTabsAndReport={handleEmitTabsAndReportFromVideo}
+                onExportCurrentPdf={handleExportPdf}
+                onExportCurrentWord={handleExportWord}
+                onOpenTwinVideoStudio={() => setActiveWorkspace('video_mellizo')}
+                isExpandedView={isVideoExpanded}
+                onToggleExpandedView={() => setIsVideoExpanded((prev) => !prev)}
+                onOpenGeneratedTabsInEvaluator={() => {
+                  setActiveWorkspace('evaluador');
+                  const firstVidIdx = tabs.findIndex((t) => t.id.startsWith('tab-video-ia-'));
+                  navigateToSlide(firstVidIdx >= 0 ? firstVidIdx + 1 : Math.max(1, tabs.length));
+                }}
+              />
+            </Suspense>
           </ErrorBoundary>
         </main>
       ) : (
@@ -1180,6 +1248,7 @@ export default function App() {
                   onExportTabPdf={async (singleTab) => {
                     try {
                       setIsExportingPdf(true);
+                      const { exportSingleTabToPdf } = await import('./utils/reportExport');
                       await exportSingleTabToPdf(general, singleTab);
                       showTempBanner(`Informe PDF de "${singleTab.tabLabel}" descargado con éxito.`);
                     } finally {
