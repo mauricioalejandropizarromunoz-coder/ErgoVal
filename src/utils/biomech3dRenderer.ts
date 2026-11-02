@@ -24,8 +24,7 @@ import type { MocapFrameSample } from './mocapRetargeter';
 import { NORMATIVE_JOINT_LIMITS } from './normativeJointLimits';
 import type { PredictiveAvatarOverlaySpec } from './predictiveKinematicsV26';
 
-export const AVATAR_GLB_URL = '/models/ergo_avatar.glb?v=2';
-export const AVATAR_GLB_MOBILE_URL = '/models/ergo_avatar_mobile.glb?v=2';
+export const AVATAR_GLB_URL = '/models/ergo_avatar.glb';
 
 export interface CameraOrbitOverride {
   azimuthDeg: number;
@@ -684,6 +683,27 @@ function bindLoadedGlbToRig(
   rig.isReady = true;
 }
 
+/** Detecta WebGL por software (SwiftShader / llvmpipe / WARP) leyendo el nombre real del renderizador. */
+function detectSoftwareWebGL(): boolean {
+  try {
+    if (typeof document === 'undefined') return false;
+    const probe = document.createElement('canvas');
+    const gl = (probe.getContext('webgl2') || probe.getContext('webgl')) as
+      | WebGLRenderingContext
+      | WebGL2RenderingContext
+      | null;
+    if (!gl) return true;
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    const name = String(
+      dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER),
+    ).toLowerCase();
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
+    return /swiftshader|llvmpipe|softpipe|software|basic render|microsoft basic/.test(name);
+  } catch {
+    return false;
+  }
+}
+
 function getSharedEngine(): StudioEngine3D | null {
   if (sharedEngine) return sharedEngine;
   if (engineCreationFailed) return null;
@@ -693,17 +713,9 @@ function getSharedEngine(): StudioEngine3D | null {
       typeof window !== 'undefined' &&
       (window.innerWidth < 768 || Boolean(window.matchMedia?.('(pointer: coarse)').matches));
 
-    let isSoftwareRenderer = false;
-    try {
-      if (typeof navigator !== 'undefined') {
-        const ua = navigator.userAgent.toLowerCase();
-        if (/swiftshader|llvmpipe|softpipe/i.test(ua)) {
-          isSoftwareRenderer = true;
-        }
-      }
-    } catch {
-      // Ignore
-    }
+    // Antes se buscaba "swiftshader" en el userAgent, que NUNCA lo contiene: en equipos sin aceleración
+    // por GPU (VM, escritorio remoto, aceleración desactivada) se activaban sombras + antialias y todo iba lento.
+    const isSoftwareRenderer = detectSoftwareWebGL();
 
     const offscreen = document.createElement('canvas');
     offscreen.width = isMobileScreen ? 560 : 720;
@@ -860,15 +872,10 @@ export function ensureAvatarGlbLoaded(): Promise<void> {
   if (engine.rig.isReady) return Promise.resolve();
   if (avatarLoadPromise) return avatarLoadPromise;
 
-  const isMobileScreen =
-    typeof window !== 'undefined' &&
-    (window.innerWidth < 768 || Boolean(window.matchMedia?.('(pointer: coarse)').matches));
-  const primaryUrl = isMobileScreen ? AVATAR_GLB_MOBILE_URL : AVATAR_GLB_URL;
-
   avatarLoadPromise = new Promise<void>((resolve) => {
     const loader = new GLTFLoader();
     loader.load(
-      primaryUrl,
+      AVATAR_GLB_URL,
       (gltf) => {
         bindLoadedGlbToRig(gltf.scene, engine);
         resolve();
@@ -876,23 +883,6 @@ export function ensureAvatarGlbLoaded(): Promise<void> {
       },
       undefined,
       (err) => {
-        if (primaryUrl !== AVATAR_GLB_URL) {
-          loader.load(
-            AVATAR_GLB_URL,
-            (gltfFallback) => {
-              bindLoadedGlbToRig(gltfFallback.scene, engine);
-              resolve();
-              notifyAvatarLoaded();
-            },
-            undefined,
-            (fallbackErr) => {
-              console.error('Failed to load anatomical GLB avatar:', fallbackErr);
-              avatarLoadPromise = null;
-              resolve();
-            },
-          );
-          return;
-        }
         console.error('Failed to load anatomical GLB avatar:', err);
         avatarLoadPromise = null;
         resolve();
@@ -906,6 +896,63 @@ export function ensureAvatarGlbLoaded(): Promise<void> {
 // ============================================================================
 // WORKSTATION & LOAD PROPS (CLEAN STUDIO GEOMETRY, NO SKELETON DEBUG LINES)
 // ============================================================================
+// Recursos de utilería compartidos entre cuadros: antes buildSceneProp() destruía y recreaba TODAS las
+// geometrías y materiales en cada fotograma (dispose + re-subida a GPU), lo que frenaba la reproducción.
+const PROP_SHARED_RESOURCES = new Set<THREE.BufferGeometry | THREE.Material>();
+const PROP_GEO_CACHE = new Map<string, THREE.BufferGeometry>();
+const PROP_GEO_CACHE_MAX = 400;
+const PROP_CTOR_IDS = new WeakMap<object, number>();
+let propCtorSeq = 0;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function propGeo<T extends THREE.BufferGeometry>(Ctor: new (...a: any[]) => T, ...args: any[]): T {
+  let id = PROP_CTOR_IDS.get(Ctor);
+  if (id === undefined) {
+    id = ++propCtorSeq;
+    PROP_CTOR_IDS.set(Ctor, id);
+  }
+  // Redondeo a 0,5 mm: evita crear una geometría nueva por ruido de décimas de milímetro
+  const a = args.map((v) => (typeof v === 'number' ? Math.round(v * 2000) / 2000 : v));
+  const key = `${id}|${a.join(',')}`;
+  const hit = PROP_GEO_CACHE.get(key);
+  if (hit) return hit as T;
+  const geo = new Ctor(...a);
+  PROP_SHARED_RESOURCES.add(geo);
+  PROP_GEO_CACHE.set(key, geo);
+  if (PROP_GEO_CACHE.size > PROP_GEO_CACHE_MAX) {
+    const oldestKey = PROP_GEO_CACHE.keys().next().value as string;
+    const old = PROP_GEO_CACHE.get(oldestKey);
+    PROP_GEO_CACHE.delete(oldestKey);
+    if (old) {
+      PROP_SHARED_RESOURCES.delete(old);
+      old.dispose();
+    }
+  }
+  return geo;
+}
+
+let propMaterialsShared: {
+  structMat: THREE.MeshStandardMaterial;
+  darkMetalMat: THREE.MeshStandardMaterial;
+  elastomerMat: THREE.MeshStandardMaterial;
+  binBlueMat: THREE.MeshStandardMaterial;
+  loadMat: THREE.MeshStandardMaterial;
+} | null = null;
+
+function getPropMaterials() {
+  if (!propMaterialsShared) {
+    propMaterialsShared = {
+      structMat: new THREE.MeshStandardMaterial({ color: PALETTE.propSteelHex, roughness: 0.68, metalness: 0.08 }),
+      darkMetalMat: new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.42, metalness: 0.28 }),
+      elastomerMat: new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.78, metalness: 0.04 }),
+      binBlueMat: new THREE.MeshStandardMaterial({ color: 0xcbd5e1, roughness: 0.62, metalness: 0.1 }),
+      loadMat: new THREE.MeshStandardMaterial({ color: PALETTE.propLoadHex, roughness: 0.74, metalness: 0.02 }),
+    };
+    Object.values(propMaterialsShared).forEach((m) => PROP_SHARED_RESOURCES.add(m));
+  }
+  return propMaterialsShared;
+}
+
 function clearPropsGroup(propsRoot: THREE.Group): void {
   propsRoot.position.set(0, 0, 0);
   propsRoot.rotation.set(0, 0, 0);
@@ -915,9 +962,11 @@ function clearPropsGroup(propsRoot: THREE.Group): void {
     propsRoot.remove(child);
     child.traverse((obj) => {
       if (obj instanceof THREE.Mesh) {
-        obj.geometry.dispose();
-        if (Array.isArray(obj.material)) obj.material.forEach((m) => m.dispose());
-        else obj.material.dispose();
+        if (!PROP_SHARED_RESOURCES.has(obj.geometry)) obj.geometry.dispose();
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        mats.forEach((m: THREE.Material) => {
+          if (!PROP_SHARED_RESOURCES.has(m)) m.dispose();
+        });
       }
     });
   }
@@ -951,31 +1000,7 @@ function buildSceneProp(
   const prop = pose.prop || 'none';
   if (!prop || prop === 'none') return;
 
-  const structMat = new THREE.MeshStandardMaterial({
-    color: PALETTE.propSteelHex,
-    roughness: 0.68,
-    metalness: 0.08,
-  });
-  const darkMetalMat = new THREE.MeshStandardMaterial({
-    color: 0x334155,
-    roughness: 0.42,
-    metalness: 0.28,
-  });
-  const elastomerMat = new THREE.MeshStandardMaterial({
-    color: 0x1e293b,
-    roughness: 0.78,
-    metalness: 0.04,
-  });
-  const binBlueMat = new THREE.MeshStandardMaterial({
-    color: 0xcbd5e1,
-    roughness: 0.62,
-    metalness: 0.1,
-  });
-  const loadMat = new THREE.MeshStandardMaterial({
-    color: PALETTE.propLoadHex,
-    roughness: 0.74,
-    metalness: 0.02,
-  });
+  const { structMat, darkMetalMat, elastomerMat, binBlueMat, loadMat } = getPropMaterials();
 
   const addPropMesh = (mesh: THREE.Mesh) => {
     mesh.castShadow = !isSoftwareRenderer;
@@ -1015,14 +1040,14 @@ function buildSceneProp(
 
   switch (prop) {
     case 'chair': {
-      const seat = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.04, 0.42), structMat);
+      const seat = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.44, 0.04, 0.42), structMat);
       seat.position.set(pelvisWorld.x, pelvisWorld.y - 0.08, pelvisWorld.z + 0.04);
-      const back = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.46, 0.04), structMat);
+      const back = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.42, 0.46, 0.04), structMat);
       back.position.set(pelvisWorld.x, pelvisWorld.y + 0.16, pelvisWorld.z - 0.16);
       const pedH = Math.max(0.18, pelvisWorld.y - 0.1);
-      const ped = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, pedH, 16), darkMetalMat);
+      const ped = new THREE.Mesh(propGeo(THREE.CylinderGeometry, 0.03, 0.04, pedH, 16), darkMetalMat);
       ped.position.set(pelvisWorld.x, pedH / 2, pelvisWorld.z);
-      const basePlate = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.02, 20), darkMetalMat);
+      const basePlate = new THREE.Mesh(propGeo(THREE.CylinderGeometry, 0.22, 0.22, 0.02, 20), darkMetalMat);
       basePlate.position.set(pelvisWorld.x, 0.01, pelvisWorld.z);
       addPropMesh(seat);
       addPropMesh(back);
@@ -1036,13 +1061,13 @@ function buildSceneProp(
       const cabX = pelvisWorld.x;
       const seatY = pelvisWorld.y - 0.085;
       const seatZ = pelvisWorld.z + 0.065;
-      const seatPan = new THREE.Mesh(new THREE.BoxGeometry(0.47, 0.06, 0.45), structMat);
+      const seatPan = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.47, 0.06, 0.45), structMat);
       seatPan.position.set(cabX, seatY, seatZ);
       seatPan.rotation.x = -4 * DEG2RAD;
       addPropMesh(seatPan);
 
       for (const bx of [-0.22, 0.22]) {
-        const thighBolster = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.076, 0.43), darkMetalMat);
+        const thighBolster = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.055, 0.076, 0.43), darkMetalMat);
         thighBolster.position.set(cabX + bx, seatY + 0.02, seatZ);
         thighBolster.rotation.x = -4 * DEG2RAD;
         addPropMesh(thighBolster);
@@ -1050,36 +1075,36 @@ function buildSceneProp(
 
       const backY = pelvisWorld.y + 0.205;
       const backZ = pelvisWorld.z - 0.175;
-      const backrest = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.53, 0.055), structMat);
+      const backrest = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.45, 0.53, 0.055), structMat);
       backrest.position.set(cabX, backY, backZ);
       backrest.rotation.x = -10 * DEG2RAD;
       addPropMesh(backrest);
 
       for (const bx of [-0.21, 0.21]) {
-        const sideBolster = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.46, 0.08), darkMetalMat);
+        const sideBolster = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.055, 0.46, 0.08), darkMetalMat);
         sideBolster.position.set(cabX + bx, backY - 0.01, backZ + 0.018);
         sideBolster.rotation.x = -10 * DEG2RAD;
         addPropMesh(sideBolster);
       }
 
       for (const px of [-0.065, 0.065]) {
-        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.007, 0.1, 10), darkMetalMat);
+        const post = new THREE.Mesh(propGeo(THREE.CylinderGeometry, 0.007, 0.007, 0.1, 10), darkMetalMat);
         post.position.set(cabX + px, pelvisWorld.y + 0.485, pelvisWorld.z - 0.222);
         post.rotation.x = -10 * DEG2RAD;
         addPropMesh(post);
       }
-      const headrest = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.165, 0.065), elastomerMat);
+      const headrest = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.24, 0.165, 0.065), elastomerMat);
       headrest.position.set(cabX, pelvisWorld.y + 0.56, pelvisWorld.z - 0.232);
       headrest.rotation.x = -6 * DEG2RAD;
       addPropMesh(headrest);
 
       const suspH = Math.max(0.14, seatY - 0.04);
-      const suspPedestal = new THREE.Mesh(new THREE.BoxGeometry(0.26, suspH, 0.28), darkMetalMat);
+      const suspPedestal = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.26, suspH, 0.28), darkMetalMat);
       suspPedestal.position.set(cabX, suspH * 0.5 + 0.022, pelvisWorld.z + 0.02);
       addPropMesh(suspPedestal);
 
       for (const rx of [-0.155, 0.155]) {
-        const slideRail = new THREE.Mesh(new THREE.BoxGeometry(0.036, 0.024, 0.48), elastomerMat);
+        const slideRail = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.036, 0.024, 0.48), elastomerMat);
         slideRail.position.set(cabX + rx, 0.012, pelvisWorld.z + 0.04);
         addPropMesh(slideRail);
       }
@@ -1101,7 +1126,7 @@ function buildSceneProp(
       wheelAssembly.rotation.x = wheelTiltRad;
 
       const wheelRim = new THREE.Mesh(
-        new THREE.TorusGeometry(wheelRadius, 0.0185, 20, 56),
+        propGeo(THREE.TorusGeometry, wheelRadius, 0.0185, 20, 56),
         elastomerMat,
       );
       wheelRim.castShadow = !isSoftwareRenderer;
@@ -1110,7 +1135,7 @@ function buildSceneProp(
 
       for (const gripArcStart of [0.1, Math.PI - 0.52]) {
         const thumbBolster = new THREE.Mesh(
-          new THREE.TorusGeometry(wheelRadius, 0.022, 14, 18, 0.42),
+          propGeo(THREE.TorusGeometry, wheelRadius, 0.022, 14, 18, 0.42),
           elastomerMat,
         );
         thumbBolster.rotation.z = gripArcStart;
@@ -1119,7 +1144,7 @@ function buildSceneProp(
       }
 
       const airbagPad = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.064, 0.056, 0.038, 24),
+        propGeo(THREE.CylinderGeometry, 0.064, 0.056, 0.038, 24),
         darkMetalMat,
       );
       airbagPad.rotation.x = Math.PI / 2;
@@ -1133,7 +1158,7 @@ function buildSceneProp(
 
       for (const sideSign of [-1, 1]) {
         const sideSpoke = new THREE.Mesh(
-          new THREE.BoxGeometry(spokeLen, 0.028, 0.015),
+          propGeo(THREE.BoxGeometry, spokeLen, 0.028, 0.015),
           darkMetalMat,
         );
         sideSpoke.position.set(sideSign * (0.046 + spokeSpan * 0.5), -0.004, hubDishDepth * 0.5);
@@ -1144,7 +1169,7 @@ function buildSceneProp(
 
       for (const bottomOffset of [-0.02, 0.02]) {
         const bottomSpoke = new THREE.Mesh(
-          new THREE.BoxGeometry(0.016, spokeLen, 0.015),
+          propGeo(THREE.BoxGeometry, 0.016, spokeLen, 0.015),
           darkMetalMat,
         );
         bottomSpoke.position.set(bottomOffset, -(0.046 + spokeSpan * 0.5), hubDishDepth * 0.5);
@@ -1154,7 +1179,7 @@ function buildSceneProp(
       }
 
       const columnShroud = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.046, 0.058, 0.14, 18),
+        propGeo(THREE.CylinderGeometry, 0.046, 0.058, 0.14, 18),
         darkMetalMat,
       );
       columnShroud.rotation.x = Math.PI / 2;
@@ -1164,7 +1189,7 @@ function buildSceneProp(
 
       for (const stalkSign of [-1, 1]) {
         const stalk = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.005, 0.0065, 0.125, 10),
+          propGeo(THREE.CylinderGeometry, 0.005, 0.0065, 0.125, 10),
           elastomerMat,
         );
         stalk.rotation.z = Math.PI / 2 - stalkSign * 0.16;
@@ -1184,14 +1209,14 @@ function buildSceneProp(
       const colLen = Math.max(0.28, colSpanVec.length() - 0.08);
       const colUnit = colSpanVec.clone().normalize();
       const steeringShaft = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.026, 0.032, colLen, 16),
+        propGeo(THREE.CylinderGeometry, 0.026, 0.032, colLen, 16),
         darkMetalMat,
       );
       steeringShaft.position.copy(wheelCenter).addScaledVector(colUnit, 0.06 + colLen * 0.5);
       steeringShaft.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), colUnit.clone().negate());
       addPropMesh(steeringShaft);
 
-      const floorBoot = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.075, 0.08, 16), elastomerMat);
+      const floorBoot = new THREE.Mesh(propGeo(THREE.CylinderGeometry, 0.055, 0.075, 0.08, 16), elastomerMat);
       floorBoot.position.set(colFloorBase.x, 0.04, colFloorBase.z);
       addPropMesh(floorBoot);
 
@@ -1199,14 +1224,14 @@ function buildSceneProp(
       const dashFrontZ = Math.max(colFloorBase.z + 0.12, footRWorld.z + 0.08);
       const dashBodyH = Math.max(0.36, wheelCenter.y - 0.08);
       const dashConsole = new THREE.Mesh(
-        new THREE.BoxGeometry(0.66, dashBodyH, 0.22),
+        propGeo(THREE.BoxGeometry, 0.66, dashBodyH, 0.22),
         structMat,
       );
       dashConsole.position.set(cabX, dashBodyH * 0.5, dashFrontZ);
       addPropMesh(dashConsole);
 
       const clusterPod = new THREE.Mesh(
-        new THREE.BoxGeometry(0.32, 0.09, 0.14),
+        propGeo(THREE.BoxGeometry, 0.32, 0.09, 0.14),
         darkMetalMat,
       );
       clusterPod.position.set(cabX, dashBodyH + 0.035, dashFrontZ - 0.05);
@@ -1214,12 +1239,12 @@ function buildSceneProp(
       addPropMesh(clusterPod);
 
       // Pedales de ómnibus (acelerador de piso articulado y pedal de freno neumático)
-      const accelPad = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.015, 0.19), elastomerMat);
+      const accelPad = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.07, 0.015, 0.19), elastomerMat);
       accelPad.position.set(footRWorld.x, Math.max(0.042, footRWorld.y - 0.012), footRWorld.z + 0.018);
       accelPad.rotation.x = -32 * DEG2RAD;
       addPropMesh(accelPad);
 
-      const brakePad = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.016, 0.085), elastomerMat);
+      const brakePad = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.10, 0.016, 0.085), elastomerMat);
       brakePad.position.set(cabX + 0.02, Math.max(0.075, footLWorld.y + 0.02), footRWorld.z + 0.01);
       brakePad.rotation.x = -34 * DEG2RAD;
       addPropMesh(brakePad);
@@ -1244,7 +1269,7 @@ function buildSceneProp(
       const deskX = isElbowSupportBlock ? (elbowRWorld.x + wristRWorld.x) * 0.5 : 0;
       const deskZ = isElbowSupportBlock ? (elbowRWorld.z + wristRWorld.z) * 0.5 + 0.05 : 0.44;
 
-      const top = new THREE.Mesh(new THREE.BoxGeometry(deskW, 0.032, deskD), structMat);
+      const top = new THREE.Mesh(propGeo(THREE.BoxGeometry, deskW, 0.032, deskD), structMat);
       top.position.set(deskX, deskH, deskZ);
       addPropMesh(top);
 
@@ -1252,7 +1277,7 @@ function buildSceneProp(
         // Almohadilla / bloque ergonómico de apoyo directamente bajo el olécranon (codo derecho) y antebrazo
         const padLenZ = Math.max(0.24, Math.min(0.40, Math.abs(wristRWorld.z - elbowRWorld.z) + 0.14));
         const elbowPad = new THREE.Mesh(
-          new THREE.BoxGeometry(0.16, 0.018, padLenZ),
+          propGeo(THREE.BoxGeometry, 0.16, 0.018, padLenZ),
           elastomerMat,
         );
         elbowPad.position.set(
@@ -1265,19 +1290,19 @@ function buildSceneProp(
 
       if (prop === 'high_scanner_desk') {
         const cabinetBody = new THREE.Mesh(
-          new THREE.BoxGeometry(deskW - 0.04, Math.max(0.2, deskH - 0.02), deskD - 0.04),
+          propGeo(THREE.BoxGeometry, deskW - 0.04, Math.max(0.2, deskH - 0.02), deskD - 0.04),
           binBlueMat,
         );
         cabinetBody.position.set(deskX, (deskH - 0.02) * 0.5, deskZ + 0.01);
         addPropMesh(cabinetBody);
 
-        const scannerScreen = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.2, 0.024), darkMetalMat);
+        const scannerScreen = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.28, 0.2, 0.024), darkMetalMat);
         scannerScreen.position.set(deskX, deskH + 0.14, deskZ + 0.1);
         scannerScreen.rotation.x = -18 * DEG2RAD;
         addPropMesh(scannerScreen);
 
         // Paquete pequeño en mostrador sostenido por mano izquierda durante el escaneo
-        const smallParcel = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.11, 0.16), loadMat);
+        const smallParcel = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.18, 0.11, 0.16), loadMat);
         smallParcel.position.set(deskX + 0.08, deskH + 0.07, deskZ - 0.08);
         addPropMesh(smallParcel);
       } else {
@@ -1288,11 +1313,11 @@ function buildSceneProp(
           [deskX - deskW * 0.44, deskZ + deskD * 0.42],
           [deskX + deskW * 0.44, deskZ + deskD * 0.42],
         ]) {
-          const leg = new THREE.Mesh(new THREE.BoxGeometry(0.036, legH, 0.036), darkMetalMat);
+          const leg = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.036, legH, 0.036), darkMetalMat);
           leg.position.set(lx, legH * 0.5, lz);
           addPropMesh(leg);
         }
-        const rearCrossbar = new THREE.Mesh(new THREE.BoxGeometry(deskW - 0.08, 0.03, 0.03), darkMetalMat);
+        const rearCrossbar = new THREE.Mesh(propGeo(THREE.BoxGeometry, deskW - 0.08, 0.03, 0.03), darkMetalMat);
         rearCrossbar.position.set(deskX, 0.18, deskZ + deskD * 0.42);
         addPropMesh(rearCrossbar);
       }
@@ -1300,11 +1325,11 @@ function buildSceneProp(
       if (prop === 'office_desk_corner_monitor' || prop === 'office_desk_lateral') {
         const monX = prop === 'office_desk_corner_monitor' ? -0.22 : 0;
         const monZ = deskZ + 0.12;
-        const monStand = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.024, 0.12, 14), darkMetalMat);
+        const monStand = new THREE.Mesh(propGeo(THREE.CylinderGeometry, 0.018, 0.024, 0.12, 14), darkMetalMat);
         monStand.position.set(monX, deskH + 0.075, monZ);
-        const monBase = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.012, 0.12), darkMetalMat);
+        const monBase = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.16, 0.012, 0.12), darkMetalMat);
         monBase.position.set(monX, deskH + 0.02, monZ);
-        const mon = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.24, 0.024), elastomerMat);
+        const mon = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.38, 0.24, 0.024), elastomerMat);
         mon.position.set(monX, deskH + 0.23, monZ);
         if (prop === 'office_desk_corner_monitor') {
           mon.rotation.y = 0.52;
@@ -1317,14 +1342,14 @@ function buildSceneProp(
     }
     case 'box_load': {
       if (detachedPhase === 'origin_rest') {
-        const skid = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.08, 0.42), darkMetalMat);
+        const skid = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.48, 0.08, 0.42), darkMetalMat);
         skid.position.set(-0.24, 0.04, 0.36);
         addPropMesh(skid);
-        const box = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.21, 0.25), loadMat);
+        const box = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.28, 0.21, 0.25), loadMat);
         box.position.set(-0.24, 0.185, 0.36);
         addPropMesh(box);
       } else if (detachedPhase === 'dest_rest') {
-        const tableTop = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.03, 0.42), structMat);
+        const tableTop = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.54, 0.03, 0.42), structMat);
         tableTop.position.set(0.26, 0.86, 0.46);
         addPropMesh(tableTop);
         for (const [lx, lz] of [
@@ -1333,16 +1358,16 @@ function buildSceneProp(
           [0.03, 0.63],
           [0.49, 0.63],
         ]) {
-          const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.85, 10), darkMetalMat);
+          const leg = new THREE.Mesh(propGeo(THREE.CylinderGeometry, 0.016, 0.016, 0.85, 10), darkMetalMat);
           leg.position.set(lx, 0.425, lz);
           addPropMesh(leg);
         }
-        const box = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.21, 0.25), loadMat);
+        const box = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.28, 0.21, 0.25), loadMat);
         box.position.set(0.26, 0.98, 0.46);
         addPropMesh(box);
       } else {
         const { x, y, z, boxW } = computeBimanualBoxPlacement(palmR, palmL, 0.28, 0.115);
-        const box = new THREE.Mesh(new THREE.BoxGeometry(boxW, 0.21, 0.25), loadMat);
+        const box = new THREE.Mesh(propGeo(THREE.BoxGeometry, boxW, 0.21, 0.25), loadMat);
         box.position.set(x, y, z);
         box.rotation.y = (pose.rootYawDeg ?? 0) * DEG2RAD;
         addPropMesh(box);
@@ -1352,11 +1377,11 @@ function buildSceneProp(
     case 'pallet_cooler': {
       // Pallet industrial SIEMPRE FIJO sobre el suelo del estudio (nunca arrastrado por las manos)
       const palletZ = 0.40;
-      const palletTop = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.028, 0.54), loadMat);
+      const palletTop = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.66, 0.028, 0.54), loadMat);
       palletTop.position.set(0, 0.106, palletZ);
       addPropMesh(palletTop);
       for (const sx of [-0.26, 0, 0.26]) {
-        const block = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.092, 0.54), darkMetalMat);
+        const block = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.09, 0.092, 0.54), darkMetalMat);
         block.position.set(sx, 0.046, palletZ);
         addPropMesh(block);
       }
@@ -1366,9 +1391,9 @@ function buildSceneProp(
           ? { x: 0, y: 0.26, z: palletZ, boxW: 0.30 }
           : computeBimanualBoxPlacement(palmR, palmL, 0.30, 0.24);
 
-      const coolerBody = new THREE.Mesh(new THREE.BoxGeometry(boxW, 0.25, 0.28), binBlueMat);
+      const coolerBody = new THREE.Mesh(propGeo(THREE.BoxGeometry, boxW, 0.25, 0.28), binBlueMat);
       coolerBody.position.set(x, y - 0.01, z);
-      const coolerLid = new THREE.Mesh(new THREE.BoxGeometry(boxW + 0.014, 0.038, 0.295), darkMetalMat);
+      const coolerLid = new THREE.Mesh(propGeo(THREE.BoxGeometry, boxW + 0.014, 0.038, 0.295), darkMetalMat);
       coolerLid.position.set(x, y + 0.13, z);
       addPropMesh(coolerBody);
       addPropMesh(coolerLid);
@@ -1382,28 +1407,28 @@ function buildSceneProp(
       const binD = 0.50;
       const wallT = 0.026;
 
-      const binSkid = new THREE.Mesh(new THREE.BoxGeometry(binW, 0.09, binD), darkMetalMat);
+      const binSkid = new THREE.Mesh(propGeo(THREE.BoxGeometry, binW, 0.09, binD), darkMetalMat);
       binSkid.position.set(binX, 0.045, binZ);
       addPropMesh(binSkid);
 
-      const binFrontWall = new THREE.Mesh(new THREE.BoxGeometry(binW, 0.56, wallT), binBlueMat);
+      const binFrontWall = new THREE.Mesh(propGeo(THREE.BoxGeometry, binW, 0.56, wallT), binBlueMat);
       binFrontWall.position.set(binX, 0.09 + 0.28, binZ + binD * 0.5 - wallT * 0.5);
       addPropMesh(binFrontWall);
 
       const nearWallH = 0.36;
-      const binNearWall = new THREE.Mesh(new THREE.BoxGeometry(binW, nearWallH, wallT), binBlueMat);
+      const binNearWall = new THREE.Mesh(propGeo(THREE.BoxGeometry, binW, nearWallH, wallT), binBlueMat);
       binNearWall.position.set(binX, 0.09 + nearWallH * 0.5, binZ - binD * 0.5 + wallT * 0.5);
       addPropMesh(binNearWall);
 
-      const binLeftWall = new THREE.Mesh(new THREE.BoxGeometry(wallT, 0.56, binD), binBlueMat);
+      const binLeftWall = new THREE.Mesh(propGeo(THREE.BoxGeometry, wallT, 0.56, binD), binBlueMat);
       binLeftWall.position.set(binX + binW * 0.5 - wallT * 0.5, 0.09 + 0.28, binZ);
       addPropMesh(binLeftWall);
 
-      const binRightCutaway = new THREE.Mesh(new THREE.BoxGeometry(wallT, 0.2, binD), binBlueMat);
+      const binRightCutaway = new THREE.Mesh(propGeo(THREE.BoxGeometry, wallT, 0.2, binD), binBlueMat);
       binRightCutaway.position.set(binX - binW * 0.5 + wallT * 0.5, 0.09 + 0.1, binZ);
       addPropMesh(binRightCutaway);
 
-      const innerParcel = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.15, 0.19), loadMat);
+      const innerParcel = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.22, 0.15, 0.19), loadMat);
       innerParcel.position.set(binX + 0.12, 0.165, binZ + 0.08);
       addPropMesh(innerParcel);
 
@@ -1411,7 +1436,7 @@ function buildSceneProp(
       const cartX = 0.36;
       const cartZ = 0.52;
       const cartDeckY = 0.35;
-      const cartDeck = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.04, 0.44), structMat);
+      const cartDeck = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.48, 0.04, 0.44), structMat);
       cartDeck.position.set(cartX, cartDeckY, cartZ);
       addPropMesh(cartDeck);
 
@@ -1422,12 +1447,12 @@ function buildSceneProp(
         [0.18, 0.16],
       ]) {
         const wheel = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.055, 0.055, 0.032, 16),
+          propGeo(THREE.CylinderGeometry, 0.055, 0.055, 0.032, 16),
           elastomerMat,
         );
         wheel.rotation.z = Math.PI / 2;
         wheel.position.set(cartX + wx, 0.055, cartZ + wz);
-        const fork = new THREE.Mesh(new THREE.BoxGeometry(0.04, cartDeckY - 0.11, 0.05), darkMetalMat);
+        const fork = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.04, cartDeckY - 0.11, 0.05), darkMetalMat);
         fork.position.set(cartX + wx, 0.11 + (cartDeckY - 0.11) * 0.5, cartZ + wz);
         addPropMesh(wheel);
         addPropMesh(fork);
@@ -1436,33 +1461,33 @@ function buildSceneProp(
       const handlePostH = 0.56;
       for (const hx of [-0.2, 0.2]) {
         const post = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.014, 0.014, handlePostH, 12),
+          propGeo(THREE.CylinderGeometry, 0.014, 0.014, handlePostH, 12),
           darkMetalMat,
         );
         post.position.set(cartX + hx, cartDeckY + handlePostH * 0.5, cartZ + 0.2);
         addPropMesh(post);
       }
-      const crossBar = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.42, 12), darkMetalMat);
+      const crossBar = new THREE.Mesh(propGeo(THREE.CylinderGeometry, 0.015, 0.015, 0.42, 12), darkMetalMat);
       crossBar.rotation.z = Math.PI / 2;
       crossBar.position.set(cartX, cartDeckY + handlePostH, cartZ + 0.2);
       addPropMesh(crossBar);
 
-      const cartParcel = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.16, 0.20), loadMat);
+      const cartParcel = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.24, 0.16, 0.20), loadMat);
       cartParcel.position.set(cartX, cartDeckY + 0.10, cartZ + 0.06);
       addPropMesh(cartParcel);
 
       // Bulto activo de 10 kg (en el bin al inicio, entre las manos en traslado, o sobre el carro al depositar)
       if (detachedPhase === 'origin_rest') {
-        const activeParcel = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.18, 0.22), loadMat);
+        const activeParcel = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.25, 0.18, 0.22), loadMat);
         activeParcel.position.set(binX - 0.02, 0.34, binZ - 0.02);
         addPropMesh(activeParcel);
       } else if (detachedPhase === 'dest_rest') {
-        const activeParcel = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.18, 0.22), loadMat);
+        const activeParcel = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.25, 0.18, 0.22), loadMat);
         activeParcel.position.set(cartX, cartDeckY + 0.11, cartZ - 0.11);
         addPropMesh(activeParcel);
       } else {
         const { x, y, z, boxW } = computeBimanualBoxPlacement(palmR, palmL, 0.26, 0.30);
-        const activeParcel = new THREE.Mesh(new THREE.BoxGeometry(boxW, 0.18, 0.22), loadMat);
+        const activeParcel = new THREE.Mesh(propGeo(THREE.BoxGeometry, boxW, 0.18, 0.22), loadMat);
         activeParcel.position.set(x, y, z);
         activeParcel.rotation.y = (pose.rootYawDeg ?? 0) * DEG2RAD;
         addPropMesh(activeParcel);
@@ -1472,16 +1497,16 @@ function buildSceneProp(
     case 'floor_pouches': {
       // Fig. 12.5: Clasificación de bolsines de correo apoyados directamente sobre el suelo (y = 0)
       const baseZ = Math.max(0.32, (palmR.z + palmL.z) * 0.5 + 0.03);
-      const mainPouch = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.09, 0.20), loadMat);
+      const mainPouch = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.26, 0.09, 0.20), loadMat);
       mainPouch.position.set((palmR.x + palmL.x) * 0.5, 0.045, baseZ);
       addPropMesh(mainPouch);
 
-      const sidePouchA = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.08, 0.19), binBlueMat);
+      const sidePouchA = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.24, 0.08, 0.19), binBlueMat);
       sidePouchA.position.set(-0.22, 0.04, baseZ + 0.14);
       sidePouchA.rotation.y = 0.18;
       addPropMesh(sidePouchA);
 
-      const sidePouchB = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.08, 0.19), structMat);
+      const sidePouchB = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.24, 0.08, 0.19), structMat);
       sidePouchB.position.set(0.22, 0.04, baseZ + 0.12);
       sidePouchB.rotation.y = -0.22;
       addPropMesh(sidePouchB);
@@ -1489,10 +1514,10 @@ function buildSceneProp(
     }
     case 'electrical_panel': {
       const panelZ = 0.48;
-      const cab = new THREE.Mesh(new THREE.BoxGeometry(0.62, 1.62, 0.22), structMat);
+      const cab = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.62, 1.62, 0.22), structMat);
       cab.position.set(0, 0.81, panelZ);
       addPropMesh(cab);
-      const door = new THREE.Mesh(new THREE.BoxGeometry(0.54, 1.18, 0.025), darkMetalMat);
+      const door = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.54, 1.18, 0.025), darkMetalMat);
       door.position.set(0, 0.92, panelZ - 0.115);
       addPropMesh(door);
       break;
@@ -1509,31 +1534,31 @@ function buildSceneProp(
         [-rackW * 0.5, shelfZ + rackD * 0.5],
         [rackW * 0.5, shelfZ + rackD * 0.5],
       ]) {
-        const post = new THREE.Mesh(new THREE.BoxGeometry(0.03, rackH, 0.03), darkMetalMat);
+        const post = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.03, rackH, 0.03), darkMetalMat);
         post.position.set(px, rackH * 0.5, pz);
         addPropMesh(post);
       }
       for (const sy of [0.16, 0.68, 1.16, 1.64]) {
-        const board = new THREE.Mesh(new THREE.BoxGeometry(rackW + 0.02, 0.028, rackD + 0.02), binBlueMat);
+        const board = new THREE.Mesh(propGeo(THREE.BoxGeometry, rackW + 0.02, 0.028, rackD + 0.02), binBlueMat);
         board.position.set(0, sy, shelfZ);
         addPropMesh(board);
       }
       // Cajas estáticas de referencia sobre la estantería
-      const refBoxLow = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.18, 0.24), structMat);
+      const refBoxLow = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.24, 0.18, 0.24), structMat);
       refBoxLow.position.set(-0.20, 0.68 + 0.104, shelfZ + 0.01);
       addPropMesh(refBoxLow);
 
       if (detachedPhase === 'dest_rest' || pose.loadKg === 0) {
-        const shelfBox = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.20, 0.24), loadMat);
+        const shelfBox = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.28, 0.20, 0.24), loadMat);
         shelfBox.position.set(0.14, 1.16 + 0.114, shelfZ - 0.02);
         addPropMesh(shelfBox);
       } else if (detachedPhase === 'origin_rest') {
-        const originBox = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.20, 0.24), loadMat);
+        const originBox = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.28, 0.20, 0.24), loadMat);
         originBox.position.set(0.14, 0.68 + 0.114, shelfZ - 0.02);
         addPropMesh(originBox);
       } else {
         const { x, y, z, boxW } = computeBimanualBoxPlacement(palmR, palmL, 0.28, 1.15);
-        const crate = new THREE.Mesh(new THREE.BoxGeometry(boxW, 0.20, 0.24), loadMat);
+        const crate = new THREE.Mesh(propGeo(THREE.BoxGeometry, boxW, 0.20, 0.24), loadMat);
         crate.position.set(x, y, z);
         addPropMesh(crate);
       }
@@ -1557,7 +1582,7 @@ function buildSceneProp(
       const shaftLen = Math.max(0.78, distToFloor - 0.10);
 
       const shaft = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.016, 0.017, shaftLen, 14),
+        propGeo(THREE.CylinderGeometry, 0.016, 0.017, shaftLen, 14),
         loadMat,
       );
       shaft.position.copy(gripTop).addScaledVector(dirDown, shaftLen * 0.5);
@@ -1565,7 +1590,7 @@ function buildSceneProp(
       addPropMesh(shaft);
 
       // Empuñadura superior transversal en "D" en mano derecha
-      const dHandle = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.013, 0.13, 12), darkMetalMat);
+      const dHandle = new THREE.Mesh(propGeo(THREE.CylinderGeometry, 0.013, 0.013, 0.13, 12), darkMetalMat);
       dHandle.rotation.z = Math.PI / 2;
       dHandle.position.copy(gripTop);
       addPropMesh(dHandle);
@@ -1573,12 +1598,12 @@ function buildSceneProp(
       // Hoja metálica de pala apoyada en tierra (y ≈ 0.06) + montículo de tierra excavada
       const bladeCenter = gripTop.clone().addScaledVector(dirDown, shaftLen + 0.09);
       bladeCenter.y = Math.max(0.065, bladeCenter.y);
-      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.26, 0.018), darkMetalMat);
+      const blade = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.22, 0.26, 0.018), darkMetalMat);
       blade.position.copy(bladeCenter);
       blade.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), dirDown);
       addPropMesh(blade);
 
-      const soilMound = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.26, 0.08, 16), loadMat);
+      const soilMound = new THREE.Mesh(propGeo(THREE.CylinderGeometry, 0.14, 0.26, 0.08, 16), loadMat);
       soilMound.position.set(bladeCenter.x, 0.04, bladeCenter.z + 0.05);
       addPropMesh(soilMound);
       break;
@@ -1589,9 +1614,9 @@ function buildSceneProp(
       const midY = (palmR.y + palmL.y) * 0.5;
       const midZ = (palmR.z + palmL.z) * 0.5 + 0.035;
       const barY = prop === 'iron_tamper_high' ? midY - 0.35 : midY - 0.42;
-      const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 1.05, 14), darkMetalMat);
+      const bar = new THREE.Mesh(propGeo(THREE.CylinderGeometry, 0.018, 0.018, 1.05, 14), darkMetalMat);
       bar.position.set(midX, Math.max(0.52, barY), midZ);
-      const basePlate = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.05, 0.24), loadMat);
+      const basePlate = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.24, 0.05, 0.24), loadMat);
       basePlate.position.set(midX, Math.max(0.025, barY - 0.52), midZ);
       addPropMesh(bar);
       addPropMesh(basePlate);
@@ -1600,11 +1625,11 @@ function buildSceneProp(
     case 'crane_levers': {
       // Fig. 11.4: Banco lateral de válvulas de hidrogrúa con 3 palancas operadas BIMANUALMENTE (mano der. e izq. activas)
       const consoleZ = Math.max(0.36, (palmR.z + palmL.z) * 0.5 + 0.11);
-      const consoleBox = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.62, 0.26), structMat);
+      const consoleBox = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.48, 0.62, 0.26), structMat);
       consoleBox.position.set(0, 0.38, consoleZ);
       addPropMesh(consoleBox);
 
-      const valveBank = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.09, 0.18), darkMetalMat);
+      const valveBank = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.38, 0.09, 0.18), darkMetalMat);
       valveBank.position.set(0, 0.72, consoleZ - 0.02);
       addPropMesh(valveBank);
 
@@ -1625,12 +1650,12 @@ function buildSceneProp(
         const len = Math.max(0.18, Math.min(0.32, span.length()));
         const dir = span.lengthSq() > 0.001 ? span.normalize() : new THREE.Vector3(0, 0.85, -0.5).normalize();
 
-        const leverRod = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.01, len, 12), darkMetalMat);
+        const leverRod = new THREE.Mesh(propGeo(THREE.CylinderGeometry, 0.008, 0.01, len, 12), darkMetalMat);
         leverRod.position.copy(basePt).addScaledVector(dir, len * 0.5);
         leverRod.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
         addPropMesh(leverRod);
 
-        const knob = new THREE.Mesh(new THREE.SphereGeometry(0.021, 14, 14), elastomerMat);
+        const knob = new THREE.Mesh(propGeo(THREE.SphereGeometry, 0.021, 14, 14), elastomerMat);
         knob.position.copy(basePt).addScaledVector(dir, len);
         addPropMesh(knob);
       });
@@ -1645,11 +1670,11 @@ function buildSceneProp(
       const cartZ = handleZ + 0.34;
       const deckY = 0.20;
 
-      const deck = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.045, 0.68), structMat);
+      const deck = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.56, 0.045, 0.68), structMat);
       deck.position.set(cartCenterX, deckY, cartZ);
       addPropMesh(deck);
 
-      const cargoBox = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.38, 0.48), loadMat);
+      const cargoBox = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.46, 0.38, 0.48), loadMat);
       cargoBox.position.set(cartCenterX, deckY + 0.21, cartZ + 0.04);
       addPropMesh(cargoBox);
 
@@ -1659,10 +1684,10 @@ function buildSceneProp(
         [-0.21, 0.24],
         [0.21, 0.24],
       ]) {
-        const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.065, 0.036, 16), elastomerMat);
+        const wheel = new THREE.Mesh(propGeo(THREE.CylinderGeometry, 0.065, 0.065, 0.036, 16), elastomerMat);
         wheel.rotation.z = Math.PI / 2;
         wheel.position.set(cartCenterX + wx, 0.065, cartZ + wz);
-        const caster = new THREE.Mesh(new THREE.BoxGeometry(0.042, deckY - 0.11, 0.055), darkMetalMat);
+        const caster = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.042, deckY - 0.11, 0.055), darkMetalMat);
         caster.position.set(cartCenterX + wx, 0.12 + (deckY - 0.12) * 0.5, cartZ + wz);
         addPropMesh(wheel);
         addPropMesh(caster);
@@ -1670,19 +1695,19 @@ function buildSceneProp(
 
       const postH = Math.max(0.45, handleY - deckY);
       for (const hx of [-0.23, 0.23]) {
-        const upright = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, postH, 12), darkMetalMat);
+        const upright = new THREE.Mesh(propGeo(THREE.CylinderGeometry, 0.015, 0.015, postH, 12), darkMetalMat);
         upright.position.set(cartCenterX + hx, deckY + postH * 0.5, handleZ);
         addPropMesh(upright);
       }
 
-      const handleBar = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.50, 14), elastomerMat);
+      const handleBar = new THREE.Mesh(propGeo(THREE.CylinderGeometry, 0.018, 0.018, 0.50, 14), elastomerMat);
       handleBar.rotation.z = Math.PI / 2;
       handleBar.position.set(cartCenterX, handleY, handleZ);
       addPropMesh(handleBar);
       break;
     }
     case 'loading_dock_van': {
-      const step = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.42, 0.5), structMat);
+      const step = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.7, 0.42, 0.5), structMat);
       step.position.set(0, 0.21, 0.55);
       addPropMesh(step);
       break;
@@ -1691,42 +1716,42 @@ function buildSceneProp(
       // Línea de cinta transportadora 100% FIJA en el estudio (nunca arrastrada por las manos)
       const beltY = 0.84;
       const beltZ = 0.48;
-      const beltFrame = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.07, 0.46), structMat);
+      const beltFrame = new THREE.Mesh(propGeo(THREE.BoxGeometry, 1.15, 0.07, 0.46), structMat);
       beltFrame.position.set(-0.08, beltY, beltZ);
       addPropMesh(beltFrame);
 
-      const beltSurface = new THREE.Mesh(new THREE.BoxGeometry(1.12, 0.018, 0.38), elastomerMat);
+      const beltSurface = new THREE.Mesh(propGeo(THREE.BoxGeometry, 1.12, 0.018, 0.38), elastomerMat);
       beltSurface.position.set(-0.08, beltY + 0.042, beltZ);
       addPropMesh(beltSurface);
 
       for (const lx of [-0.56, 0.40]) {
         for (const lz of [beltZ - 0.18, beltZ + 0.18]) {
-          const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, beltY, 12), darkMetalMat);
+          const leg = new THREE.Mesh(propGeo(THREE.CylinderGeometry, 0.018, 0.018, beltY, 12), darkMetalMat);
           leg.position.set(lx, beltY * 0.5, lz);
           addPropMesh(leg);
         }
       }
 
       // Tarima lateral estacionaria de depósito para descenso de gavetas
-      const sidePallet = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.11, 0.44), darkMetalMat);
+      const sidePallet = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.52, 0.11, 0.44), darkMetalMat);
       sidePallet.position.set(0.38, 0.055, 0.36);
       addPropMesh(sidePallet);
 
-      const crateSide = new THREE.Mesh(new THREE.BoxGeometry(0.27, 0.14, 0.22), binBlueMat);
+      const crateSide = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.27, 0.14, 0.22), binBlueMat);
       crateSide.position.set(-0.38, beltY + 0.12, beltZ);
       addPropMesh(crateSide);
 
       if (detachedPhase === 'origin_rest') {
-        const heldCrate = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.16, 0.23), loadMat);
+        const heldCrate = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.28, 0.16, 0.23), loadMat);
         heldCrate.position.set(-0.04, beltY + 0.13, beltZ - 0.04);
         addPropMesh(heldCrate);
       } else if (detachedPhase === 'dest_rest') {
-        const heldCrate = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.16, 0.23), loadMat);
+        const heldCrate = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.28, 0.16, 0.23), loadMat);
         heldCrate.position.set(0.38, 0.19, 0.36);
         addPropMesh(heldCrate);
       } else {
         const { x, y, z, boxW } = computeBimanualBoxPlacement(palmR, palmL, 0.28, 0.16);
-        const heldCrate = new THREE.Mesh(new THREE.BoxGeometry(boxW, 0.16, 0.23), loadMat);
+        const heldCrate = new THREE.Mesh(propGeo(THREE.BoxGeometry, boxW, 0.16, 0.23), loadMat);
         heldCrate.position.set(x, y, z);
         heldCrate.rotation.y = (pose.rootYawDeg ?? 0) * DEG2RAD;
         addPropMesh(heldCrate);
@@ -1735,23 +1760,23 @@ function buildSceneProp(
     }
     case 'hopper_sack_pour': {
       // Tolva inoxidable y tarima de origen 100% ESTACIONARIAS en el suelo
-      const originPallet = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.11, 0.44), darkMetalMat);
+      const originPallet = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.52, 0.11, 0.44), darkMetalMat);
       originPallet.position.set(-0.26, 0.055, 0.36);
       addPropMesh(originPallet);
 
       const hopperX = 0.24;
       const hopperZ = 0.52;
       const rimY = 0.98;
-      const funnel = new THREE.Mesh(new THREE.CylinderGeometry(0.30, 0.13, 0.42, 20), structMat);
+      const funnel = new THREE.Mesh(propGeo(THREE.CylinderGeometry, 0.30, 0.13, 0.42, 20), structMat);
       funnel.position.set(hopperX, rimY - 0.21, hopperZ);
       addPropMesh(funnel);
 
-      const hopperRim = new THREE.Mesh(new THREE.TorusGeometry(0.30, 0.018, 12, 28), darkMetalMat);
+      const hopperRim = new THREE.Mesh(propGeo(THREE.TorusGeometry, 0.30, 0.018, 12, 28), darkMetalMat);
       hopperRim.rotation.x = Math.PI / 2;
       hopperRim.position.set(hopperX, rimY, hopperZ);
       addPropMesh(hopperRim);
 
-      const lowerChute = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.56, 16), binBlueMat);
+      const lowerChute = new THREE.Mesh(propGeo(THREE.CylinderGeometry, 0.13, 0.13, 0.56, 16), binBlueMat);
       lowerChute.position.set(hopperX, 0.28, hopperZ);
       addPropMesh(lowerChute);
 
@@ -1761,23 +1786,23 @@ function buildSceneProp(
         [hopperX - 0.23, hopperZ + 0.21],
         [hopperX + 0.23, hopperZ + 0.21],
       ]) {
-        const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, rimY - 0.04, 10), darkMetalMat);
+        const leg = new THREE.Mesh(propGeo(THREE.CylinderGeometry, 0.016, 0.016, rimY - 0.04, 10), darkMetalMat);
         leg.position.set(lx, (rimY - 0.04) * 0.5, lz);
         addPropMesh(leg);
       }
 
       if (detachedPhase === 'origin_rest') {
-        const sack = new THREE.Mesh(new THREE.BoxGeometry(0.30, 0.18, 0.24), loadMat);
+        const sack = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.30, 0.18, 0.24), loadMat);
         sack.position.set(-0.26, 0.20, 0.36);
         addPropMesh(sack);
       } else if (detachedPhase === 'dest_rest') {
-        const sack = new THREE.Mesh(new THREE.BoxGeometry(0.30, 0.18, 0.24), loadMat);
+        const sack = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.30, 0.18, 0.24), loadMat);
         sack.position.set(hopperX, rimY + 0.06, hopperZ - 0.08);
         sack.rotation.x = 28 * DEG2RAD;
         addPropMesh(sack);
       } else {
         const { x, y, z, boxW } = computeBimanualBoxPlacement(palmR, palmL, 0.30, 0.18);
-        const sack = new THREE.Mesh(new THREE.BoxGeometry(boxW, 0.18, 0.24), loadMat);
+        const sack = new THREE.Mesh(propGeo(THREE.BoxGeometry, boxW, 0.18, 0.24), loadMat);
         sack.position.set(x, y, z);
         sack.rotation.y = (pose.rootYawDeg ?? 0) * DEG2RAD;
         sack.rotation.x = palmR.y > 0.88 ? 22 * DEG2RAD : 0;
@@ -1789,7 +1814,7 @@ function buildSceneProp(
       // Tarima de origen y estantería industrial 100% FIJAS en el piso del almacén
       const palletX = -0.26;
       const palletZ = 0.36;
-      const pallet = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.12, 0.46), structMat);
+      const pallet = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.58, 0.12, 0.46), structMat);
       pallet.position.set(palletX, 0.06, palletZ);
       addPropMesh(pallet);
 
@@ -1801,27 +1826,27 @@ function buildSceneProp(
         [rackX - 0.34, rackZ + 0.16],
         [rackX + 0.34, rackZ + 0.16],
       ]) {
-        const post = new THREE.Mesh(new THREE.BoxGeometry(0.032, 1.68, 0.032), darkMetalMat);
+        const post = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.032, 1.68, 0.032), darkMetalMat);
         post.position.set(px, 0.84, pz);
         addPropMesh(post);
       }
       for (const shelfY of [1.06, 1.54]) {
-        const shelf = new THREE.Mesh(new THREE.BoxGeometry(0.70, 0.03, 0.32), binBlueMat);
+        const shelf = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.70, 0.03, 0.32), binBlueMat);
         shelf.position.set(rackX, shelfY, rackZ + 0.01);
         addPropMesh(shelf);
       }
 
       if (detachedPhase === 'origin_rest') {
-        const heldBox = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.21, 0.25), loadMat);
+        const heldBox = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.28, 0.21, 0.25), loadMat);
         heldBox.position.set(palletX, 0.225, palletZ);
         addPropMesh(heldBox);
       } else if (detachedPhase === 'dest_rest' || pose.loadKg === 0) {
-        const heldBox = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.21, 0.25), loadMat);
+        const heldBox = new THREE.Mesh(propGeo(THREE.BoxGeometry, 0.28, 0.21, 0.25), loadMat);
         heldBox.position.set(rackX, 1.18, rackZ - 0.02);
         addPropMesh(heldBox);
       } else {
         const { x, y, z, boxW } = computeBimanualBoxPlacement(palmR, palmL, 0.28, 0.16);
-        const heldBox = new THREE.Mesh(new THREE.BoxGeometry(boxW, 0.21, 0.25), loadMat);
+        const heldBox = new THREE.Mesh(propGeo(THREE.BoxGeometry, boxW, 0.21, 0.25), loadMat);
         heldBox.position.set(x, y, z);
         heldBox.rotation.y = (pose.rootYawDeg ?? 0) * DEG2RAD;
         addPropMesh(heldBox);
@@ -3502,372 +3527,6 @@ function drawProjectedPredictiveArrows2D(
   ctx.restore();
 }
 
-const _fallbackPerspCam = new THREE.PerspectiveCamera(PERSPECTIVE_FOV_DEG, 1, 0.05, 30);
-
-function getFallbackProjectionCamera(
-  engine: StudioEngine3D | null,
-  preset: CameraPreset,
-  aspect: number,
-  orbit: CameraOrbitOverride,
-): THREE.Camera {
-  const center = new THREE.Vector3(0, 0.88, 0);
-  const halfExtent = 1.12;
-  if (engine) {
-    return configureCameraForPanel(engine, preset, center, halfExtent, aspect, orbit);
-  }
-  const zoom = Math.max(0.35, orbit.zoom);
-  const baseAz =
-    preset === 'sagittal_right'
-      ? -90
-      : preset === 'sagittal_left'
-        ? 90
-        : preset === 'dorsal'
-          ? 180
-          : preset === 'frontal'
-            ? 0
-            : -46;
-  const baseEl = preset === 'isometric' ? 18 : 4;
-  const az = (baseAz + orbit.azimuthDeg) * DEG2RAD;
-  const el = Math.max(-85, Math.min(85, baseEl + orbit.elevationDeg)) * DEG2RAD;
-  const paddedHalf = (halfExtent * 1.16) / zoom;
-  const fitDist = paddedHalf / (Math.tan((PERSPECTIVE_FOV_DEG * DEG2RAD) / 2) * Math.min(1, aspect));
-  _fallbackPerspCam.fov = PERSPECTIVE_FOV_DEG;
-  _fallbackPerspCam.aspect = aspect;
-  _fallbackPerspCam.position.set(
-    center.x + fitDist * Math.cos(el) * Math.sin(az),
-    center.y + fitDist * Math.sin(el),
-    center.z + fitDist * Math.cos(el) * Math.cos(az),
-  );
-  _fallbackPerspCam.up.set(0, 1, 0);
-  _fallbackPerspCam.lookAt(center);
-  _fallbackPerspCam.updateProjectionMatrix();
-  _fallbackPerspCam.updateMatrixWorld(true);
-  return _fallbackPerspCam;
-}
-
-function drawProjectedMannequinSkeleton(
-  ctx: CanvasRenderingContext2D,
-  pts3D: Record<string, THREE.Vector3>,
-  camera: THREE.Camera,
-  rect: { x: number; y: number; w: number; h: number },
-  transparentBg: boolean,
-): Record<string, { x: number; y: number; z: number }> {
-  ctx.save();
-  if (!transparentBg) {
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
-  }
-
-  const proj = (v: THREE.Vector3) => {
-    const p = v.clone().project(camera);
-    return {
-      x: rect.x + (p.x * 0.5 + 0.5) * rect.w,
-      y: rect.y + (-p.y * 0.5 + 0.5) * rect.h,
-      z: p.z,
-    };
-  };
-
-  // Grilla de suelo métrico
-  ctx.strokeStyle = '#e2e8f0';
-  ctx.lineWidth = 1;
-  for (let gx = -1.2; gx <= 1.201; gx += 0.3) {
-    const a = proj(new THREE.Vector3(gx, 0.002, -0.9));
-    const b = proj(new THREE.Vector3(gx, 0.002, 0.9));
-    if (a.z <= 1 && b.z <= 1) {
-      ctx.beginPath();
-      ctx.moveTo(a.x, a.y);
-      ctx.lineTo(b.x, b.y);
-      ctx.stroke();
-    }
-  }
-  for (let gz = -0.9; gz <= 0.901; gz += 0.3) {
-    const a = proj(new THREE.Vector3(-1.2, 0.002, gz));
-    const b = proj(new THREE.Vector3(1.2, 0.002, gz));
-    if (a.z <= 1 && b.z <= 1) {
-      ctx.beginPath();
-      ctx.moveTo(a.x, a.y);
-      ctx.lineTo(b.x, b.y);
-      ctx.stroke();
-    }
-  }
-
-  const screenPts: Record<string, { x: number; y: number; z: number }> = {};
-  for (const [k, v] of Object.entries(pts3D)) {
-    screenPts[k] = proj(v);
-  }
-
-  const unitScale = Math.min(rect.w, rect.h) / 480;
-  const limbs: Array<{
-    a: string;
-    b: string;
-    w: number;
-    fill: string;
-    stroke: string;
-  }> = [
-    { a: 'hipL', b: 'kneeL', w: 18, fill: '#334155', stroke: '#1e293b' },
-    { a: 'kneeL', b: 'ankL', w: 14, fill: '#475569', stroke: '#1e293b' },
-    { a: 'ankL', b: 'toeL', w: 11, fill: '#1e293b', stroke: '#0f172a' },
-    { a: 'hipR', b: 'kneeR', w: 18, fill: '#334155', stroke: '#1e293b' },
-    { a: 'kneeR', b: 'ankR', w: 14, fill: '#475569', stroke: '#1e293b' },
-    { a: 'ankR', b: 'toeR', w: 11, fill: '#1e293b', stroke: '#0f172a' },
-    { a: 'hipL', b: 'hipR', w: 20, fill: '#334155', stroke: '#1e293b' },
-    { a: 'midHip', b: 'midSh', w: 28, fill: '#0369a1', stroke: '#0c4a6e' },
-    { a: 'shL', b: 'shR', w: 22, fill: '#0284c7', stroke: '#0c4a6e' },
-    { a: 'midSh', b: 'head', w: 12, fill: '#d6a584', stroke: '#9a6b4c' },
-    { a: 'shL', b: 'elbL', w: 14, fill: '#0284c7', stroke: '#0c4a6e' },
-    { a: 'elbL', b: 'wrL', w: 11.5, fill: '#d6a584', stroke: '#9a6b4c' },
-    { a: 'wrL', b: 'handL', w: 9, fill: '#d6a584', stroke: '#9a6b4c' },
-    { a: 'shR', b: 'elbR', w: 14, fill: '#0284c7', stroke: '#0c4a6e' },
-    { a: 'elbR', b: 'wrR', w: 11.5, fill: '#e0b190', stroke: '#9a6b4c' },
-    { a: 'wrR', b: 'handR', w: 9, fill: '#e0b190', stroke: '#9a6b4c' },
-  ];
-
-  // Ordenar por profundidad Z de cámara (pintor: más lejano primero)
-  const sorted = limbs
-    .map((seg) => {
-      const pa = screenPts[seg.a];
-      const pb = screenPts[seg.b];
-      const depth = pa && pb ? (pa.z + pb.z) * 0.5 : 0;
-      return { ...seg, pa, pb, depth };
-    })
-    .filter((s) => s.pa && s.pb)
-    .sort((x, y) => y.depth - x.depth);
-
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  for (const s of sorted) {
-    const lw = Math.max(4, s.w * unitScale);
-    ctx.strokeStyle = s.stroke;
-    ctx.lineWidth = lw + 2;
-    ctx.beginPath();
-    ctx.moveTo(s.pa.x, s.pa.y);
-    ctx.lineTo(s.pb.x, s.pb.y);
-    ctx.stroke();
-
-    ctx.strokeStyle = s.fill;
-    ctx.lineWidth = lw;
-    ctx.beginPath();
-    ctx.moveTo(s.pa.x, s.pa.y);
-    ctx.lineTo(s.pb.x, s.pb.y);
-    ctx.stroke();
-  }
-
-  const headPt = screenPts.head;
-  if (headPt) {
-    const hr = Math.max(10, 17 * unitScale);
-    ctx.fillStyle = '#e0b190';
-    ctx.strokeStyle = '#7c5338';
-    ctx.lineWidth = 1.8;
-    ctx.beginPath();
-    ctx.arc(headPt.x, headPt.y, hr, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-  }
-
-  for (const jk of ['shR', 'elbR', 'wrR', 'shL', 'elbL', 'wrL', 'hipR', 'kneeR', 'ankR', 'hipL', 'kneeL', 'ankL']) {
-    const jp = screenPts[jk];
-    if (!jp) continue;
-    ctx.fillStyle = '#f8fafc';
-    ctx.strokeStyle = '#0284c7';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.arc(jp.x, jp.y, Math.max(2.8, 4 * unitScale), 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-  }
-
-  ctx.restore();
-  return screenPts;
-}
-
-function renderFastMocapSampleFallback(
-  ctx: CanvasRenderingContext2D,
-  engine: StudioEngine3D | null,
-  sample: MocapFrameSample,
-  preset: CameraPreset,
-  orbit: CameraOrbitOverride,
-  rect: { x: number; y: number; w: number; h: number },
-  showAngleHUD: boolean,
-): void {
-  const w = sample.world3D;
-  if (!w || w.length < 33) return;
-
-  const rawMinY = Math.min(w[27].y, w[28].y, w[29].y, w[30].y, w[31].y, w[32].y);
-  const yShift = 0.025 - rawMinY;
-  const tx = sample.rootTranslation.x;
-  const tz = sample.rootTranslation.z;
-  const V = (idx: number) => new THREE.Vector3(w[idx].x + tx, w[idx].y + yShift, w[idx].z + tz);
-
-  const hipL = V(23);
-  const hipR = V(24);
-  const shL = V(11);
-  const shR = V(12);
-  const midHip = hipL.clone().add(hipR).multiplyScalar(0.5);
-  const midSh = shL.clone().add(shR).multiplyScalar(0.5);
-  const head = V(7).add(V(8)).multiplyScalar(0.5).lerp(V(0), 0.35);
-
-  const pts3D: Record<string, THREE.Vector3> = {
-    midHip,
-    midSh,
-    head,
-    shL,
-    shR,
-    elbL: V(13),
-    elbR: V(14),
-    wrL: V(15),
-    wrR: V(16),
-    handL: V(17).add(V(19)).multiplyScalar(0.5),
-    handR: V(18).add(V(20)).multiplyScalar(0.5),
-    hipL,
-    hipR,
-    kneeL: V(25),
-    kneeR: V(26),
-    ankL: V(27),
-    ankR: V(28),
-    toeL: V(31),
-    toeR: V(32),
-  };
-
-  const cam = getFallbackProjectionCamera(engine, preset, rect.w / Math.max(1, rect.h), orbit);
-  const scr = drawProjectedMannequinSkeleton(ctx, pts3D, cam, rect, false);
-
-  if (showAngleHUD) {
-    const ep = sample.ergonomicPose;
-    const elbIntR = Math.max(30, Math.min(170, Math.round(180 - ep.elbowRFlexionDeg)));
-    ctx.save();
-    ctx.font = '700 11px "IBM Plex Mono", monospace';
-    const bounds = { x: rect.x + 8, y: rect.y + 8, w: rect.w - 16, h: rect.h - 16 };
-    const boxes: OverlayBoxRect[] = [];
-    if (scr.midSh) {
-      drawWhiteBackedTag(
-        ctx,
-        `Tronco ${Math.round(ep.trunkFlexionDeg)}°`,
-        scr.midSh.x + 18,
-        scr.midSh.y - 10,
-        PALETTE.arcOrange,
-        PALETTE.arcText,
-        bounds,
-        '700 11px "IBM Plex Mono", monospace',
-        boxes,
-      );
-    }
-    if (scr.elbR) {
-      drawWhiteBackedTag(
-        ctx,
-        `Codo D ${elbIntR}°`,
-        scr.elbR.x + 18,
-        scr.elbR.y + 12,
-        PALETTE.vecBlue,
-        '#1e3a8a',
-        bounds,
-        '700 11px "IBM Plex Mono", monospace',
-        boxes,
-      );
-    }
-    ctx.restore();
-  }
-}
-
-function renderFastArticulatedPoseFallback(
-  ctx: CanvasRenderingContext2D,
-  engine: StudioEngine3D | null,
-  pose: PosturePose3D,
-  preset: CameraPreset,
-  orbit: CameraOrbitOverride,
-  rect: { x: number; y: number; w: number; h: number },
-  transparentBg: boolean,
-): void {
-  const yawRad = ((pose.rootYawDeg ?? 0) * Math.PI) / 180;
-  const fwd = new THREE.Vector3(Math.sin(yawRad), 0, Math.cos(yawRad));
-  const up = new THREE.Vector3(0, 1, 0);
-  const left = new THREE.Vector3().crossVectors(up, fwd).normalize();
-
-  const kneeAvgRad = (Math.max(0, (pose.kneeRFlexionDeg + pose.kneeLFlexionDeg) * 0.5) * Math.PI) / 180;
-  const hipY = Math.max(0.52, 0.89 - (1 - Math.cos(kneeAvgRad * 0.6)) * 0.42);
-  const midHip = new THREE.Vector3(0, hipY, 0);
-  const hipL = midHip.clone().addScaledVector(left, 0.105);
-  const hipR = midHip.clone().addScaledVector(left, -0.105);
-
-  const kR = (Math.max(0, pose.kneeRFlexionDeg) * Math.PI) / 180;
-  const kL = (Math.max(0, pose.kneeLFlexionDeg) * Math.PI) / 180;
-  const kneeR = hipR
-    .clone()
-    .addScaledVector(up, -0.42 * Math.cos(kR * 0.55))
-    .addScaledVector(fwd, 0.42 * Math.sin(kR * 0.55));
-  const kneeL = hipL
-    .clone()
-    .addScaledVector(up, -0.42 * Math.cos(kL * 0.55))
-    .addScaledVector(fwd, 0.42 * Math.sin(kL * 0.55));
-  const ankR = new THREE.Vector3(hipR.x, 0.06, hipR.z);
-  const ankL = new THREE.Vector3(hipL.x, 0.06, hipL.z);
-  const toeR = ankR.clone().addScaledVector(fwd, 0.16).setY(0.02);
-  const toeL = ankL.clone().addScaledVector(fwd, 0.16).setY(0.02);
-
-  const trRad = ((pose.trunkFlexionDeg || 0) * Math.PI) / 180;
-  const trunkDir = up
-    .clone()
-    .multiplyScalar(Math.cos(trRad))
-    .addScaledVector(fwd, Math.sin(trRad))
-    .normalize();
-  const midSh = midHip.clone().addScaledVector(trunkDir, 0.49);
-  const shL = midSh.clone().addScaledVector(left, 0.175);
-  const shR = midSh.clone().addScaledVector(left, -0.175);
-
-  const hdRad = (((pose.trunkFlexionDeg || 0) + (pose.neckFlexionDeg || 0)) * Math.PI) / 180;
-  const head = midSh
-    .clone()
-    .addScaledVector(up, 0.22 * Math.cos(hdRad))
-    .addScaledVector(fwd, 0.22 * Math.sin(hdRad));
-
-  const buildArm = (sh: THREE.Vector3, shFlexDeg: number, elbFlexDeg: number, sideSign: number) => {
-    const sRad = (shFlexDeg * Math.PI) / 180;
-    const uDir = up
-      .clone()
-      .multiplyScalar(-Math.cos(sRad))
-      .addScaledVector(fwd, Math.sin(sRad))
-      .addScaledVector(left, sideSign * 0.06)
-      .normalize();
-    const elb = sh.clone().addScaledVector(uDir, 0.29);
-    const fRad = ((shFlexDeg + Math.max(8, elbFlexDeg)) * Math.PI) / 180;
-    const fDir = up
-      .clone()
-      .multiplyScalar(-Math.cos(fRad))
-      .addScaledVector(fwd, Math.sin(fRad))
-      .normalize();
-    const wr = elb.clone().addScaledVector(fDir, 0.26);
-    const hand = wr.clone().addScaledVector(fDir, 0.08);
-    return { elb, wr, hand };
-  };
-
-  const armR = buildArm(shR, pose.shoulderRFlexionDeg || 0, pose.elbowRFlexionDeg || 12, -1);
-  const armL = buildArm(shL, pose.shoulderLFlexionDeg || 0, pose.elbowLFlexionDeg || 12, 1);
-
-  const pts3D: Record<string, THREE.Vector3> = {
-    midHip,
-    midSh,
-    head,
-    shL,
-    shR,
-    elbL: armL.elb,
-    elbR: armR.elb,
-    wrL: armL.wr,
-    wrR: armR.wr,
-    handL: armL.hand,
-    handR: armR.hand,
-    hipL,
-    hipR,
-    kneeL,
-    kneeR,
-    ankL,
-    ankR,
-    toeL,
-    toeR,
-  };
-
-  const cam = getFallbackProjectionCamera(engine, preset, rect.w / Math.max(1, rect.h), orbit);
-  drawProjectedMannequinSkeleton(ctx, pts3D, cam, rect, transparentBg);
-}
-
 function renderSingle3DPanelIntoRect(
   ctx: CanvasRenderingContext2D,
   engine: StudioEngine3D,
@@ -3898,15 +3557,17 @@ function renderSingle3DPanelIntoRect(
   const viewH = Math.max(80, rect.h - headerH - footerH);
 
   if (!engine.rig.isReady) {
-    renderFastArticulatedPoseFallback(
-      ctx,
-      engine,
-      panel.pose,
-      panel.cameraPreset,
-      orbit,
-      { x: viewX, y: viewY, w: viewW, h: viewH },
-      transparentBg,
-    );
+    if (!transparentBg) {
+      ctx.save();
+      ctx.fillStyle = '#f8fafc';
+      ctx.fillRect(viewX, viewY, viewW, viewH);
+      ctx.fillStyle = PALETTE.muted;
+      ctx.font = '600 12px "Public Sans", system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Cargando avatar anatómico 3D (.glb)...', viewX + viewW / 2, viewY + viewH / 2);
+      ctx.restore();
+    }
     return;
   }
 
@@ -4989,14 +4650,28 @@ export function renderMocapTwinFrameToCanvas(
 
   const engine = getSharedEngine();
   if (!engine || !engine.rig.isReady) {
-    renderFastMocapSampleFallback(
-      ctx,
-      engine,
-      sample,
-      options?.cameraPreset ?? 'frontal',
+    const fallbackPreset: CameraPreset =
+      options?.cameraPreset === 'frontal' ? 'isometric' : (options?.cameraPreset ?? 'isometric');
+    renderInteractivePose3DToCanvas(
+      {
+        subTitle: `Avatar 3D · t = ${sample.timeSec.toFixed(2)} s`,
+        focusZone: 'full_body',
+        cameraPreset: fallbackPreset,
+        pose: {
+          ...sample.ergonomicPose,
+          prop: options?.sceneProp ?? 'none',
+          ...(options?.propPlacement || {}),
+        },
+      },
+      canvas,
+      widthPx,
+      heightPx,
       orbitOverride,
-      { x: 0, y: 0, w: widthPx, h: heightPx },
-      options?.showAngleHUD !== false,
+      scale,
+      'anatomical_skin',
+      false,
+      false,
+      options?.predictiveOverlay,
     );
     return;
   }
