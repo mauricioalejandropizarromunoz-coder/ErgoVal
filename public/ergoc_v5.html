@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ángulos RULA · REBA · OWAS: video y láminas 3D (v5)</title>
+<style>
+:root{color-scheme:light dark;--bd:#8885;--mut:#888;--acc:#0284c7}
+*{box-sizing:border-box}body{font:14px/1.45 system-ui,sans-serif;margin:0 auto;padding:14px;max-width:1100px}
+h1{font-size:19px;margin:0 0 4px}h2{font-size:15px;margin:16px 0 6px}.n{color:var(--mut);font-size:13px}
+fieldset{border:1px solid var(--bd);border-radius:8px;margin:8px 0}label{display:inline-flex;gap:5px;align-items:center;margin:3px 12px 3px 0}
+input[type=number]{width:64px}button{padding:6px 14px;border-radius:6px;border:1px solid var(--bd);cursor:pointer;font:inherit}button.m{background:var(--acc);color:#fff;border-color:var(--acc)}
+table{border-collapse:collapse;width:100%}td,th{border:1px solid var(--bd);padding:3px 7px;text-align:right}th,td:nth-child(2){text-align:left}tr[data-i]{cursor:pointer}tr.sel{outline:2px solid var(--acc)}
+.box{border:1px solid var(--bd);border-radius:8px;padding:8px 12px;margin:6px 0}.big{font-size:17px;font-weight:700}
+.tabs{display:flex;gap:6px;margin-top:10px}.tab{border-radius:8px 8px 0 0;font-weight:600}.tab.on{background:var(--acc);color:#fff;border-color:var(--acc)}.tp{border:1px solid var(--bd);padding:8px 12px;border-radius:0 8px 8px 8px}.tp[hidden]{display:none}.dot,.chip{display:inline-block;width:12px;height:12px;border-radius:50%;background:#888;vertical-align:-1px}.lg i{display:inline-block;width:20px;height:20px;border-radius:50%;margin-right:3px;vertical-align:-4px}.bar{background:var(--bd);height:22px;border-radius:4px;margin:3px 0;position:relative}.bar i{display:block;height:100%;border-radius:4px}.bar span{position:absolute;left:8px;top:2px;font-size:13px}.mt td,.mt th{text-align:left}.opt{margin-bottom:6px}.cands{display:flex;gap:10px;flex-wrap:wrap}.cand{border:2px solid var(--bd);border-radius:8px;padding:5px;cursor:pointer;flex:1 1 230px;max-width:380px}.cand.on{border-color:var(--acc)}.cand canvas{width:100%;height:auto;margin:0 0 4px}.cand b{display:block}.fh{font-weight:700;margin-top:8px;border-bottom:1px solid var(--bd)}.err{color:#dc2626;font-weight:600}canvas{max-width:100%;height:auto;border-radius:6px;display:block;margin:6px 0}
+#tw{max-height:320px;overflow:auto;border:1px solid var(--bd);border-radius:8px}</style><script src="/models/ergo_avatar_b64.js"></script></head><body>
+<h1>Ángulos RULA · REBA · OWAS desde video o foto <span class="n">· v5</span></h1>
+<p class="n">Sube un video con vista <b>lateral</b>. Todo corre en tu navegador (nada se sube). Mide ángulos fotograma a fotograma y calcula RULA, REBA y OWAS con las mismas tablas de tu <code>calculations.ts</code>.</p>
+<div class="box" id="lamBox"><b>Láminas 3D del avatar</b> <span class="n">(foto → pose 3D → ángulos en verdadera magnitud · blanco y negro)</span>
+<div class="n">Carga una o varias fotos: el detector estima el esqueleto 3D, el avatar adopta la postura y cada ángulo se mide sobre sus huesos y se dibuja en la vista donde su plano queda de frente. «Demo» muestra una pose de ejemplo sin detector.</div>
+<p><input type="file" id="lamFiles" accept="image/*" multiple> <button id="lamDemo">Demo</button> <label class="n">Dibujos de estatuas: <input type="file" id="lamDib" accept="image/*" multiple></label> <label><input type="checkbox" id="lamZ">Invertir profundidad</label> <button class="m" id="lamDl">Descargar esta lámina</button> <button id="lamDlAll">Descargar todas</button> <span id="lamMsg" class="n"></span></p>
+<div class="n"><b>Controles de pose del avatar</b> (solo la lámina seleccionada;vacío = automático). «ver» marca los ángulos que se dibujan en la lámina: por defecto solo los de RULA/REBA (cuello, tronco, brazo, antebrazo y pierna); la cadera regula la pose pero no se dibuja.</div>
+<div class="n" style="margin:4px 0"><label>Postura base: <select id="lamPre"><option value="">(ninguna)</option><option value="talones">sentado sobre los talones</option><option value="rodillas">de rodillas, erguido</option></select></label>
+ <label>Antebrazo y pierna se expresan como: <select id="lamConv"><option value="flex">flexión (0° = extendido, como RULA/REBA)</option><option value="forme">ángulo formado entre segmentos (180° = extendido)</option></select></label></div>
+<div id="lamOv" style="display:flex;flex-wrap:wrap;gap:6px 14px;margin:4px 0"><label style="white-space:nowrap">Cuello: <input data-k="A" type="number" step="1" style="width:56px"> <input data-s="A" type="checkbox" checked title="mostrar en la lámina">ver</label><label style="white-space:nowrap">Tronco: <input data-k="B" type="number" step="1" style="width:56px"> <input data-s="B" type="checkbox" checked title="mostrar en la lámina">ver</label><label style="white-space:nowrap">Brazo izq.: <input data-k="C" type="number" step="1" style="width:56px"> <input data-s="C" type="checkbox" checked title="mostrar en la lámina">ver</label><label style="white-space:nowrap">Brazo der.: <input data-k="D" type="number" step="1" style="width:56px"> <input data-s="D" type="checkbox" checked title="mostrar en la lámina">ver</label><label style="white-space:nowrap">Antebrazo izq.: <input data-k="E" type="number" step="1" style="width:56px"> <input data-s="E" type="checkbox" checked title="mostrar en la lámina">ver</label><label style="white-space:nowrap">Antebrazo der.: <input data-k="F" type="number" step="1" style="width:56px"> <input data-s="F" type="checkbox" checked title="mostrar en la lámina">ver</label><label style="white-space:nowrap">Pierna izq. (rodilla): <input data-k="I" type="number" step="1" style="width:56px"> <input data-s="I" type="checkbox" checked title="mostrar en la lámina">ver</label><label style="white-space:nowrap">Pierna der. (rodilla): <input data-k="J" type="number" step="1" style="width:56px"> <input data-s="J" type="checkbox" checked title="mostrar en la lámina">ver</label><label style="white-space:nowrap">Cadera izq.: <input data-k="G" type="number" step="1"style="width:56px"> <input data-s="G" type="checkbox"  title="mostrar en la lámina">ver</label><label style="white-space:nowrap">Cadera der.: <input data-k="H" type="number" step="1" style="width:56px"> <input data-s="H" type="checkbox"  title="mostrar en la lámina">ver</label></div>
+<div class="n" style="display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;margin:4px 0">
+<label>Apoyo izq.: <select id="apoL"><option value="">ninguno</option><option value="codoRodilla">codo en la rodilla</option><option value="manoRodilla">mano en la rodilla</option><option value="manoMuslo">mano en el muslo</option><option value="manoPantorrilla">mano en la pantorrilla</option><option value="manoAbdomen">mano en el abdomen</option></select></label>
+<label>Apoyo der.: <select id="apoR"><option value="">ninguno</option><option value="codoRodilla">codo en la rodilla</option><option value="manoRodilla">mano en la rodilla</option><option value="manoMuslo">mano en el muslo</option><option value="manoPantorrilla">mano en la pantorrilla</option><option value="manoAbdomen">mano en el abdomen</option></select></label>
+<label>Antebrazo izq.: <select id="vertL"><option value="">libre</option><option value="up">vertical ↑</option><option value="down">vertical ↓</option></select></label>
+<label>Antebrazo der.: <select id="vertR"><option value="">libre</option><option value="up">vertical ↑</option><option value="down">vertical ↓</option></select></label>
+<label><input type="checkbox" id="lamFist">Puños cerrados</label></div>
+<div class="n" style="display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;margin:4px 0"><label>Giro del avatar en la vista general(0° = como en la foto): <input type="range" id="lamRot" min="-180" max="180" step="5" value="0" style="vertical-align:middle"> <span id="lamRotV">0°</span></label> <button id="lamAplicar">Aplicar</button> <button id="lamLimpiar">Quitar correcciones</button></div>
+<div id="lamList" style="display:flex;gap:6px;flex-wrap:wrap;margin:4px 0"></div><canvas id="plate" style="max-width:100%;border:1px solid var(--bd)"></canvas></div>
+<div class="box"><b>1.</b> Video: <input type="file" id="f" accept="video/*"> &nbsp; <b>2.</b> Peso de la carga: <select id="kgSel"></select> <input type="number" id="kgTop" value="0" min="0" step="0.5" style="width:70px"> kg <span id="vi" class="n"></span><div class="n">Al subir el video el análisis arranca solo; cambia el peso u cualquier opción y se recalcula al instante.</div></div>
+<details><summary>Ajustes técnicos</summary><fieldset id="op"></fieldset></details>
+<button class="m" id="go" disabled>Analizar de nuevo</button> <progress id="pg" hidden style="width:200px"></progress>
+<div class="n" id="st"></div><div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start"><div style="flex:2 1 480px;min-width:0"><canvas id="pv"></canvas><input type="range" id="sl" min="0" value="0" hidden style="width:100%"><div class="n" id="slh" hidden>Desliza o haz clic en la tabla para ver otro fotograma (línea blanca = vertical).</div></div><div id="fi" class="box" style="flex:1 1 260px" hidden></div></div>
+<div class="box" id="tabsec"><b>Opciones comunes a los métodos (optativas: tilda las que apliquen)</b><div id="com" class="opt"></div>
+<div class="tabs"><button class="tab on" data-t="rula">RULA <i class="dot" id="d_rula"></i></button><button class="tab" data-t="reba">REBA <i class="dot" id="d_reba"></i></button><button class="tab" data-t="owas">OWAS <i class="dot" id="d_owas"></i></button></div>
+<div class="tp" id="tp_rula"><div id="po_rula" class="opt"></div><div id="o_rula"></div></div><div class="tp" id="tp_reba" hidden><div id="po_reba" class="opt"></div><div id="o_reba"></div></div><div class="tp" id="tp_owas" hidden><div id="po_owas" class="opt"></div><div id="o_owas"></div></div></div><section id="res" hidden>
+ <h2>Resultado (peor fotograma y OWAS del ciclo)</h2><div id="sum"></div>
+ <h2>Posturas críticas del ciclo (las peores, en orden de aparición)</h2><div class="n" id="critn"></div><div class="cands" id="crit"></div>
+ <h2>Todos los fotogramas (clic para verlo con su esqueleto)</h2><div id="tw"><table id="tb"></table></div>
+ <p><button id="dlImg" class="m">Descargar imagen con todos los datos (PNG)</button> <button id="dl">Descargar JSON (ángulos + entradas RULA/REBA/OWAS)</button></p>
+</section>
+<p class="n" style="border:1px solid #d97706;border-radius:8px;padding:8px"><b>Aviso:</b> estimación automática desde video; puede tener errores (cámara, oclusiones, ropa). Torsión, inclinación lateral, abducción, muñeca, agarre y carga no se ven en 2D: se ingresan arriba. Debe validarlo un profesional.</p>
+<script type="module">
+let PoseLandmarker,FilesetResolver;const mpReady=import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs").then(m=>{PoseLandmarker=m.PoseLandmarker;FilesetResolver=m.FilesetResolver}).catch(()=>{});
+const WASM="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";const mUrl=k=>`https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_${k}/float16/1/pose_landmarker_${k}.task`;
+const T={"rA":[[[1,2,2,2,2,3,3,3],[2,2,2,2,3,3,3,3],[2,3,3,3,3,3,4,4]],[[2,3,3,3,3,4,4,4],[3,3,3,3,3,4,4,4],[3,4,4,4,4,4,5,5]],[[3,3,4,4,4,4,5,5],[3,4,4,4,4,4,5,5],[4,4,4,4,4,5,5,5]],[[4,4,4,4,4,5,5,5],[4,4,4,4,4,5,5,5],[4,4,4,5,5,5,6,6]],[[5,5,5,5,5,6,6,7],[5,6,6,6,6,7,7,7],[6,6,6,7,7,7,7,8]],[[7,7,7,7,7,8,8,9],[8,8,8,8,8,9,9,9],[9,9,9,9,9,9,9,9]]],"rB":[[1,3,2,3,3,4,5,5,6,6,7,7],[2,3,2,3,4,5,5,5,6,7,7,7],[3,3,3,4,4,5,5,6,6,7,7,7],[5,5,5,6,6,7,7,7,7,7,8,8],[7,7,7,7,7,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,9,9,9,9,9]],"rC":[[1,2,3,3,4,5,5],[2,2,3,4,4,5,5],[3,3,3,4,4,5,6],[3,3,3,4,5,6,6],[4,4,4,5,6,7,7],[4,4,5,6,6,7,7],[5,5,6,6,7,7,7],[5,5,6,7,7,7,7]],"bA":[[[1,2,3,4],[1,2,3,4],[3,3,5,6]],[[2,3,4,5],[3,4,5,6],[4,5,6,7]],[[2,4,5,6],[4,5,6,7],[5,6,7,8]],[[3,5,6,7],[5,6,7,8],[6,7,8,9]],[[4,6,7,8],[6,7,8,9],[7,8,9,9]]],"bB":[[[1,2,2],[1,2,3]],[[1,2,3],[2,3,4]],[[3,4,5],[4,5,5]],[[4,5,5],[5,6,7]],[[6,7,8],[7,8,8]],[[7,8,8],[8,9,9]]],"bC":[[1,1,1,2,3,3,4,5,6,7,7,7],[1,2,2,3,4,4,5,6,6,7,7,8],[2,3,3,3,4,5,6,7,7,8,8,8],[3,4,4,4,5,6,7,8,8,9,9,9],[4,4,4,5,6,7,8,8,9,9,9,9],[6,6,6,7,8,8,9,9,10,10,10,10],[7,7,7,8,9,9,9,10,10,11,11,11],[8,8,8,9,10,10,10,10,10,11,11,11],[9,9,9,10,10,10,11,11,11,12,12,12],[10,10,10,11,11,11,11,12,12,12,12,12],[11,11,11,11,12,12,12,12,12,12,12,12],[12,12,12,12,12,12,12,12,12,12,12,12]],"owas":[[[[1,1,1],[1,1,1],[1,1,1],[2,2,2],[2,2,2],[1,1,1],[1,1,1]],[[1,1,1],[1,1,1],[1,1,1],[2,2,2],[2,2,2],[1,1,1],[1,1,1]],[[1,1,1],[1,1,1],[1,1,1],[2,2,3],[2,2,3],[1,1,1],[1,1,2]]],[[[2,2,3],[2,2,3],[2,2,3],[3,3,3],[3,3,3],[2,2,2],[2,3,3]],[[2,2,3],[2,2,3],[2,3,3],[3,4,4],[3,4,4],[3,3,4],[2,3,4]],[[3,3,4],[2,2,3],[3,3,3],[3,4,4],[4,4,4],[4,4,4],[2,3,4]]],[[[1,1,1],[1,1,2],[1,2,2],[3,3,3],[4,4,4],[1,1,1],[1,1,1]],[[2,2,3],[1,1,2],[1,1,2],[4,4,4],[4,4,4],[3,3,3],[1,1,1]],[[2,2,3],[1,1,2],[2,3,3],[4,4,4],[4,4,4],[4,4,4],[1,1,1]]],[[[2,3,3],[2,2,3],[2,2,3],[4,4,4],[4,4,4],[4,4,4],[2,3,4]],[[3,3,4],[2,3,4],[3,3,4],[4,4,4],[4,4,4],[4,4,4],[2,3,4]],[[4,4,4],[2,3,4],[3,3,4],[4,4,4],[4,4,4],[4,4,4],[2,3,4]]]]}; // tablas RULA/REBA/OWAS copiadas de calculations.ts
+const $=id=>document.getElementById(id),clamp=(v,a,b)=>Math.max(a,Math.min(b,v)),fin=Number.isFinite;
+const NUM=[['nCrit','Nº posturas críticas',3,1,1],['gapCrit','Separación mín. (s)',1.5,.5,.5],['fps','Muestreo (fps)',6,2,1],['neckOff','Cuello neutro (°)',10,0,1],['latMax','Límite lateral',.5,.1,.05],['visMin','Visib. mín.',.4,.1,.05]];
+const CHKS=['seated','sitK','oneLeg','trTw','trSb','neckTw','neckSb','abd','shR','armSup','wDev','crossMid','wTw','muscle','shock','stat','rep','unst','incl'];
+const chk=(i,l)=>`<label><input type="checkbox" id="${i}">${l}</label>`,sel=(i,l,a)=>`<label>${l} <select id="${i}">${a.map(([v,t])=>`<option value="${v}">${t}</option>`).join('')}</select></label>`;
+$('op').innerHTML=NUM.map(([i,l,v,a,s])=>`<label>${l} <input type="number" id="${i}" value="${v}" min="${a}" step="${s}"></label>`).join('')+chk('incl','Incluir vistas poco laterales')+sel('side','Lado',[['auto','Auto'],['R','Derecho'],['L','Izquierdo']])+sel('mdl','Modelo',[['full','Normal'],['heavy','Pesado']]);
+$('com').innerHTML=[['seated','Sentado con apoyo (RULA: tronco apoyado)'],['sitK','Sentado: rodilla >60° sin +2 (REBA, n.b. del artículo)'],['oneLeg','Apoyo en una pierna'],['trTw','Tronco girado'],['trSb','Tronco inclinado lateral'],['neckTw','Cuello girado'],['neckSb','Cuello inclinado lateral'],['abd','Brazo abducido'],['shR','Hombro elevado'],['armSup','Brazo apoyado'],['wDev','Muñeca desviada/torcida']].map(([i,l])=>chk(i,l)).join('')+'<span class="n"> · torsión,inclinación y abducción también se estiman solas del video</span>';
+$('po_rula').innerHTML='<b>Opciones RULA:</b> '+chk('crossMid','Antebrazo cruza línea media / trabaja a un lado')+sel('wrist','Muñeca',[[1,'1 · neutra'],[2,'2 ·0–15°'],[3,'3 · >15°']])+chk('wTw','Giro de muñeca')+chk('muscle','Uso muscular (estático >1 min o repetido >4/min)')+sel('lt','Tipo de carga',[['i','Intermitente'],['s','Estática/repetida']]);
+$('po_reba').innerHTML='<b>Opciones REBA:</b> '+sel('wristR','Muñeca',[[1,'1 · 0–15°'],[2,'2 · >15°']])+sel('coupling','Agarre',[[0,'0 · Bueno'],[1,'1 · Regular'],[2,'2 · Malo'],[3,'3 · Inaceptable']])+chk('shock','Carga con golpes/sacudidas')+chk('stat','Actividad estática >1 min')+chk('rep','Repetida >4/min')+chk('unst','Cambios bruscos de postura');
+$('po_owas').innerHTML='<b>Opciones OWAS (por defecto automático):</b> '+sel('ob','Espalda',[['auto','Auto'],[1,'1 recta'],[2,'2 inclinada'],[3,'3 girada/lateral'],[4,'4 inclinada y girada']])+sel('oa','Brazos',[['auto','Auto'],[1,'1 ambos bajo hombros'],[2,'2 uno sobre hombro'],[3,'3 ambos sobre hombros']])+sel('ol','Piernas',[['auto','Auto'],[1,'1 sentado'],[2,'2 de pie recto'],[3,'3 una pierna recta'],[4,'4 ambas flexionadas'],[5,'5 una flexionada'],[6,'6 rodillas'],[7,'7 caminando']]);
+const KG=[0,1,2,3,5,7.5,10,12.5,15,20,25,30,40];$('kgSel').innerHTML=KG.map(v=>`<option value="${v}">${v?v+' kg':'Sin carga'}</option>`).join('')+'<option value="">Otro…</option>';
+$('kgSel').onchange=()=>{if($('kgSel').value!=='')$('kgTop').value=$('kgSel').value;$('kgTop').dispatchEvent(new Event('input'))};
+$('kgTop').addEventListener('input',()=>{const v=$('kgTop').value;$('kgSel').value=v!==''&&KG.includes(+v)?v:''});
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===b));for(const k of['rula','reba','owas'])$('tp_'+k).hidden=k!==b.dataset.t});
+const O=()=>{const r={kg:+$('kgTop').value||0};for(const[i]of NUM)r[i]=+$(i).value||0;for(const i of CHKS)r[i]=$(i).checked;for(const i of['lt','ol','side','ob','oa'])r[i]=$(i).value;for(const i of['wrist','wristR','coupling'])r[i]=+$(i).value;return r};
+const IX={R:{s:12,e:14,w:16,h:24,k:26,a:28,ear:8},L:{s:11,e:13,w:15,h:23,k:25,a:27,ear:7}};
+const dot=(a,b)=>a.x*b.x+a.y*b.y,deg=r=>r*180/Math.PI;
+function ang(a,b,c){const u={x:a.x-b.x,y:a.y-b.y},v={x:c.x-b.x,y:c.y-b.y};return 180-deg(Math.acos(clamp(dot(u,v)/(Math.hypot(u.x,u.y)*Math.hypot(v.x,v.y)||1),-1,1)))}
+// ---------- Medición 2D sagital (ángulos con signo: + = hacia adelante) ----------
+function measure(lm,W,H,side,o,wl){
+ const I=IX[side],P=i=>({x:lm[i].x*W,y:lm[i].y*H,v:lm[i].visibility??1}),out={ok:false,why:''};
+ const s=P(I.s),e=P(I.e),w=P(I.w),h=P(I.h),ear=P(I.ear),Ls=P(11),Rs=P(12),Lh=P(23),Rh=P(24);
+ if(Math.min(s.v,h.v)<o.visMin){out.why='vis';return out}
+ const ms={x:(Ls.x+Rs.x)/2,y:(Ls.y+Rs.y)/2},mh={x:(Lh.x+Rh.x)/2,y:(Lh.y+Rh.y)/2},L=Math.hypot(ms.x-mh.x,ms.y-mh.y);
+ if(L<10){out.why='vis';return out}
+ const u={x:(ms.x-mh.x)/L,y:(ms.y-mh.y)/L};                       // eje del tronco (cadera→hombros)
+ out.ratio=Math.abs(Ls.x-Rs.x)/L;out.lateral=out.ratio<o.latMax;
+ let fx=0;const nose=P(0);if(nose.v>.3)fx+=nose.x-(P(7).x+P(8).x)/2;  // hacia dónde mira: nariz vs orejas + dirección de los pies
+ for(const[a,b]of[[29,31],[30,32]])if((lm[a].visibility??1)>.3&&(lm[b].visibility??1)>.3)fx+=(lm[b].x-lm[a].x)*W*.5;
+ if(Math.abs(fx)<.01*W){out.why='face';return out}
+ const f=Math.sign(fx),n={x:-u.y*f,y:u.x*f},d={x:-u.x,y:-u.y};     // n = "adelante" en el marco del tronco
+ out.trunk=deg(Math.atan2(u.x*f,-u.y));                            // respecto ala vertical de la imagen
+ const a={x:e.x-s.x,y:e.y-s.y};if(Math.hypot(a.x,a.y)<5){out.why='vis';return out}
+ out.upper=deg(Math.atan2(dot(a,n),dot(a,d)));                      // brazo respecto al tronco
+ out.elbow=ang(s,e,w);out.elbowInt=180-out.elbow;out.armLow=Math.min(e.v,w.v)<o.visMin;
+ if(ear.v>=.3){const hv={x:ear.x-s.x,y:ear.y-s.y};out.neck=deg(Math.atan2(dot(hv,n),dot(hv,u)))-o.neckOff}
+ const kn=(a,b,c)=>Math.min(lm[a].visibility??1,lm[b].visibility??1,lm[c].visibility??1)<o.visMin?NaN:ang(P(a),P(b),P(c));
+ out.kR=kn(24,26,28);out.kL=kn(23,25,27);
+ out.armsUp=(((lm[15].visibility??1)>.3&&P(15).y<Ls.y)?1:0)+(((lm[16].visibility??1)>.3&&P(16).y<Rs.y)?1:0);
+ if(wl){try{const V=i=>[wl[i].x,wl[i].y,wl[i].z],sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],d3=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2],un=a=>{const l=Math.hypot(...a)||1;return[a[0]/l,a[1]/l,a[2]/l]},pj=(a,u)=>sub(a,u.map(x=>x*d3(a,u)));
+  const mid=(i,j)=>V(i).map((x,k)=>(x+V(j)[k])/2),up=un(sub(mid(11,12),mid(23,24))),r=un(pj(sub(V(12),V(11)),up)),hr=un(sub(V(24),V(23))),rh=un(pj(hr,up)),a3=sub(V(I.e),V(I.s)),fc=un([r[1]*up[2]-r[2]*up[1],r[2]*up[0]-r[0]*up[2],r[0]*up[1]-r[1]*up[0]]);
+  out.twist=deg(Math.acos(clamp(d3(r,rh),-1,1)));out.side=deg(Math.asin(clamp(Math.abs(d3(up,hr)),0,1)));out.abdD=deg(Math.atan2(Math.abs(d3(a3,r)),Math.hypot(d3(a3,fc),d3(a3,up))));
+  out.trTw=out.twist>25;out.trSb=out.side>20;out.abd=out.abdD>35}catch(e){}}
+ out.f=f;out.ok=true;return out}
+const med=a=>{const b=a.filter(fin).sort((x,y)=>x-y);return b.length?b[b.length>>1]:NaN};
+const smooth=M=>M.map((m,i)=>{if(!m.ok)return m;const w=[M[i-1],m,M[i+1]].filter(q=>q&&q.ok),r={...m};for(const k of['trunk','upper','elbow','neck','kR','kL'])r[k]=med(w.map(q=>q[k]));return r});
+// ---------- Puntuación ----------
+const tA=(u,l,w,t)=>T.rA[clamp(u,1,6)-1][clamp(l,1,3)-1][(clamp(w,1,4)-1)*2+clamp(t,1,2)-1];
+function score(m,o){
+ const sU=f=>f>90?4:f>45?3:(f>20||f<-20)?2:1,lo0=m.elbow>=60&&m.elbow<=100?1:2,at=Math.abs(m.trunk),k=Math.max(m.kR||0,m.kL||0),tw=o.trTw||m.trTw,sb=o.trSb||m.trSb,ab=o.abd||m.abd,nt=(o.neckTw||o.neckSb)?1:0;
+ // RULA
+ const up=clamp(sU(m.upper)+(o.shR?1:0)+(ab?1:0)-(o.armSup?1:0),1,6),lo=clamp(lo0+(o.crossMid?1:0),1,3),wr=clamp(o.wrist+(o.wDev?1:0),1,4),tws=o.wTw?2:1;
+ const nk=fin(m.neck)?(m.neck<-10?4:m.neck<=10?1:m.neck<=20?2:3):2,nR=clamp(nk+(o.neckTw?1:0)+(o.neckSb?1:0),1,6),trR=clamp((o.seated||at<5?1:at<=20?2:at<=60?3:4)+(tw?1:0)+(sb?1:0),1,6);
+ const mu=o.muscle?1:0,fo=o.shock?3:o.kg<2?0:o.kg<10?(o.lt==='i'?1:2):(o.lt==='i'?2:3),lgR=o.oneLeg?2:1;
+ const A=tA(up,lo,wr,tws),B=T.rB[nR-1][(trR-1)*2+lgR-1],C=A+mu+fo,D=B+mu+fo,rF=T.rC[clamp(C,1,8)-1][clamp(D,1,7)-1];
+ // REBA
+ const tb=at<5?1:m.trunk>0?(at<=20?2:at<=60?3:4):(at<=20?2:3),tbB=clamp(tb+((tw||sb)?1:0),1,5),nbB=clamp((!fin(m.neck)||(m.neck>=-10&&m.neck<=20)?1:2)+nt,1,3);
+ const lg=clamp((o.oneLeg?2:1)+(k>60?(o.sitK?0:2):k>=30?1:0),1,4),rA=T.bA[tbB-1][nbB-1][lg-1],ld=(o.kg<5?0:o.kg<=10?1:2)+(o.shock?1:0),sA=clamp(rA+ld,1,12);
+ const uR=clamp((m.upper<-20?2:m.upper<=20?1:m.upper<=45?2:m.upper<=90?3:4)+(o.shR?1:0)+(ab?1:0)-(o.armSup?1:0),1,6),wrB=clamp(o.wristR+(o.wDev?1:0),1,3);
+ const sB=clamp(T.bB[uR-1][lo0-1][wrB-1]+o.coupling,1,12),act=(o.stat?1:0)+(o.rep?1:0)+(o.unst?1:0),bF=clamp(T.bC[sA-1][sB-1]+act,1,15);
+ return{rula:{up,lo,wr,tw:tws,nR,trR,lg:lgR,mu,fo,A,B,C,D,final:rF,lvl:rF<=2?1:rF<=4?2:rF<=6?3:4},reba:{tbB,nbB,lg,uR,lR:lo0,wr:wrB,cp:o.coupling,ld,sA,sB,act,final:bF,lvl:bF<2?'despreciable':bF<4?'bajo':bF<8?'medio':bF<11?'alto':'muy alto'},
+  inp:{up:sU(m.upper),lo:lo0,nk,tr:at<5?1:at<=20?2:at<=60?3:4,tb,nb:nbB,k}}}
+function owas(m,o){const at=Math.abs(m.trunk),bent=at>20,tw=o.trTw||m.trTw||o.trSb||m.trSb,back=o.ob!=='auto'?+o.ob:bent&&tw?4:tw?3:bent?2:1,arms=o.oa!=='auto'?+o.oa:clamp(1+(m.armsUp||0),1,3);
+ let legs;if(o.ol!=='auto')legs=+o.ol;else if(o.seated)legs=1;else{const a=m.kR>30,b=m.kL>30;legs=a&&b?4:a||b?5:o.oneLeg?3:2}
+ const load=o.kg<10?1:o.kg<=20?2:3;return{back,arms,legs,load,cat:T.owas[back-1][arms-1][legs-1][load-1]}}
+// ---------- Video / pose ----------
+let cur=0,video,lmk,mk='',S=[],SW=[],TS=[],W=0,H=0,vis={R:0,L:0},SM=[],M=[],side='R',worst=-1,OWo=[],crit=[],PH={},ctok=0,vq=Promise.resolve(),FC=new Map();
+function rawFrame(i){if(FC.has(i))return Promise.resolve(FC.get(i));const job=vq.then(async()=>{if(FC.has(i))return FC.get(i);await seek(video,TS[i]);const cv=document.createElement('canvas');cv.width=W;cv.height=H;cv.getContext('2d').drawImage(video,0,0,W,H);FC.set(i,cv);if(FC.size>30)FC.delete(FC.keys().next().value);return cv});vq=job.catch(()=>{});return job}
+function seek(v,t){return new Promise(res=>{if(Math.abs(v.currentTime-t)<1e-3)return res();let d=0;const ok=()=>{if(d)return;d=1;res()},
+ ev=()=>{v.removeEventListener('seeked',ev);if(v.requestVideoFrameCallback){v.requestVideoFrameCallback(ok);setTimeout(ok,200)}else setTimeout(ok,80)};
+ v.addEventListener('seeked',ev);setTimeout(ok,3500);v.currentTime=t})}
+async function getLM(){const k=$('mdl').value;if(lmk&&mk===k)return lmk;if(lmk)try{lmk.close()}catch(e){}
+ await mpReady;if(!PoseLandmarker)throw new Error('MediaPipe no está disponible (sin conexión)');const fs=await FilesetResolver.forVisionTasks(WASM);   // CPU apropósito: la GPU a veces devuelve "sin persona" sin dar error (p. ej. en GitHubPages)
+ lmk=await PoseLandmarker.createFromOptions(fs,{baseOptions:{modelAssetPath:mUrl(k),delegate:'CPU'},runningMode:'IMAGE',numPoses:1,minPoseDetectionConfidence:.3,minPosePresenceConfidence:.3,minTrackingConfidence:.3});mk=k;return lmk}
+const pv=$('pv'),pg=pv.getContext('2d');
+function skel(p,sd,g=pg){const X=i=>p[i].x*g.canvas.width,Y=i=>p[i].y*g.canvas.height;g.lineWidth=2;g.strokeStyle='#38bdf8';
+ for(const[a,b]of[[11,12],[11,23],[12,24],[23,24],[23,25],[24,26],[25,27],[26,28],[11,13],[13,15],[12,14],[14,16]]){g.beginPath();g.moveTo(X(a),Y(a));g.lineTo(X(b),Y(b));g.stroke()}
+ g.lineWidth=4;const I=IX[sd];for(const[a,b,c]of[[I.h,I.s,'#facc15'],[I.s,I.e,'#ef4444'],[I.e,I.w,'#f97316'],[I.s,I.ear,'#a78bfa']]){g.strokeStyle=c;g.beginPath();g.moveTo(X(a),Y(a));g.lineTo(X(b),Y(b));g.stroke()}}
+function arc(g,c,p1,p2,r,col){const a0=Math.atan2(p1.y-c.y,p1.x-c.x);let d=Math.atan2(p2.y-c.y,p2.x-c.x)-a0;while(d>Math.PI)d-=2*Math.PI;while(d<-Math.PI)d+=2*Math.PI;
+ g.fillStyle=col+'66';g.strokeStyle=col;g.lineWidth=3;g.beginPath();g.moveTo(c.x,c.y);g.arc(c.x,c.y,r,a0,a0+d,d<0);g.closePath();g.fill();g.stroke()}
+function lab(g,x,y,t,col){const fs=Math.max(14,Math.round(g.canvas.width/42));g.font='bold '+fs+'px system-ui';const w=g.measureText(t).width;g.fillStyle='#000c';g.fillRect(x-4,y-fs,w+8,fs+7);g.fillStyle=col;g.fillText(t,x,y)}
+// Dibuja el esqueleto y cada ángulo SOBRE el fotograma; cada valor se ancla a su arco y se coloca sin pisar a otro
+function ann(g,p,m,sd){skel(p,sd,g);if(!m||!m.ok)return;const Wc=g.canvas.width,Hc=g.canvas.height,I=IX[sd],P=i=>({x:p[i].x*Wc,y:p[i].y*Hc}); const s=P(I.s),e=P(I.e),w=P(I.w),ear=P(I.ear),ms={x:(P(11).x+P(12).x)/2,y:(P(11).y+P(12).y)/2},mh={x:(P(23).x+P(24).x)/2,y:(P(23).y+P(24).y)/2};
+ const L=Math.hypot(ms.x-mh.x,ms.y-mh.y),u={x:(ms.x-mh.x)/L,y:(ms.y-mh.y)/L},f=m.f||1,d=v=>Number.isFinite(v)?v.toFixed(0)+'°':'—',fs=Math.max(14,Math.round(Wc/42)); const placed=[{x:0,y:0,w:Wc,h:fs+12}];   // franja reservada al título
+ const bis=(c,p1,p2,r)=>{const a0=Math.atan2(p1.y-c.y,p1.x-c.x);let dd=Math.atan2(p2.y-c.y,p2.x-c.x)-a0;while(dd>Math.PI)dd-=2*Math.PI;while(dd<-Math.PI)dd+=2*Math.PI;return{x:c.x+r*Math.cos(a0+dd/2),y:c.y+r*Math.sin(a0+dd/2)}}; const put=(a,t,col)=>{g.font='bold '+fs+'px system-ui';const w=g.measureText(t).width+8,h=fs+7;let best=null;
+  for(let k=0;k<14&&!best;k++){const dy=k*(h+2);for(const[dx,sy]of[[10,dy],[10,-dy],[-w-10,dy],[-w-10,-dy]].sort((x,y)=>f>0?y[0]-x[0]:x[0]-y[0])){const x=a.x+dx,y=a.y+sy,r={x:x-4,y:y-fs,w,h};
+   if(r.x<0||r.y<0||r.x+w>Wc||r.y+h>Hc||placed.some(q=>r.x<q.x+q.w&&r.x+r.w>q.x&&r.y<q.y+q.h&&r.y+r.h>q.y))continue;best={x,y,r};break}}
+  if(!best)best={x:clamp(a.x+10,0,Wc-w),y:clamp(a.y,fs,Hc-8)};if(best.r)placed.push(best.r);
+  g.strokeStyle=col;g.lineWidth=1.5;g.beginPath();g.moveTo(a.x,a.y);g.lineTo(best.x-4+(best.x<a.x?w:0),best.y-fs/2);g.stroke();lab(g,best.x,best.y,t,col)};
+ g.setLineDash([8,6]);g.strokeStyle='#fff';g.lineWidth=2;g.beginPath();g.moveTo(mh.x,mh.y);g.lineTo(mh.x,mh.y-L*.8);g.stroke();g.setLineDash([]);   // vertical de referencia
+ const up={x:mh.x,y:mh.y-1},dn={x:s.x-u.x,y:s.y-u.y},nu={x:s.x+u.x,y:s.y+u.y}; arc(g,mh,up,ms,L*.4,'#facc15');arc(g,s,dn,e,L*.28,'#ef4444');arc(g,e,s,w,L*.16,'#f97316');if(Number.isFinite(m.neck))arc(g,s,nu,ear,L*.22,'#a78bfa');
+ put(bis(mh,up,ms,L*.4),'Tronco '+d(m.trunk),'#facc15');put(bis(s,dn,e,L*.28),'Brazo '+d(m.upper),'#ef4444');put(bis(e,s,w,L*.16),'Codo '+d(m.elbowInt),'#f97316'); if(Number.isFinite(m.neck))put(bis(s,nu,ear,L*.22),'Cuello '+d(m.neck),'#c4b5fd');
+ for(const[k,v,n]of[[26,m.kR,'Rod.D'],[25,m.kL,'Rod.I']])if(Number.isFinite(v))put(P(k),n+' '+d(v),'#86efac')}
+$('f').addEventListener('change',async e=>{const f=e.target.files[0];if(!f)return;video=document.createElement('video');video.muted=true;video.playsInline=true;video.preload='auto';video.src=URL.createObjectURL(f);
+ await new Promise((r,j)=>{video.addEventListener('loadeddata',r,{once:true});video.addEventListener('error',()=>j(new Error('No se pudo leer el video (usa MP4/H.264 o WebM)')),{once:true})}).catch(x=>{$('st').innerHTML='<span class=err>'+x.message+'</span>'});
+ $('vi').textContent=`${f.name} · ${video.videoWidth}×${video.videoHeight} · ${video.duration.toFixed(1)} s`;$('go').disabled=false;$('go').click()});
+$('go').onclick=async()=>{try{FC.clear();$('go').disabled=true;$('res').hidden=true;$('pg').hidden=false;$('st').textContent='Cargando modelo de pose…';
+ const lm=await getLM(),sc=Math.min(1,960/video.videoWidth);W=Math.round(video.videoWidth*sc);H=Math.round(video.videoHeight*sc);
+ const cv=document.createElement('canvas');cv.width=pv.width=W;cv.height=pv.height=H;const g=cv.getContext('2d');
+ const step=1/clamp(+$('fps').value||6,2,20),n=Math.max(1,Math.floor(video.duration/step)+1);S=[];SW=[];TS=[];vis={R:0,L:0};let det=0;
+ for(let k=0;k<n;k++){const t=Math.min(video.duration-.01,k*step);await seek(video,t);g.drawImage(video,0,0,W,H);
+  const r=lm.detect(cv),p=r.landmarks&&r.landmarks[0];S.push(p||null);SW.push((r.worldLandmarks&&r.worldLandmarks[0])||null);TS.push(t);pg.drawImage(cv,0,0);
+  if(p){det++;ann(pg,p,measure(p,W,H,vis.R>=vis.L?'R':'L',O(),SW[SW.length-1]),vis.R>=vis.L?'R':'L');for(const sd of['R','L']){const I=IX[sd];vis[sd]+=['s','e','w','h','k','a'].reduce((a,q)=>a+(p[I[q]].visibility??1),0)/6}}
+  $('pg').value=(k+1)/n;$('st').textContent=`Analizando ${k+1}/${n} · personas detectadas: ${det}`;if(k%3==0)await new Promise(r=>setTimeout(r))}
+ $('pg').hidden=true;$('st').innerHTML=det?`Listo: persona detectada en ${det}/${n} fotogramas.`:'<span class=err>No se detectó ninguna persona. Revisa que el cuerpo completo sea visible, que haya buena luz y prueba el modelo Pesado.</span>';
+ if(det)render()}catch(err){$('st').innerHTML='<span class=err>Error: '+err.message+'</span>';console.error(err);$('pg').hidden=true}finally{$('go').disabled=false}};
+document.querySelectorAll('input,select').forEach(el=>{if(el.type!=='file'&&el.id!=='sl'&&el.id!=='kgSel')el.addEventListener('input',()=>{if(S.length)render()})});
+const f0=v=>fin(v)?v.toFixed(0)+'°':'—',cat=['','1','2','3','4'];
+function render(){const o=O();side=o.side==='auto'?(vis.R>=vis.L?'R':'L'):o.side;
+ M=S.map((p,i)=>p?measure(p,W,H,side,o,SW[i]):{ok:false,why:'none'});SM=M.map(m=>({...m}));
+ SM.forEach(m=>{if(m.ok){Object.assign(m,score(m,o));m.ow=owas(m,o)}});
+ const el=SM.map((m,i)=>m.ok&&(m.lateral||o.incl)?i:-1).filter(i=>i>=0);
+ const why={none:'sin persona',vis:'tronco poco visible',face:'no se sabe hacia dónde mira'};
+ $('tb').innerHTML='<tr><th>t (s)</th><th>Estado</th><th>Tronco</th><th>Brazo</th><th>Codo</th><th>Cuello</th><th>Rod. D</th><th>Rod. I</th><th>RULA</th><th>REBA</th><th>OWAS</th></tr>'+SM.map((m,i)=>m.ok?
+  `<tr data-i="${i}"><td>${TS[i].toFixed(2)}</td><td>${m.lateral?'ok':'poco lateral'}${m.armLow?' · brazo tapado':''}</td><td>${f0(m.trunk)}</td><td>${f0(m.upper)}</td><td>${f0(m.elbowInt)}</td><td>${f0(m.neck)}</td><td>${f0(m.kR)}</td><td>${f0(m.kL)}</td><td style="background:${COL[m.rula.lvl]}55">${m.rula.final}</td><td style="background:${COL[rebaL(m.reba.final)]}55">${m.reba.final}</td><td style="background:${COL[m.ow.cat]}55">${m.ow.cat}</td></tr>`:
+  `<tr data-i="${i}"><td>${TS[i].toFixed(2)}</td><td colspan="10">${why[m.why]||'—'}</td></tr>`).join('');
+ if(!el.length){$('sum').innerHTML='<div class="box err">No hay fotogramas utilizables. Marca "Incluir vistas poco laterales", sube el límite lateral o baja la visibilidad mínima.</div>';$('res').hidden=false;return}
+ const sev=m=>m.reba.final*100+m.rula.final*10+Math.max(0,m.trunk)/12+Math.max(0,m.upper)/30+(m.ow.cat*5),order=el.slice().sort((a,b)=>sev(SM[b])-sev(SM[a]));
+ worst=order[0];const pick=[];for(const i of order){if(sev(SM[i])<.8*sev(SM[worst]))break;if(pick.every(j=>Math.abs(TS[i]-TS[j])>=Math.max(.3,o.gapCrit)))pick.push(i);if(pick.length>=Math.max(1,Math.round(o.nCrit)))break}
+ crit=pick.sort((a,b)=>TS[a]-TS[b]);PH={};crit.forEach((i,k)=>{PH[i]=crit.length===1?'Postura más crítica':k===0?'Inicio del ciclo · levantamiento':k===crit.length-1?'Final del ciclo · depósito':'Traslado / intermedia'});
+ const g={};el.forEach(i=>{const w=SM[i].ow,k=[w.back,w.arms,w.legs,w.load].join('-');(g[k]=g[k]||{back:w.back,arms:w.arms,legs:w.legs,load:w.load,cat:w.cat,n:0}).n++});
+ OWo=Object.entries(g).map(([k,v])=>({taskPhase:'Video '+k,back:v.back,arms:v.arms,legs:v.legs,load:v.load,frequencyCount:v.n,categoria:v.cat}));
+ const mc=Math.max(...OWo.map(x=>x.categoria)),w=SM[worst];
+ $('sum').innerHTML=`<div class="box" style="border-width:2px"><div class="big" style="font-size:22px">RULA ${w.rula.final} <i class="dot" style="background:${COL[w.rula.lvl]}"></i> · REBA ${w.reba.final} <i class="dot"style="background:${COL[rebaL(w.reba.final)]}"></i> · OWAS cat. ${mc} <i class="dot" style="background:${COL[mc]}"></i></div><div class="n">Torsión, inclinación lateral y abducción estimadas del video${o.kg?'':' · sin peso de carga (0 kg)'}</div></div><div class="box"><b>${crit.length} postura${crit.length>1?'s':''} crítica${crit.length>1?'s':''} detectada${crit.length>1?'s':''}:</b> ${crit.map(i=>`${PH[i]} (t=${TS[i].toFixed(1)} s · RULA ${SM[i].rula.final} · REBA ${SM[i].reba.final} ·OWAS ${SM[i].ow.cat})`).join(' · ')}</div><div class="box"><div class="big">Peorfotograma: t = ${TS[worst].toFixed(2)} s · lado ${side==='R'?'derecho':'izquierdo'}</div>
+ Tronco ${f0(w.trunk)} · Brazo ${f0(w.upper)} · Codo ${f0(w.elbowInt)} · Cuello ${f0(w.neck)} · Rodillas D/I ${f0(w.kR)}/${f0(w.kL)}</div>
+ <div class="box"><b>RULA = ${w.rula.final}</b> (nivel de acción ${w.rula.lvl}) · brazo ${w.rula.up} · antebrazo ${w.rula.lo} · cuello ${w.rula.nR} · tronco ${w.rula.trR} · A=${w.rula.A} B=${w.rula.B} C=${w.rula.C} D=${w.rula.D}</div>
+ <div class="box"><b>REBA = ${w.reba.final}</b> (riesgo ${w.reba.lvl}) · tronco ${w.reba.tbB} · cuello ${w.reba.nbB} · piernas ${w.reba.lg} · brazo ${w.reba.uR}· antebrazo ${w.reba.lR} · A=${w.reba.sA} B=${w.reba.sB} actividad +${w.reba.act}</div>
+ <div class="box"><b>OWAS</b>: categoría máxima ${mc} · ${OWo.map(x=>`${x.back}-${x.arms}-${x.legs}-${x.load} → cat ${x.categoria} (${(100*x.frequencyCount/el.length).toFixed(0)}%)`).join(' · ')}<div class="n">Código = espalda-brazos-piernas-carga. Espalda 2 = inclinada >20°; brazos = muñecas por encima del hombro.</div></div>`;
+ crit.forEach(i=>{const td=document.querySelector(`#tb tr[data-i="${i}"] td`);if(td)td.textContent+=' ⚠'});
+ $('critn').textContent='La fase se asigna por orden de aparición (primera crítica ≈ levantar, última ≈ depositar): confírmalo mirando la imagen. Clic en una tarjeta para ver su detalle completo.';
+ $('crit').innerHTML='';const tk=++ctok;
+ crit.forEach(i=>{const m=SM[i],dv=document.createElement('div');dv.className='cand'+(i===worst?' on':'');dv.dataset.i=i;const cv=document.createElement('canvas');cv.width=480;cv.height=Math.round(480*H/W);dv.appendChild(cv);
+  const cp=document.createElement('div');cp.className='n';cp.innerHTML=`<b>${PH[i]}</b>t= ${TS[i].toFixed(2)} s${i===worst?' · <b style="display:inline">la más desfavorable</b>':''}<br>RULA ${m.rula.final} <i class="dot" style="background:${COL[m.rula.lvl]}"></i> · REBA ${m.reba.final} <i class="dot"style="background:${COL[rebaL(m.reba.final)]}"></i> · OWAS ${m.ow.cat} <i class="dot" style="background:${COL[m.ow.cat]}"></i><br>Tronco ${f0(m.trunk)} · Brazo ${f0(m.upper)} · Codo ${f0(m.elbowInt)} · Cuello ${f0(m.neck)}`;dv.appendChild(cp);
+  dv.onclick=()=>{show(i);pv.scrollIntoView({behavior:'smooth',block:'start'})};$('crit').appendChild(dv);
+  rawFrame(i).then(fr=>{if(tk!==ctok)return;const g=cv.getContext('2d');g.drawImage(fr,0,0,cv.width,cv.height);if(S[i])ann(g,S[i],M[i],side)})});
+ $('res').hidden=false;$('sl').max=S.length-1;$('sl').hidden=false;$('slh').hidden=false;show(worst);pv.scrollIntoView({behavior:'smooth',block:'start'})}
+const WHY={none:'sin persona detectada',vis:'tronco poco visible',face:'no se sabe hacia dónde mira'};
+function ficha(i){const m=SM[i],o=O(),d=v=>fin(v)?v.toFixed(0)+'°':'—',T0=['t = '+TS[i].toFixed(2)+' s · lado '+(side==='R'?'derecho':'izquierdo'),'h'];
+ if(!m.ok)return[T0,[WHY[m.why]||'sin datos']];const r=m.rula,b=m.reba,w=m.ow,mk=(v,f)=>f?' → +1':'';
+ return[T0,m.lateral?['vista lateral correcta']:['VISTA POCO LATERAL: ángulos poco fiables'],
+ ['ÁNGULOS MEDIDOS','h'],['Tronco (vs vertical): '+d(m.trunk)],['Brazo (vs tronco): '+d(m.upper)],['Codo (brazo-antebrazo): '+d(m.elbowInt)],['Cuello: '+d(m.neck)],['Rodilla D / I: '+d(m.kR)+' / '+d(m.kL)],
+ ['Torsión tronco: '+d(m.twist)+mk(0,m.trTw||o.trTw)],['Inclinación lateral: '+d(m.side)+mk(0,m.trSb||o.trSb)],['Abducción brazo: '+d(m.abdD)+mk(0,m.abd||o.abd)],['Carga: '+o.kg+' kg'+(o.kg?'':' (no ingresada)')],
+ ['RULA = '+r.final+' · nivel de acción '+r.lvl,'h'],['Brazo '+r.up+' · Antebrazo '+r.lo+' · Muñeca '+r.wr],['Cuello '+r.nR+' · Tronco '+r.trR+' · Piernas '+(o.oneLeg?2:1)],['Tabla A='+r.A+' · B='+r.B+' · C='+r.C+' · D='+r.D], ['REBA = '+b.final+' · riesgo '+b.lvl,'h'],['Tronco '+b.tbB+' · Cuello '+b.nbB+' · Piernas '+b.lg],['Brazo '+b.uR+' · Antebrazo '+b.lR+' · Muñeca '+b.wr],['A='+b.sA+' · B='+b.sB+' · Actividad +'+b.act],
+ ['OWAS = categoría '+w.cat,'h'],['Espalda '+w.back+' · Brazos '+w.arms+' · Piernas '+w.legs+' · Carga '+w.load]]}
+const COL=['','#16a34a','#eab308','#f97316','#dc2626'],rebaL=f=>f<2?1:f<4?2:f<8?3:4;const ACT={rula:['','Aceptable si no se mantiene ni se repite durante largos períodos','Se requiere investigar más; pueden ser necesarios cambios','Se requiere investigar y cambiar pronto','Se requiere investigar y cambiar de inmediato'],reba:['','Actuación no necesaria','Actuación puede ser necesaria','Actuación necesaria','Actuación necesaria cuanto antes / inmediata'],owas:['','Sin medidas: postura normal','Corrección en un futuro próximo','Corrección lo antes posible','Corrección inmediata']};
+const segc=(v,mx)=>{if(v<=1)return COL[1];if(mx<=2)return COL[2];const r=(v-1)/(mx-1);return COL[r<=.5?2:r<=.75?3:4]};
+const lights=l=>`<span class="lg">${[1,2,3,4].map(k=>`<i style="background:${COL[k]};opacity:${k===l?1:.18}"></i>`).join('')}</span>`;
+const rowS=(n,dato,v,mx,off=0)=>`<tr><td>${n}</td><td>${dato}</td><td>${v}</td><td><i class="chip" style="background:${segc(v+off,mx)}"></i></td></tr>`;
+const tbl=h=>`<table class="mt"><tr><th>Segmento</th><th>Dato</th><th>Puntaje</th><th>Semáforo</th></tr>${h}</table>`;
+function tabs(i){const m=SM[i];if(!m||!m.ok){for(const k of['rula','reba','owas']){$('o_'+k).innerHTML='<div class="n">Sin datos en este fotograma ('+((m&&WHY[m.why])||'')+')</div>';$('d_'+k).style.background='#888'}return}
+ const o=O(),r=m.rula,b=m.reba,w=m.ow,bl=rebaL(b.final),d=v=>fin(v)?v.toFixed(0)+'°':'—';
+ $('d_rula').style.background=COL[r.lvl];$('d_reba').style.background=COL[bl];$('d_owas').style.background=COL[w.cat];
+ $('o_rula').innerHTML=`<div class="big">${lights(r.lvl)} RULA = ${r.final} · nivel de acción ${r.lvl}</div><div>${ACT.rula[r.lvl]}</div>`+tbl(rowS('Brazo superior',d(m.upper),r.up,6)+rowS('Antebrazo (ángulo codo)',d(m.elbowInt),r.lo,3)+rowS('Muñeca','—',r.wr,4)+rowS('Giro de muñeca','—',r.tw,2)+rowS('Cuello',d(m.neck),r.nR,6)+rowS('Tronco',d(m.trunk),r.trR,6)+rowS('Piernas','—',r.lg,2)+rowS('Uso muscular','—',r.mu,4,1)+rowS('Fuerza / carga',o.kg+' kg',r.fo,4,1))+`<div class="n">Tabla A=${r.A} · B=${r.B} · C (A+uso+fuerza)=${r.C} · D (B+uso+fuerza)=${r.D} → Tabla C = <b>${r.final}</b></div>`;
+ $('o_reba').innerHTML=`<div class="big">${lights(bl)} REBA = ${b.final} · riesgo ${b.lvl}</div><div>${ACT.reba[bl]}</div>`+tbl(rowS('Tronco',d(m.trunk),b.tbB,5)+rowS('Cuello',d(m.neck),b.nbB,3)+rowS('Piernas',d(Math.max(m.kR||0,m.kL||0)),b.lg,4)+rowS('Brazo',d(m.upper),b.uR,6)+rowS('Antebrazo (ángulo codo)',d(m.elbowInt),b.lR,2)+rowS('Muñeca','—',b.wr,3)+rowS('Agarre','—',b.cp,4,1)+rowS('Carga',o.kg+' kg',b.ld,4,1)+rowS('Actividad','—',b.act,4,1))+`<div class="n">Puntaje A=${b.sA} (incluye carga) · B=${b.sB} (incluye agarre) · TablaC + actividad = <b>${b.final}</b></div>`;
+ const BK=['','Recta','Doblada','Girada o lateral','Doblada y girada'],AR=['','Ambos bajo hombros','Uno al nivel/sobre hombro','Ambos sobre hombros'],LG=['','Sentado','De pie, 2 piernas rectas','De pie, 1 pierna recta','Ambas rodillas flexionadas','1 rodilla flexionada','Arrodillado','Caminando'],LD=['','<10 kg','10–20 kg','>20 kg'],LC=[0,1,1,2,3,2,3,2];
+ const tot=OWo.reduce((a,x)=>a+x.frequencyCount,0)||1,pc=[0,0,0,0,0];OWo.forEach(x=>pc[x.categoria]+=100*x.frequencyCount/tot);
+ $('o_owas').innerHTML=`<div class="big">${lights(w.cat)} OWAS = categoría ${w.cat}</div><div>${ACT.owas[w.cat]}</div>`+tbl(rowS('Espalda',BK[w.back],w.back,4)+rowS('Brazos',AR[w.arms],w.arms,3)+`<tr><td>Piernas</td><td>${LG[w.legs]}</td><td>${w.legs}</td><td><i class="chip" style="background:${COL[LC[w.legs]+1>4?4:LC[w.legs]+1]}"></i></td></tr>`+rowS('Carga',LD[w.load],w.load,3))+`<div class="n">Código ${w.back}-${w.arms}-${w.legs}-${w.load}. Distribución en todo el video:</div>`+[1,2,3,4].map(c=>`<div class="bar"><i style="width:${pc[c].toFixed(0)}%;background:${COL[c]}"></i><span>Cat. ${c}: ${pc[c].toFixed(0)}%</span></div>`).join('')}
+$('dlImg').onclick=()=>{const L=ficha(cur),fs=17,pw=470,h=Math.max(H,L.length*(fs+7)+30),c=document.createElement('canvas');c.width=W+pw;c.height=h;const g=c.getContext('2d');
+ g.fillStyle='#111';g.fillRect(0,0,c.width,h);g.drawImage(pv,0,0);let y=30;for(const[t,hd]of L){g.font=(hd?'bold ':'')+fs+'px system-ui';g.fillStyle=hd?'#facc15':'#fff';g.fillText(t,W+14,y);y+=fs+7}
+ const a=document.createElement('a');a.href=c.toDataURL('image/png');a.download='postura_t'+TS[cur].toFixed(1)+'s.png';a.click()};
+async function show(i){cur=i;tabs(i);$('fi').hidden=false;$('fi').innerHTML=ficha(i).map(([t,h])=>`<div${h?' class="fh"':''}>${t}</div>`).join('');document.querySelectorAll('#tb tr.sel').forEach(r=>r.classList.remove('sel'));const r=document.querySelector(`#tb tr[data-i="${i}"]`);if(r){r.classList.add('sel');r.scrollIntoView({block:'nearest'})}$('sl').value=i;document.querySelectorAll('.cand').forEach(c=>c.classList.toggle('on',+c.dataset.i===i));
+ pg.drawImage(await rawFrame(i),0,0,W,H);const m=SM[i];if(S[i])ann(pg,S[i],M[i],side);
+ lab(pg,8,26,m.ok?`t=${TS[i].toFixed(2)} s · RULA ${m.rula.final} · REBA ${m.reba.final} · OWAS ${m.ow.cat}${m.lateral?'':' · VISTA POCO LATERAL: ángulospoco fiables'}`:`t=${TS[i].toFixed(2)} s · ${m.why}`,'#fff')}
+$('sl').addEventListener('input',()=>show(+$('sl').value));
+$('tb').addEventListener('click',e=>{const r=e.target.closest('tr[data-i]');if(r)show(+r.dataset.i)});
+$('dl').onclick=()=>{const o=O(),w=SM[worst],sd=side==='R'?'derecho':'izquierdo',s1=m=>({upperArmPos:m.rula.up-(o.shR?1:0)-((o.abd||w.abd)?1:0)+(o.armSup?1:0),shoulderRaised:o.shR,armAbducted:(o.abd||w.abd),armSupported:o.armSup,lowerArmPos:m.inp.lo,lowerArmCrossMidline:o.crossMid,wristPos:o.wrist,wristDeviated:o.wDev,wristTwist:o.wTw?2:1,muscleUseA:o.muscle?1:0,forceLoadA:m.rula.C-m.rula.A-(o.muscle?1:0)});
+ const sx=s1(w),rb={upperArmPos:w.reba.uR-(o.shR?1:0)-((o.abd||w.abd)?1:0)+(o.armSup?1:0),shoulderRaised:o.shR,armAbducted:(o.abd||w.abd),armSupported:o.armSup,lowerArmPos:w.reba.lR,wristPos:o.wristR,wristTwistedOrDeviated:o.wDev,coupling:o.coupling};
+ const data={version:'v3',video:$('vi').textContent,lado:sd,posturasCriticas:crit.map(i=>({fase:PH[i],t:TS[i],rula:SM[i].rula.final,reba:SM[i].reba.final,owas:SM[i].ow.cat,tronco:SM[i].trunk,brazo:SM[i].upper,codo:SM[i].elbow,cuello:SM[i].neck})),opciones:o,
+  frames:TS.map((t,i)=>{const m=SM[i];return{t:+t.toFixed(3),ok:m.ok,motivo:m.why||'',lateral:!!m.lateral,tronco:m.trunk,brazo:m.upper,codo:m.elbowInt,codoFlexion:m.elbow,cuello:m.neck,rodillaD:m.kR,rodillaI:m.kL,rula:m.rula&&m.rula.final,reba:m.reba&&m.reba.final,owas:m.ow&&m.ow.cat}}),
+  peorFotograma:{t:TS[worst],
+   rulaData:{evaluatedSide:sd,neckPos:w.inp.nk,neckRotated:o.neckTw,neckSideBending:o.neckSb,trunkPos:o.seated?1:w.inp.tr,trunkTwisted:(o.trTw||w.trTw),trunkSideBending:(o.trSb||w.trSb),legsPos:o.oneLeg?2:1,muscleUseB:o.muscle?1:0,forceLoadB:sx.forceLoadA,right:sx,left:sx},
+   rebaData:{evaluatedSide:sd,trunkPos:w.inp.tb,trunkTwistedOrSide:(o.trTw||w.trTw)||(o.trSb||w.trSb),neckPos:w.inp.nb,neckTwistedOrSide:(o.neckTw||o.neckSb),legsBase:o.oneLeg?2:1,legsKneeFlexion:w.reba.lg-(o.oneLeg?2:1),loadForce:(o.kg<5?0:o.kg<=10?1:2),shockForce:o.shock,activityStatic:o.stat,activityRepetitive:o.rep,activityUnstableChanges:o.unst,right:rb,left:rb}},
+  owasData:{observations:OWo.map(({categoria,...r})=>r)}};
+ const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,1)],{type:'application/json'}));a.download='angulos_rula_reba_owas.json';a.click()};
+// ===================== MOTOR 3D DEL AVATAR (WebGL2 desde cero, sin librerías) =====================
+const V3={sub:(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],add:(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]],mul:(a,s)=>[a[0]*s,a[1]*s,a[2]*s],dot:(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2],
+ cross:(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]],len:a=>Math.hypot(a[0],a[1],a[2]),nrm:a=>{const l=Math.hypot(a[0],a[1],a[2])||1;return[a[0]/l,a[1]/l,a[2]/l]}};
+const Q4={mul:(a,b)=>[a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0],a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2]],
+ inv:a=>[-a[0],-a[1],-a[2],a[3]],
+ fromTo(u,v){const d=V3.dot(u,v);if(d<-0.999999){let ax=V3.cross([1,0,0],u);if(V3.len(ax)<1e-6)ax=V3.cross([0,1,0],u);ax=V3.nrm(ax);return[ax[0],ax[1],ax[2],0]}
+  const c=V3.cross(u,v),q=[c[0],c[1],c[2],1+d],l=Math.hypot(...q);return q.map(x=>x/l)},
+ rot(q,v){const u=[q[0],q[1],q[2]],t=V3.mul(V3.cross(u,v),2);return V3.add(V3.add(v,V3.mul(t,q[3])),V3.cross(u,t))},
+ axis(ax,ang){const s=Math.sin(ang/2);return[ax[0]*s,ax[1]*s,ax[2]*s,Math.cos(ang/2)]}};
+const M4={mul(a,b){const o=new Float32Array(16);for(let c=0;c<4;c++)for(let r=0;r<4;r++){let s=0;for(let k=0;k<4;k++)s+=a[k*4+r]*b[c*4+k];o[c*4+r]=s}return o},
+ trs(t,q,s){const[x,y,z,w]=q,x2=x+x,y2=y+y,z2=z+z,xx=x*x2,xy=x*y2,xz=x*z2,yy=y*y2,yz=y*z2,zz=z*z2,wx=w*x2,wy=w*y2,wz=w*z2;
+  return new Float32Array([(1-(yy+zz))*s[0],(xy+wz)*s[0],(xz-wy)*s[0],0,(xy-wz)*s[1],(1-(xx+zz))*s[1],(yz+wx)*s[1],0,(xz+wy)*s[2],(yz-wx)*s[2],(1-(xx+yy))*s[2],0,t[0],t[1],t[2],1])},
+ ortho(l,r,b,t,n,f){return new Float32Array([2/(r-l),0,0,0,0,2/(t-b),0,0,0,0,-2/(f-n),0,-(r+l)/(r-l),-(t+b)/(t-b),-(f+n)/(f-n),1])},
+ look(e,c,up){const z=V3.nrm(V3.sub(e,c)),x=V3.nrm(V3.cross(up,z)),y=V3.cross(z,x);return new Float32Array([x[0],y[0],z[0],0,x[1],y[1],z[1],0,x[2],y[2],z[2],0,-V3.dot(x,e),-V3.dot(y,e),-V3.dot(z,e),1])}};
+class Avatar{
+ constructor(buf){const dv=new DataView(buf);let off=12,J,BIN;while(off<buf.byteLength){const l=dv.getUint32(off,true),t=dv.getUint32(off+4,true);
+   if(t===0x4E4F534A)J=JSON.parse(new TextDecoder().decode(new Uint8Array(buf,off+8,l)));else if(t===0x004E4942)BIN=buf.slice(off+8,off+8+l);off+=8+l}
+  this.J=J;this.BIN=BIN;const N=J.nodes;this.n=N.length;this.name=N.map(n=>n.name||'');this.id={};N.forEach((n,i)=>this.id[n.name]=i);
+  this.par=new Array(N.length).fill(-1);N.forEach((n,i)=>(n.children||[]).forEach(c=>this.par[c]=i));
+  this.T=N.map(n=>n.translation?n.translation.slice():[0,0,0]);this.Qn=N.map(n=>n.rotation?n.rotation.slice():[0,0,0,1]);this.S=N.map(n=>n.scale?n.scale.slice():[1,1,1]);
+  this.roots=J.scenes[J.scene||0].nodes;const sk=J.skins[0];this.joints=sk.joints;this.ibm=this.acc(sk.inverseBindMatrices);this.rest=this.Qn.map(q=>q.slice());this.restT=this.T.map(t=>t.slice());this.world()}
+ acc(i){const a=this.J.accessors[i],bv=this.J.bufferViews[a.bufferView],nc={SCALAR:1,VEC2:2,VEC3:3,VEC4:4,MAT4:16}[a.type],C={5126:Float32Array,5123:Uint16Array,5125:Uint32Array,5121:Uint8Array}[a.componentType],
+  off=(bv.byteOffset||0)+(a.byteOffset||0),es=C.BYTES_PER_ELEMENT*nc,stride=bv.byteStride||es;
+  if(stride===es&&off%C.BYTES_PER_ELEMENT===0)return new C(this.BIN,off,a.count*nc);
+  const o=new C(a.count*nc),src=new Uint8Array(this.BIN);for(let k=0;k<a.count;k++)o.set(new C(src.slice(off+k*stride,off+k*stride+es).buffer),k*nc);return o}
+ world(){const N=this.n;this.W=new Array(N);this.Wq=new Array(N);const go=(i,pm,pq)=>{const m=M4.mul(pm,M4.trs(this.T[i],this.Qn[i],this.S[i])),q=Q4.mul(pq,this.Qn[i]);this.W[i]=m;this.Wq[i]=q;(this.J.nodes[i].children||[]).forEach(c=>go(c,m,q))};
+  const I=new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);this.roots.forEach(r=>go(r,I,[0,0,0,1]))}
+ pos(i){const m=this.W[i];return[m[12],m[13],m[14]]}
+ reset(){this.Qn=this.rest.map(q=>q.slice());this.T=this.restT.map(t=>t.slice());this.world()}
+ // gira el hueso b para que su segmento hacia el hijo c apunte en la dirección mundial dir
+ aim(b,c,dir,frac=1){const ib=this.id[b],ic=this.id[c];this.world();const cur=V3.nrm(V3.sub(this.pos(ic),this.pos(ib))),d=V3.nrm(dir);let q=Q4.fromTo(cur,d);
+  if(frac<1){const ang=2*Math.acos(Math.min(1,Math.abs(q[3]))),ax=V3.nrm(q.slice(0,3));q=Q4.axis(ax,ang*frac)}
+  const nw=Q4.mul(q,this.Wq[ib]),pq=this.par[ib]>=0?this.Wq[this.par[ib]]:[0,0,0,1];this.Qn[ib]=Q4.mul(Q4.inv(pq),nw);this.world()}
+ jointMats(){const n=this.joints.length,o=new Float32Array(n*12);for(let k=0;k<n;k++){const m=M4.mul(this.W[this.joints[k]],this.ibm.subarray(k*16,k*16+16));
+   for(let r=0;r<3;r++)for(let c=0;c<4;c++)o[k*12+r*4+c]=m[c*4+r]}return o}
+ initGL(gl){this.gl=gl;const vs=`#version 300 es
+in vec3 aPos;in vec3 aNor;in uvec4 aJ;in vec4 aW;uniform vec4 uJ[${this.joints.length*3}];uniform mat4 uVP;uniform float uOut;out vec3 vN;
+void main(){vec4 r0=aW.x*uJ[int(aJ.x)*3]+aW.y*uJ[int(aJ.y)*3]+aW.z*uJ[int(aJ.z)*3]+aW.w*uJ[int(aJ.w)*3];
+ vec4 r1=aW.x*uJ[int(aJ.x)*3+1]+aW.y*uJ[int(aJ.y)*3+1]+aW.z*uJ[int(aJ.z)*3+1]+aW.w*uJ[int(aJ.w)*3+1];
+ vec4 r2=aW.x*uJ[int(aJ.x)*3+2]+aW.y*uJ[int(aJ.y)*3+2]+aW.z*uJ[int(aJ.z)*3+2]+aW.w*uJ[int(aJ.w)*3+2];
+ vec4 p4=vec4(aPos,1.0);vec3 p=vec3(dot(r0,p4),dot(r1,p4),dot(r2,p4));vec3 n=normalize(vec3(dot(r0.xyz,aNor),dot(r1.xyz,aNor),dot(r2.xyz,aNor)));
+ p+=n*uOut;vN=n;gl_Position=uVP*vec4(p,1.0);}`,fs=`#version 300 es
+precision highp float;in vec3 vN;uniform vec3 uCol;uniform vec3 uL;out vec4 o;void main(){vec3 n=normalize(vN);float d=max(dot(n,normalize(uL)),0.0);float t=0.52+0.48*d;t=mix(t,floor(t*5.0+0.5)/5.0,0.3);o=vec4(uCol*t,1.0);}`;
+  const sh=(t,s)=>{const x=gl.createShader(t);gl.shaderSource(x,s);gl.compileShader(x);if(!gl.getShaderParameter(x,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(x));return x};  const pr=gl.createProgram();gl.attachShader(pr,sh(gl.VERTEX_SHADER,vs));gl.attachShader(pr,sh(gl.FRAGMENT_SHADER,fs));gl.linkProgram(pr);if(!gl.getProgramParameter(pr,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(pr));this.pr=pr;
+  this.U={J:gl.getUniformLocation(pr,'uJ'),VP:gl.getUniformLocation(pr,'uVP'),Out:gl.getUniformLocation(pr,'uOut'),Col:gl.getUniformLocation(pr,'uCol'),L:gl.getUniformLocation(pr,'uL')};
+  const tone={Ch21_Body:.80,Ch21_Eyelasshes:.05,Ch21_Hair:.30,Ch21_Pants:.62,Ch21_Shirt:.95,Ch21_Shoes:.36};this.meshes=[];
+  this.J.nodes.forEach(nd=>{if(nd.mesh==null)return;const p=this.J.meshes[nd.mesh].primitives[0],vao=gl.createVertexArray();gl.bindVertexArray(vao);
+   const buf=(data,loc,size,type,int)=>{const b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);gl.bufferData(gl.ARRAY_BUFFER,data,gl.STATIC_DRAW);gl.enableVertexAttribArray(loc);int?gl.vertexAttribIPointer(loc,size,type,0,0):gl.vertexAttribPointer(loc,size,type,false,0,0)};
+   const a=gl.getAttribLocation.bind(gl,pr);buf(this.acc(p.attributes.POSITION),a('aPos'),3,gl.FLOAT);buf(this.acc(p.attributes.NORMAL),a('aNor'),3,gl.FLOAT);
+   let jd=this.acc(p.attributes.JOINTS_0);if(!(jd instanceof Uint8Array))jd=Uint8Array.from(jd);buf(jd,a('aJ'),4,gl.UNSIGNED_BYTE,true);buf(this.acc(p.attributes.WEIGHTS_0),a('aW'),4,gl.FLOAT);
+   const ix=this.acc(p.indices),ib=gl.createBuffer();gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,ib);gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,ix,gl.STATIC_DRAW);
+   this.meshes.push({vao,n:ix.length,type:ix instanceof Uint32Array?gl.UNSIGNED_INT:gl.UNSIGNED_SHORT,col:tone[nd.name]??.7})});}
+ // vista ortogonal: dir = dirección desde el avatar hacia la cámara; hh = semialtura visible
+ render(dir,center,hh,W,H,outline=.006){const gl=this.gl;gl.viewport(0,0,W,H);gl.clearColor(1,1,1,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.enable(gl.CULL_FACE);
+  const d=V3.nrm(dir),up=Math.abs(d[1])>.95?[0,0,-1]:[0,1,0],eye=V3.add(center,V3.mul(d,6)),V=M4.look(eye,center,up),asp=W/H,Pm=M4.ortho(-hh*asp,hh*asp,-hh,hh,.1,20),VP=M4.mul(Pm,V);
+  const rt=V3.nrm(V3.cross(up,d)),uu=V3.cross(d,rt),L=V3.add(V3.add(V3.mul(rt,-.45),V3.mul(uu,.6)),V3.mul(d,.75));
+  gl.useProgram(this.pr);gl.uniform4fv(this.U.J,this.jointMats());gl.uniformMatrix4fv(this.U.VP,false,VP);gl.uniform3fv(this.U.L,L);
+  for(const pass of[0,1]){gl.cullFace(pass?gl.BACK:gl.FRONT);gl.uniform1f(this.U.Out,pass?0:outline);for(const m of this.meshes){gl.uniform3f(this.U.Col,pass?m.col:0,pass?m.col:0,pass?m.col:0);gl.bindVertexArray(m.vao);gl.drawElements(gl.TRIANGLES,m.n,m.type,0)}}
+  return VP}}
+// ===================== LÁMINAS 3D: foto → pose 3D del avatar → ángulos en verdadera magnitud → vistas por ángulo =====================
+const rad=x=>x*Math.PI/180;
+const MX='mixamorig:';let AV=null,GLC=null,GLX=null;
+function initAvatar(){if(AV)return;AV=new Avatar(Uint8Array.from(atob(GLB_B64),c=>c.charCodeAt(0)).buffer);GLC=document.createElement('canvas');GLC.width=GLC.height=1400;
+ GLX=GLC.getContext('webgl2',{antialias:true,preserveDrawingBuffer:true});if(!GLX)throw new Error('Este navegador no tiene WebGL2');AV.initGL(GLX)}
+// ---- landmarks 3D del detector (worldLandmarks) → vectores en el sistema del avatar: +Y arriba, +X lado izquierdo, +Z adelante ----
+function orientar(W,opt){const g=i=>[W[i].x,W[i].y,W[i].z],mid=(a,b)=>V3.mul(V3.add(g(a),g(b)),.5);
+ let sx=1,sy=1,sz=1;if(g(11)[0]<g(12)[0])sx=-1;                         // el lado izquierdo debe quedar en +X
+ const sh=mid(11,12),hp=mid(23,24);if(sh[1]<hp[1])sy=-1;               // los hombros deben quedar sobre las caderas
+ const T=(v,z)=>[v[0]*sx,v[1]*sy,v[2]*z];
+ const lat=V3.nrm(V3.sub(T(g(11),1),T(g(12),1))),fw=V3.nrm(V3.cross(lat,[0,1,0])),n=T(g(0),1),e=T(mid(7,8),1);
+ sz=V3.dot(V3.sub(n,e),fw)>=0?1:-1;if(opt&&opt.flipZ)sz*=-1;                // la nariz debe quedar delante de las orejas
+ const f=i=>T(g(i),sz);f.cam=[0,0,-sz];return f}
+function posar(P,ov){const A=AV;A.reset();ov=ov||{};const nr=V3.nrm,sb=V3.sub,ad=V3.add,ml=V3.mul,cr=V3.cross,dt=V3.dot,up=[0,1,0],has=k=>ov[k]!=null,id=n=>A.id[MX+n];
+ const mid=(a,b)=>ml(ad(P(a),P(b)),.5),hipM=mid(23,24),shM=mid(11,12),earM=mid(7,8),lat=nr(sb(P(23),P(24))),fwv=nr(cr(lat,up));
+ // columna: del detector, o fijada por el usuario (B = inclinación del tronco)
+ let sp=nr(sb(shM,hipM));if(has('B')){const t=rad(ov.B);sp=nr(ad(ml(up,Math.cos(t)),ml(fwv,Math.sin(t))))}
+ A.aim(MX+'Hips',MX+'Spine',sp);A.aim(MX+'Spine',MX+'Spine1',sp);A.aim(MX+'Spine1',MX+'Spine2',sp);A.aim(MX+'Spine2',MX+'Neck',sp);
+ const fs=nr(cr(lat,sp));let nd=nr(sb(earM,shM));
+ const hl=nr(sb(P(7),P(8))),hf=sb(P(0),earM);let hu=nr(cr(hf,hl));const ph=-0.26;hu=nr(ad(ml(hu,Math.cos(ph)),ml(cr(hl,hu),Math.sin(ph))));
+ if(has('A')){const n2=rad(ov.A);hu=nr(ad(ml(sp,Math.cos(n2)),ml(fs,Math.sin(n2))));nd=nr(ad(sp,hu))}
+ A.aim(MX+'Neck',MX+'Head',nd);A.aim(MX+'Head',MX+'HeadTop_End',hu);
+ const S2=[{S:'Left',k:0,sh:'C',el:'E',hp:'G',kn:'I',ap:ov.apoL,vt:ov.vertL},{S:'Right',k:1,sh:'D',el:'F',hp:'H',kn:'J',ap:ov.apoR,vt:ov.vertR}];
+ // piernas (G/H cadera: tronco-muslo; I/J rodilla: muslo-pierna)
+ for(const s of S2){const hi=[23,24][s.k],kn=[25,26][s.k],an=[27,28][s.k],to=[31,32][s.k];let th=nr(sb(P(kn),P(hi))),sn=nr(sb(P(an),P(kn))),ft=nr(sb(P(to),P(an)));
+  if(has(s.hp)){const h=rad(ov[s.hp]),nt=nr(ad(ml(sp,Math.cos(h)),ml(fs,Math.sin(h)))),q=Q4.fromTo(th,nt);sn=Q4.rot(q,sn);ft=Q4.rot(q,ft);th=nt}
+  if(has(s.kn)){const kk=rad(ov[s.kn]),bn=nr(cr(lat,th));const sn0=sn;sn=nr(ad(ml(ml(th,-1),Math.cos(kk)),ml(bn,Math.sin(kk))));ft=Q4.rot(Q4.fromTo(sn0,sn),ft)}
+  A.aim(MX+s.S+'UpLeg',MX+s.S+'Leg',th);A.aim(MX+s.S+'Leg',MX+s.S+'Foot',sn);A.aim(MX+s.S+'Foot',MX+s.S+'ToeBase',ft)}
+ // brazos (C/D hombro: brazo-tronco; E/F codo: brazo-antebrazo) y apoyos
+ const pp=n=>A.pos(id(n)),hipA=ml(ad(pp('LeftUpLeg'),pp('RightUpLeg')),.5),shA=ml(ad(pp('LeftArm'),pp('RightArm')),.5),dn=ml(sp,-1);
+ for(const s of S2){const sh=[11,12][s.k],el=[13,14][s.k],wr=[15,16][s.k];let upv=nr(sb(P(el),P(sh))),fo=nr(sb(P(wr),P(el)));
+  if(has(s.sh)){const a=rad(ov[s.sh]),fp=nr(cr(dn,lat)),na=nr(ad(ml(dn,Math.cos(a)),ml(fp,Math.sin(a)))),q=Q4.fromTo(upv,na);fo=Q4.rot(q,fo);upv=na}
+  if(has(s.el)){const e=rad(ov[s.el]);let f0=sb(fo,ml(upv,dt(fo,upv)));if(V3.len(f0)<.05)f0=cr(upv,lat);f0=nr(f0);fo=nr(ad(ml(ml(upv,-1),Math.cos(e)),ml(f0,Math.sin(e))))}
+  if(s.vt==='up')fo=[0,1,0];else if(s.vt==='down')fo=[0,-1,0];
+  const SP=pp(s.S+'Arm'),L1=V3.len(sb(pp(s.S+'ForeArm'),SP)),L2=V3.len(sb(pp(s.S+'Hand'),pp(s.S+'ForeArm'))),kneeP=pp(s.S+'Leg'),thighM=ml(ad(pp(s.S+'UpLeg'),kneeP),.5);
+  if(s.ap==='codoRodilla'){upv=nr(sb(kneeP,SP))}
+  else if(s.ap==='manoRodilla'||s.ap==='manoMuslo'||s.ap==='manoAbdomen'||s.ap==='manoPantorrilla'){
+   const T=s.ap==='manoPantorrilla'?ad(ml(ad(kneeP,pp(s.S+'Foot')),.5),[0,.07,0]):s.ap==='manoRodilla'?ad(kneeP,[0,.07,0]):s.ap==='manoMuslo'?ad(thighM,[0,.09,0]):ad(ad(hipA,ml(sb(shA,hipA),.32)),ml(fwv,.15));
+   const dv=sb(T,SP);let d=V3.len(dv);d=clamp(d,Math.abs(L1-L2)+.01,L1+L2-.01);const dir=nr(dv),aa=(L1*L1-L2*L2+d*d)/(2*d),hh=Math.sqrt(Math.max(L1*L1-aa*aa,0));
+   let hint=ad(ml(s.k===0?lat:ml(lat,-1),1),ml(fwv,-.3));let perp=sb(hint,ml(dir,dt(hint,dir)));if(V3.len(perp)<.01)perp=cr(dir,lat);perp=nr(perp);
+   const E=ad(ad(SP,ml(dir,aa)),ml(perp,hh));upv=nr(sb(E,SP));fo=nr(sb(T,E))}
+  A.aim(MX+s.S+'Arm',MX+s.S+'ForeArm',upv);A.aim(MX+s.S+'ForeArm',MX+s.S+'Hand',fo)}
+ // puños cerrados
+ if(ov.fist){for(const sd of['Left','Right'])for(const f of['Thumb','Index','Middle','Ring','Pinky'])for(let j=1;j<=3;j++){const i=A.id[MX+sd+'Hand'+f+j];if(i==null)continue;A.Qn[i]=Q4.mul(A.Qn[i],Q4.axis([1,0,0],rad(f==='Thumb'?60:(j===1?80:70))))}A.world()}
+ const arm=A.id['Armature'],hp=A.pos(A.id[MX+'Hips']);A.T[arm]=[A.T[arm][0]-hp[0],A.T[arm][1],A.T[arm][2]-hp[2]];A.world();
+ let lo=1e9;for(const n of['LeftToeBase','RightToeBase','Hips','LeftHand','RightHand','LeftLeg','RightLeg'])lo=Math.min(lo,A.pos(A.id[MX+n])[1]);
+ A.T[arm][1]+=0.04-lo;A.world()}
+// ---- ángulos 3D medidos sobre los huesos del avatar (no dependen de la vista)----
+const NMB={A:'cuello',B:'tronco',C:'hombro izq',D:'hombro der',E:'codo izq',F:'codo der',G:'cadera izq',H:'cadera der',I:'rodilla izq',J:'rodilla der'};
+const LEGD={A:'Cuello: cabeza respecto al tronco (+ flexión)',B:'Tronco respectoa la vertical (+ adelante)',C:'Hombro izquierdo: brazo respecto al tronco',D:'Hombro derecho: brazo respecto al tronco',E:'Codo izquierdo: ángulo entre brazo y antebrazo',F:'Codo derecho: ángulo entre brazo y antebrazo',G:'Cadera izquierda: ángulo tronco-muslo',H:'Cadera derecha: ángulo tronco-muslo',I:'Rodilla izquierda: ángulo muslo-pierna',J:'Rodilla derecha: ángulo muslo-pierna'};
+const angV=(u,v)=>deg(Math.acos(clamp(V3.dot(V3.nrm(u),V3.nrm(v)),-1,1)));
+function medir3D(){const A=AV,p=n=>A.pos(A.id[MX+n]),nr=V3.nrm,sb=V3.sub;
+ const L={sh:p('LeftArm'),el:p('LeftForeArm'),wr:p('LeftHand'),hi:p('LeftUpLeg'),kn:p('LeftLeg'),an:p('LeftFoot')},R={sh:p('RightArm'),el:p('RightForeArm'),wr:p('RightHand'),hi:p('RightUpLeg'),kn:p('RightLeg'),an:p('RightFoot')};
+ const hipM=V3.mul(V3.add(L.hi,R.hi),.5),shM=V3.mul(V3.add(L.sh,R.sh),.5),neck=p('Neck'),head=p('Head'),top=p('HeadTop_End'),up=[0,1,0];
+ const lat=nr(sb(L.hi,R.hi)),fw=nr(V3.cross(lat,up)),tr=nr(sb(shM,hipM)),ha=nr(sb(top,head)),sg=v=>V3.dot(v,fw)>=0?1:-1;
+ const items=[
+  {k:'A',c:neck,u:tr,v:ha,val:angV(tr,ha)*sg(sb(ha,tr)),tipo:'flex'},
+  {k:'B',c:hipM,u:up,v:tr,val:angV(up,tr)*sg(tr),tipo:'flex'},
+  {k:'C',c:L.sh,u:V3.mul(tr,-1),v:sb(L.el,L.sh),val:angV(V3.mul(tr,-1),sb(L.el,L.sh))*sg(sb(L.el,L.sh)),tipo:'flex'},
+  {k:'D',c:R.sh,u:V3.mul(tr,-1),v:sb(R.el,R.sh),val:angV(V3.mul(tr,-1),sb(R.el,R.sh))*sg(sb(R.el,R.sh)),tipo:'flex'},
+  {k:'E',c:L.el,u:sb(L.sh,L.el),v:sb(L.wr,L.el)},{k:'F',c:R.el,u:sb(R.sh,R.el),v:sb(R.wr,R.el)},
+  {k:'G',c:L.hi,u:tr,v:sb(L.kn,L.hi)},{k:'H',c:R.hi,u:tr,v:sb(R.kn,R.hi)},
+  {k:'I',c:L.kn,u:sb(L.hi,L.kn),v:sb(L.an,L.kn)},{k:'J',c:R.kn,u:sb(R.hi,R.kn),v:sb(R.an,R.kn)}];
+ for(const it of items){if(it.val===undefined)it.val=angV(it.u,it.v);it.u=nr(it.u);it.v=nr(it.v)} return{items,L,R,hipM,shM,lat,fw,tr,ctr:V3.mul(V3.add(hipM,shM),.5)}}
+// ---- vista en verdadera magnitud: la cámara mira a lo largo de la normal del plano de los dos segmentos ----
+function normalPlano(it,M){if(it.k==='A'||it.k==='B'){it.libre=false;return V3.dot(M.lat,[1,0,0])>=0?M.lat:V3.mul(M.lat,-1)}
+ let n=V3.cross(it.u,it.v);it.libre=V3.len(n)<.26;if(V3.len(n)<.26){let r=Math.abs(V3.dot(it.u,M.lat))<.9?M.lat:M.fw;n=V3.cross(it.u,r)}n=V3.nrm(n);
+ const lado=V3.dot(V3.sub(it.c,M.ctr),n);if(Math.abs(lado)>.02)return lado>0?n:V3.mul(n,-1);return V3.dot(n,M.lat)>=0?n:V3.mul(n,-1)}
+function agrupar(M){const cl=[];for(const it of M.items)it.n=normalPlano(it,M); for(const it of M.items.filter(i=>!i.libre)){let best=null,bd=1e9;for(const c of cl){const d=angV(c.n,it.n);if(d<bd){bd=d;best=c}}
+  if(best&&bd<28){best.m.push(it);best.n=V3.nrm(V3.add(V3.mul(best.n,best.m.length-1),it.n))}else cl.push({n:it.n,m:[it]})}
+ while(cl.length>3){let bi=0,bj=1,bd=1e9;for(let i=0;i<cl.length;i++)for(let j=i+1;j<cl.length;j++){const d=angV(cl[i].n,cl[j].n);if(d<bd){bd=d;bi=i;bj=j}}  cl[bi].m.push(...cl[bj].m);cl[bi].n=V3.nrm(V3.add(cl[bi].n,cl[bj].n));cl.splice(bj,1)}
+ if(!cl.length)cl.push({n:M.lat,m:[]});
+ for(const it of M.items.filter(i=>i.libre)){// vista donde ambos segmentos quedan más perpendiculares a la cámara
+  let best=cl[0],bs=1e9;for(const c of cl){const sc=Math.abs(V3.dot(c.n,it.u))+Math.abs(V3.dot(c.n,it.v));if(sc<bs){bs=sc;best=c}}best.m.push(it);it.n=best.n}
+ cl.forEach(c=>{c.err=Math.max(0,...c.m.map(it=>angV(c.n,it.n)))});return cl}
+function nombreVista(c,M){const a=Math.abs(V3.dot(c.n,M.lat)),b=Math.abs(V3.dot(c.n,M.fw));if(a>.92)return V3.dot(c.n,M.lat)>0?'Perfil izquierdo':'Perfil derecho';
+ if(b>.92)return V3.dot(c.n,M.fw)>0?'Frontal':'Posterior';return'Plano de '+c.m.map(it=>it.k).join(', ')}
+// ---- render de un panel con arcos sobre cada articulación ----
+const FN=(s,b)=>(b?'bold ':'')+s+'px Cambria,"Times New Roman",serif';let LBLPX=104;
+function panel(c,M,PS){const A=AV,pts=[M.hipM,M.shM,M.L.sh,M.R.sh,M.L.wr,M.R.wr,M.L.kn,M.R.kn,M.L.an,M.R.an,p3('LeftToeBase'),p3('RightToeBase'),p3('Head'),p3('HeadTop_End')];
+ const d=V3.nrm(c.n),up=Math.abs(d[1])>.95?[0,0,-1]:[0,1,0],rt=V3.nrm(V3.cross(up,d)),uu=V3.cross(d,rt);let mn=[1e9,1e9],mx=[-1e9,-1e9];
+ for(const q of pts){const x=V3.dot(q,rt),y=V3.dot(q,uu);mn=[Math.min(mn[0],x),Math.min(mn[1],y)];mx=[Math.max(mx[0],x),Math.max(mx[1],y)]}
+ const cx=(mn[0]+mx[0])/2,cy=(mn[1]+mx[1])/2,hh=Math.max(mx[0]-mn[0],mx[1]-mn[1])/2+.2,ctr=V3.add(V3.mul(rt,cx),V3.mul(uu,cy));
+ const VP=A.render(d,ctr,hh,1400,1400,.006*hh);const cv=document.createElement('canvas');cv.width=cv.height=1400;const g=cv.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,1400,1400);g.drawImage(GLC,0,0);
+ const pj=q=>{const x=VP[0]*q[0]+VP[4]*q[1]+VP[8]*q[2]+VP[12],y=VP[1]*q[0]+VP[5]*q[1]+VP[9]*q[2]+VP[13];return[(x*.5+.5)*1400,(1-(y*.5+.5))*1400]};
+ const sc=1400/(2*hh),items=[];
+ for(const it of c.m){const o=pj(it.c),a=pj(V3.add(it.c,V3.mul(it.fl?V3.mul(it.u,-1):it.u,.2))),b=pj(V3.add(it.c,V3.mul(it.v,.2))),ua=V3.nrm([a[0]-o[0],a[1]-o[1],0]),ub=V3.nrm([b[0]-o[0],b[1]-o[1],0]);
+  const r=({A:.30,B:.34,C:.17,D:.17,E:.13,F:.13,G:.2,H:.2,I:.15,J:.15})[it.k]*sc*.8+40;  g.strokeStyle='#000';g.lineWidth=7;for(const u of[ua,ub]){g.beginPath();g.moveTo(o[0],o[1]);g.lineTo(o[0]+u[0]*r*1.7,o[1]+u[1]*r*1.7);g.stroke()}
+  const a0=Math.atan2(ua[1],ua[0]);let dd=Math.atan2(ub[1],ub[0])-a0;while(dd>Math.PI)dd-=2*Math.PI;while(dd<-Math.PI)dd+=2*Math.PI;
+  g.beginPath();g.moveTo(o[0],o[1]);g.arc(o[0],o[1],r,a0,a0+dd,dd<0);g.closePath();g.fillStyle='rgba(70,70,70,.42)';g.fill();g.lineWidth=9;g.strokeStyle='#000';g.stroke();
+  g.beginPath();g.arc(o[0],o[1],16,0,7);g.fillStyle='#fff';g.fill();g.lineWidth=5;g.stroke();g.beginPath();g.arc(o[0],o[1],6.5,0,7);g.fillStyle='#000';g.fill();  items.push({it,o,r,bis:a0+dd/2,txt:(it.lbl||it.k)+' '+it.txtv+'°'})}
+ g.font=FN(LBLPX,1);const wd=i=>g.measureText(i.txt).width+40,H=LBLPX*1.42;
+ for(const i of items){const dx=Math.cos(i.bis),dy=Math.sin(i.bis);i.w=wd(i);i.x=i.o[0]+dx*(i.r+28+Math.abs(dx)*i.w/2);i.y=i.o[1]+dy*(i.r+28+Math.abs(dy)*H/2)}
+ // las etiquetas se apartan entre sí y, sobre todo, de TODOS los arcos (no tapan el ángulo)
+ for(let t=0;t<700;t++){let mv=false;
+  for(let i=0;i<items.length;i++){const a=items[i];
+   for(const b of items){const cxn=clamp(b.o[0],a.x-a.w/2,a.x+a.w/2),cyn=clamp(b.o[1],a.y-H/2,a.y+H/2),dd=Math.hypot(cxn-b.o[0],cyn-b.o[1]),need=b.r+10;
+    if(dd<need){let vx=a.x-b.o[0],vy=a.y-b.o[1];const l=Math.hypot(vx,vy)||1;vx/=l;vy/=l;a.x+=vx*(need-dd+2);a.y+=vy*(need-dd+2);mv=true}}
+   for(let j=i+1;j<items.length;j++){const b=items[j];if(Math.abs(a.x-b.x)<(a.w+b.w)/2+8&&Math.abs(a.y-b.y)<H+8){const s=a.y<=b.y?1:-1;a.y-=s*10;b.y+=s*10;mv=true}}
+   a.x=clamp(a.x,a.w/2+10,1400-a.w/2-10);a.y=clamp(a.y,H/2+10,1390-H/2)}
+  if(!mv)break}
+ for(const i of items){g.strokeStyle='#000';g.lineWidth=5;g.beginPath();g.moveTo(i.o[0]+Math.cos(i.bis)*i.r,i.o[1]+Math.sin(i.bis)*i.r);g.lineTo(i.x,i.y);g.stroke();
+  g.fillStyle='#fff';g.strokeStyle='#000';g.lineWidth=7;g.beginPath();g.roundRect(i.x-i.w/2,i.y-H/2,i.w,H,14);g.fill();g.stroke();g.fillStyle='#000';g.textAlign='center';g.textBaseline='middle';g.fillText(i.txt,i.x,i.y+3)}
+ g.textAlign='left';return cv}
+function ratioGeneral(M,d){const pts=[M.hipM,M.shM,M.L.wr,M.R.wr,M.L.kn,M.R.kn,M.L.an,M.R.an,p3('LeftToeBase'),p3('RightToeBase'),p3('HeadTop_End'),M.L.sh,M.R.sh],up=[0,1,0],rt=V3.nrm(V3.cross(up,d)),uu=V3.cross(d,rt);let mn=[1e9,1e9],mx=[-1e9,-1e9];
+ for(const q of pts){const x=V3.dot(q,rt),y=V3.dot(q,uu);mn=[Math.min(mn[0],x),Math.min(mn[1],y)];mx=[Math.max(mx[0],x),Math.max(mx[1],y)]}return(mx[0]-mn[0])/(mx[1]-mn[1]||1)}
+function vistaGeneral(M,W,H,d){const A=AV,pts=[M.hipM,M.shM,M.L.wr,M.R.wr,M.L.kn,M.R.kn,M.L.an,M.R.an,p3('LeftToeBase'),p3('RightToeBase'),p3('Head'),p3('HeadTop_End'),M.L.sh,M.R.sh];
+ const up=[0,1,0],rt=V3.nrm(V3.cross(up,d)),uu=V3.cross(d,rt);let mn=[1e9,1e9],mx=[-1e9,-1e9];
+ for(const q of pts){const x=V3.dot(q,rt),y=V3.dot(q,uu);mn=[Math.min(mn[0],x),Math.min(mn[1],y)];mx=[Math.max(mx[0],x),Math.max(mx[1],y)]}
+ const asp=W/H,hh=Math.max((mx[1]-mn[1])/2+.14,((mx[0]-mn[0])/2+.14)/asp),ctr=V3.add(V3.mul(rt,(mn[0]+mx[0])/2),V3.mul(uu,(mn[1]+mx[1])/2));
+ A.render(d,ctr,hh,W,H,.006*hh);const cv=document.createElement('canvas');cv.width=W;cv.height=H;const g=cv.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,W,H);g.drawImage(GLC,0,GLC.height-H,W,H,0,0,W,H);return cv}
+const p3=n=>AV.pos(AV.id[MX+n]);
+// ---- puntajes RULA / REBA / OWAS con las funciones del analizador ----
+function puntuar(M){const o=O(),val=k=>M.items.find(i=>i.k===k).val,flexK=k=>180-val(k),out={};
+ for(const[sd,hand,sh,ar,el,pi]of[['izq','L','C','E','Left',0],['der','R','D','F','Right',1]]){const S=M[hand],armsUp=S.wr[1]>S.sh[1]?1:0;
+  const m={ok:true,trunk:val('B'),upper:val(sh),elbow:flexK(ar),neck:val('A'),kL:flexK('I'),kR:flexK('J'),armsUp,f:1};Object.assign(m,score(m,o));m.ow=owas(m,o);out[sd]=m}
+ return out}
+function posarOv(P,ov){ov=ov||{};const keys='ABCDEFGHIJ'.split('').filter(k=>ov[k]!=null),cmd=Object.assign({},ov);
+ for(let it=0;it<6;it++){posar(P,cmd);if(!keys.length)break;const M=medir3D();let ok=true;for(const k of keys){const e=ov[k]-M.items.find(i=>i.k===k).val;if(Math.abs(e)>.6){cmd[k]+=e;ok=false}}if(ok)break}}
+function lamina(nombre,W,opt){initAvatar();const P=orientar(W,opt),ov=(opt&&opt.ov)||{};posarOv(P,ov);const M=medir3D(),sc=puntuar(M),refs=(opt&&opt.refs)||[],SHOW=ov.show||{A:1,B:1,C:1,D:1,E:1,F:1,I:1,J:1},CONVF=(ov.conv||'flex')==='flex';
+ const Mv=Object.assign({},M,{items:M.items.filter(it=>SHOW[it.k])}),LET='ABCDEFGHIJ'; Mv.items.forEach((it,i)=>{it.lbl=LET[i];it.fl=CONVF&&'EFIJ'.includes(it.k);const v=it.fl?180-it.val:it.val;it.txtv=it.tipo==='flex'?(v>=0?'+':'−')+Math.abs(v).toFixed(0):v.toFixed(0)});
+ const cl=agrupar(Mv);
+ const dx=Math.abs(W[11].x-W[12].x),dz=Math.abs(W[11].z-W[12].z),man='ABCDEFGHIJ'.split('').some(k=>ov[k]!=null)||ov.fist||ov.apoL||ov.apoR||ov.vertL||ov.vertR;
+ let aviso=dz<.5*dx?'Foto frontal: ángulos sagitales orientativos (±15-20°).':(dx<.5*dz?'Foto de perfil: ángulos frontales orientativos (±15-20°).':'');if(man)aviso=(aviso?aviso+' ':'')+'* ajustado según la foto.'; // hoja KDP 6×9 in a 300 ppp en escala de grises; Cambria ≈ 13 pt a tamaño real(la hoja se reduce al insertarla)
+ const PWd=1800,PHt=2700,MG=150,CELL=640,GAP=220,CW=PWd-2*MG,F1=54,FS=52;LBLPX=Math.round(52*1400/CELL);
+ const panels=cl.map(c=>({c,cv:panel(c,Mv),nom:nombreVista(c,M)}));
+ const pl=document.createElement('canvas');pl.width=PWd;pl.height=PHt;const g=pl.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,PWd,PHt);g.fillStyle='#000';g.textBaseline='alphabetic';
+ g.font=FN(66,1);g.fillText(nombre,MG,MG+52,CW);
+ const cells=[];cells.push({t:refs.length?'Estatua · Avatar':'Avatar',over:true});const cam0=P.cam||M.fw,ry=rad(ov.rot||0),camv=V3.nrm([cam0[0]*Math.cos(ry)+cam0[2]*Math.sin(ry),cam0[1],-cam0[0]*Math.sin(ry)+cam0[2]*Math.cos(ry)]);panels.forEach((p,i)=>cells.push({t:'Vista '+(i+1)+' · '+p.nom,p}));
+ cells.slice(0,4).forEach((c,i)=>{const x=MG+(i%2)*(CELL+GAP),y=MG+90+Math.floor(i/2)*(CELL+86);g.font=FN(F1,1);g.fillStyle='#000';g.fillText(c.t,x,y+40,CELL+GAP-20);const y2=y+56;
+  g.strokeStyle='#000';g.lineWidth=3;g.strokeRect(x,y2,CELL,CELL);
+  if(c.over){if(refs.length){const im=refs[0],wide=ratioGeneral(M,camv)>.95,aw=wide?CELL-20:CELL/2-20,ah=wide?CELL/2-20:CELL-24,q=Math.min(aw/im.naturalWidth,ah/im.naturalHeight),w=im.naturalWidth*q,h=im.naturalHeight*q;g.lineWidth=2;
+    if(wide){g.drawImage(im,x+(CELL-w)/2,y2+(CELL/2-h)/2,w,h);g.beginPath();g.moveTo(x+10,y2+CELL/2);g.lineTo(x+CELL-10,y2+CELL/2);g.stroke();g.drawImage(vistaGeneral(M,1400,700,camv),x+8,y2+CELL/2+6,CELL-16,CELL/2-12)}
+    else{g.drawImage(im,x+(CELL/2-w)/2,y2+(CELL-h)/2,w,h);g.beginPath();g.moveTo(x+CELL/2,y2+10);g.lineTo(x+CELL/2,y2+CELL-10);g.stroke();g.drawImage(vistaGeneral(M,700,1400,camv),x+CELL/2+10,y2+8,CELL/2-20,CELL-16)}}else g.drawImage(vistaGeneral(M,1400,1400,camv),x,y2,CELL,CELL)}
+  else g.drawImage(c.p.cv,x,y2,CELL,CELL)});
+ const rowsN=Math.ceil(Math.min(cells.length,4)/2);let y=MG+90+rowsN*(CELL+86)+10;
+ // ángulos medidos en dos columnas
+ const val=it=>{const mm=ov[it.k]!=null&&Math.abs(it.val-ov[it.k])<1.5,vi=panels.findIndex(p=>p.c.m.includes(it)),ap=!it.libre&&vi>=0&&angV(panels[vi].c.n,it.n)>12;return it.txtv+'°'+(mm?'*':'')+(ap?' ≈':'')};
+ g.fillRect(MG,y-26,CW,3);const ks=Mv.items,nr_=Math.ceil(ks.length/2);
+ for(let i=0;i<nr_;i++)for(let c=0;c<2;c++){const it=ks[i+c*nr_];if(!it)continue;const x=MG+c*760,yy=y+i*58+30;g.font=FN(FS);g.fillText(it.lbl+'  '+NMS[it.k],x,yy,520);g.font=FN(FS,1);g.textAlign='right';g.fillText(val(it),x+720,yy);g.textAlign='left'}
+ y+=nr_*58+34;g.fillRect(MG,y-22,CW,3);
+ // puntajes en el estilo del ejercicio resuelto (solo resultados)
+ const R=sc.izq,Dd=sc.der,rr=m=>m.rula,bb=m=>m.reba,X1=MG+700,X2=MG+1130;
+ g.font=FN(F1,1);g.fillText('Puntajes',MG,y+30);g.textAlign='center';g.fillText('Lado izq.',X1+180,y+30);g.fillText('Lado der.',X2+180,y+30);g.textAlign='left'; const filas=[['RULA grupo A',m=>String(rr(m).A)],['RULA grupo B',m=>String(rr(m).B)],['RULA C y D',m=>'C '+rr(m).C+' · D '+rr(m).D],['RULA final',m=>rr(m).final+' · nivel '+rr(m).lvl],
+  ['REBA A y B',m=>'A '+bb(m).sA+' · B '+bb(m).sB],['REBA final',m=>'C '+(bb(m).final-bb(m).act)+' + '+bb(m).act+' = '+bb(m).final],['OWAS',m=>'categoría '+m.ow.cat]];
+ filas.forEach((f,i)=>{const yy=y+30+(i+1)*58;g.font=FN(FS);g.textAlign='left';g.fillText(f[0],MG,yy);g.textAlign='center';g.fillText(f[1](R),X1+180,yy,380);g.fillText(f[1](Dd),X2+180,yy,380);g.textAlign='left'});
+ y+=30+7*58+52;g.font=FN(38);g.fillText(CONVF?'Cuello: respecto al tronco · Tronco: respecto a la vertical · Brazo: respecto al tronco · Antebrazo y pierna:flexión (0° = extendido)':'Cuello: respecto al tronco · Tronco: respecto a la vertical · Brazo: respecto al tronco · Antebrazo y pierna: ángulo formado (180° = extendido)',MG,y,CW);y+=46;g.font=FN(44);g.fillText('REBA lado izq.: '+bb(R).lvl+' · lado der.: '+bb(Dd).lvl+(aviso?'   ·   '+aviso:''),MG,y,CW);
+ return{canvas:pl,M,cl,sc,aviso}}
+const NMS={A:'Cuello',B:'Tronco',C:'Brazo izq.',D:'Brazo der.',E:'Antebrazo izq.',F:'Antebrazo der.',G:'Cadera izq.',H:'Cadera der.',I:'Pierna izq.',J:'Pierna der.'};
+const CW0=()=>1800-300;
+// ---- demo: pose de prueba (Río Zumpango aproximada) convertida a formato del detector, para ver el resultado sin detectar ----
+function demoWorld(){initAvatar();const A=AV;A.reset();const n=V3.nrm,Rl=(a,b,d)=>A.aim(MX+a,MX+b,n(d));
+ Rl('Spine','Spine1',[0,1,.1]);Rl('Spine1','Spine2',[0,1,.1]);Rl('Spine2','Neck',[0,1,.08]);Rl('Neck','Head',[0,1,-.1]);Rl('Head','HeadTop_End',[0,1,-.3]);
+ Rl('RightUpLeg','RightLeg',[-.55,0,.83]);Rl('RightLeg','RightFoot',[-.55,-.02,.83]);Rl('RightFoot','RightToeBase',[-.45,.4,.8]);
+ Rl('LeftUpLeg','LeftLeg',[.4,.6,.69]);Rl('LeftLeg','LeftFoot',[.1,-.8,.55]);Rl('LeftFoot','LeftToeBase',[.2,-.1,.95]);
+ Rl('LeftArm','LeftForeArm',[.15,-.8,.55]);Rl('LeftForeArm','LeftHand',[-.05,.95,.3]);Rl('RightArm','RightForeArm',[-.4,-.75,.52]);Rl('RightForeArm','RightHand',[-.5,-.65,.58]);
+ const g=nm=>A.pos(A.id[MX+nm]),W=Array.from({length:33},()=>({x:0,y:0,z:0})),set=(i,v)=>{W[i]={x:v[0],y:-v[1],z:-v[2]}},head=g('Head'),lat=n(V3.sub(g('LeftUpLeg'),g('RightUpLeg'))),ud=n(V3.sub(g('HeadTop_End'),head));
+ const fwd=n(V3.cross(lat,ud));[[11,'LeftArm'],[12,'RightArm'],[13,'LeftForeArm'],[14,'RightForeArm'],[15,'LeftHand'],[16,'RightHand'],[23,'LeftUpLeg'],[24,'RightUpLeg'],[25,'LeftLeg'],[26,'RightLeg'],[27,'LeftFoot'],[28,'RightFoot'],[31,'LeftToeBase'],[32,'RightToeBase']].forEach(([i,nm])=>set(i,g(nm)));
+ set(7,V3.add(head,V3.mul(lat,.07)));set(8,V3.sub(head,V3.mul(lat,.07)));set(0,V3.add(V3.add(head,V3.mul(fwd,.1)),V3.mul(ud,-.027)));return W}
+// ---- controlador de la interfaz ----
+for(const i of['sitK','neckSb','stat','muscle'])if($(i))$(i).checked=true;
+const LAMS=[];let LCUR=0;const DIBS={};const pagDe=n=>{const m=/p(\d{3})/.exec(n);return m?m[1]:null};const refsDe=n=>DIBS[pagDe(n)]||[];
+const OVK='ABCDEFGHIJ'.split('');const ovGet=n=>{try{return JSON.parse(localStorage.getItem('ov_'+n)||'{}')}catch(e){return{}}},ovSet=(n,o)=>{try{localStorage.setItem('ov_'+n,JSON.stringify(o))}catch(e){}};
+const DEFSHOW={A:1,B:1,C:1,D:1,E:1,F:1,I:1,J:1},FLK='EFIJ';
+function leerOv(){const o={},cv=$('lamConv').value;document.querySelectorAll('#lamOv input[data-k]').forEach(e=>{const k=e.dataset.k;let v=e.value===''?null:+e.value;if(v!=null&&cv==='flex'&&FLK.includes(k))v=180-v;o[k]=v});
+ o.show={};document.querySelectorAll('#lamOv input[data-s]').forEach(e=>{o.show[e.dataset.s]=e.checked?1:0});o.conv=cv;o.rot=+$('lamRot').value;
+ o.apoL=$('apoL').value||null;o.apoR=$('apoR').value||null;o.vertL=$('vertL').value||null;o.vertR=$('vertR').value||null;o.fist=$('lamFist').checked;return o}
+function escribirOv(o){o=o||{};const cv=o.conv||'flex';$('lamConv').value=cv;document.querySelectorAll('#lamOv input[data-k]').forEach(e=>{const k=e.dataset.k;let v=o[k];if(v!=null&&cv==='flex'&&FLK.includes(k))v=180-v;e.value=v!=null?Math.round(v*10)/10:''});
+ const sh=o.show||DEFSHOW;document.querySelectorAll('#lamOv input[data-s]').forEach(e=>{e.checked=!!sh[e.dataset.s]});$('lamRot').value=o.rot||0;$('lamRotV').textContent=($('lamRot').value)+'°';
+ $('apoL').value=o.apoL||'';$('apoR').value=o.apoR||'';$('vertL').value=o.vertL||'';$('vertR').value=o.vertR||'';$('lamFist').checked=!!o.fist}
+function mostrar(){const L=LAMS[LCUR];if(!L)return;escribirOv(L.ov);const pl=$('plate');pl.width=L.res.canvas.width;pl.height=L.res.canvas.height;pl.getContext('2d').drawImage(L.res.canvas,0,0);
+ const b=$('lamList');b.innerHTML='';LAMS.forEach((x,i)=>{const e=document.createElement('button');e.textContent=(i===LCUR?'● ':'')+x.nombre+(x.err?' ⚠':'');e.onclick=
+()=>{LCUR=i;mostrar()};b.appendChild(e)})}
+function agregar(nombre,W){const msg=$('lamMsg');try{const res=lamina(nombre,W,{flipZ:$('lamZ').checked,refs:refsDe(nombre),ov:ovGet(nombre)});LAMS.push({nombre,W,res,ov:ovGet(nombre)});LCUR=LAMS.length-1;msg.textContent=''}catch(e){msg.textContent='Error en '+nombre+': '+e.message;console.error(e)}mostrar()}
+function recalcular(){LAMS.forEach(L=>{L.res=lamina(L.nombre,L.W,{flipZ:$('lamZ').checked})});mostrar()}
+async function detectarMundo(img){if(window.__detectWorld)return window.__detectWorld(img);const lm=await getLM(),r=lm.detect(img);if(!r.worldLandmarks||!r.worldLandmarks[0])throw new Error('el detector no encontró una persona');return r.worldLandmarks[0]}
+$('lamFiles').onchange=async e=>{for(const f of e.target.files){const nombre=f.name.replace(/\.[^.]+$/,'').slice(0,40);$('lamMsg').textContent='Detectando '+nombre+'…';
+  const im=new Image();await new Promise(r=>{im.onload=r;im.src=URL.createObjectURL(f)});try{agregar(nombre,await detectarMundo(im))}catch(err){$('lamMsg').textContent='Error en '+nombre+': '+err.message}}};
+$('lamDib').onchange=async e=>{for(const f of e.target.files){const pg=pagDe(f.name);if(!pg)continue;const im=new Image();await new Promise(r=>{im.onload=r;im.src=URL.createObjectURL(f)});(DIBS[pg]=DIBS[pg]||[]).push(im)}recalcular()};
+$('lamDemo').onclick=()=>agregar('Demo (pose de ejemplo)',demoWorld());
+$('lamZ').onchange=recalcular;
+$('lamRot').oninput=()=>{$('lamRotV').textContent=$('lamRot').value+'°';const L=LAMS[LCUR];if(!L)return;L.ov=leerOv();ovSet(L.nombre,L.ov);L.res=lamina(L.nombre,L.W,{flipZ:$('lamZ').checked,refs:refsDe(L.nombre),ov:L.ov});const pl=$('plate');pl.getContext('2d').clearRect(0,0,pl.width,pl.height);pl.getContext('2d').drawImage(L.res.canvas,0,0)};
+$('lamConv').onchange=()=>{const L=LAMS[LCUR];if(!L)return;const o=leerOv();L.ov=o;escribirOv(o)};
+$('lamPre').onchange=()=>{const v=$('lamPre').value,fx=$('lamConv').value==='flex';const set=(k,x)=>{const e=document.querySelector('#lamOv input[data-k='+k+']');if(e)e.value=x};
+ if(v==='talones'){set('B',0);set('G',95);set('H',95);set('I',fx?160:20);set('J',fx?160:20)}else if(v==='rodillas'){set('B',0);set('G',180);set('H',180);set('I',90);set('J',90)}};
+$('lamAplicar').onclick=()=>{const L=LAMS[LCUR];if(!L)return;L.ov=leerOv();ovSet(L.nombre,L.ov);L.res=lamina(L.nombre,L.W,{flipZ:$('lamZ').checked,refs:refsDe(L.nombre),ov:L.ov});mostrar()};
+$('lamLimpiar').onclick=()=>{const L=LAMS[LCUR];if(!L)return;L.ov={};ovSet(L.nombre,{});L.res=lamina(L.nombre,L.W,{flipZ:$('lamZ').checked,refs:refsDe(L.nombre),ov:{}});mostrar()};
+document.querySelectorAll('#op input,#op select,#com input,#com select,.tp input,.tp select,#kgTop,#kgSel').forEach(el=>el.addEventListener('input',recalcular));
+const dl=(cv,name)=>cv.toBlob(b=>{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=name;a.click()});
+$('lamDl').onclick=()=>{const L=LAMS[LCUR];if(L)dl(L.res.canvas,L.nombre+'_angulos_BN.png')};
+$('lamDlAll').onclick=async()=>{for(const L of LAMS){dl(L.res.canvas,L.nombre+'_angulos_BN.png');await new Promise(r=>setTimeout(r,400))}};
+window.__lam3d={LAMS,lamina,demoWorld,agregar};
+</script></body></html>

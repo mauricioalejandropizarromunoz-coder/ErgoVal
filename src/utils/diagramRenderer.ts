@@ -1,6 +1,537 @@
 import { DiagramVariantId } from '../types/figurePlan';
 import { HandGripPresetId, renderHandGripPanel } from './handGrip3dRenderer';
-import { drawCenteredManualFooter, sanitizeManualImageText } from './realisticHumanRig';
+import {
+  MEDICAL_MANUAL_FOOTER_EN,
+  drawCenteredManualFooter,
+  sanitizeManualImageText,
+} from './realisticHumanRig';
+
+export interface DiagramLocaleOptions {
+  lang?: 'es' | 'en';
+  mode?: 'intl_dual' | 'us_ansi' | 'eu_iso';
+  euComma?: boolean;
+}
+
+let activeDiagramLocale: DiagramLocaleOptions | undefined;
+
+function applyLocaleDecimals(str: string, loc?: DiagramLocaleOptions): string {
+  if (!loc || loc.lang !== 'en') return str;
+  if (loc.mode === 'eu_iso' && loc.euComma) {
+    return str.replace(/(\d)\.(\d)/g, '$1,$2');
+  }
+  return str;
+}
+
+const DIAGRAM_EN_EXACT: Record<string, string | ((mode: 'intl_dual' | 'us_ansi' | 'eu_iso') => string)> = {
+  // Headers
+  'Reducción del riesgo ergonómico mediante el rediseño del puesto': (m) =>
+    m === 'eu_iso'
+      ? 'Ergonomic Risk Reduction Through Workstation Redesign (ISO 6385 / EN 614)'
+      : m === 'us_ansi'
+        ? 'Ergonomic Risk Reduction Through Workstation Redesign (OSHA / ANSI Z10)'
+        : 'Ergonomic Risk Reduction Through Workstation Redesign (OSHA / ISO 6385)',
+  'Procedimiento de aplicación del método RULA': 'RULA Assessment Method Application Flowchart (McAtamney & Corlett, 1993)',
+  'Procedimiento de aplicación del método REBA': 'REBA Assessment Method Application Flowchart (Hignett & McAtamney, 2000)',
+  'Ejemplo de registro de observaciones y codificación OWAS': 'OWAS Work Sampling Observation Log & 4-Digit Posture Coding (Table 4.45)',
+  'Codificación del cuarto dígito OWAS: magnitud de la carga o fuerza': (m) =>
+    m === 'eu_iso'
+      ? 'OWAS 4th Digit Coding: External Load / Force Magnitude (kg)'
+      : 'OWAS 4th Digit Coding: External Load / Force Magnitude (kg [lb])',
+  'Desplazamiento vertical (D) en vista lateral y ángulo de asimetría (A)':
+    'NIOSH Lifting Equation: Vertical Travel Distance (D) & Asymmetry Angle (A)',
+  'Clasificación de la calidad del agarre mano-carga en NIOSH (Tabla 5.8)':
+    'NIOSH Hand-to-Container Coupling Classification & Multiplier CM (Table 5.8)',
+  'Estructura del método OCRA: factores y cálculo del índice':
+    'OCRA Index Analytical Architecture: Multipliers & Reference Actions (ISO 11228-3)',
+  'Ejemplos de acciones técnicas dinámicas y estáticas en OCRA':
+    'OCRA Dynamic vs. Static Upper-Limb Technical Actions (ISO 11228-3 / EN 1005-5)',
+  'Posturas de la mano y de la muñeca en el método JSI (Tabla 6.22)':
+    'Strain Index (JSI) Hand/Wrist Posture Categories & Multiplier HWP (Table 6.22)',
+  'Variables ambientales y personales del método de Fanger (ISO 7730)':
+    'Fanger Thermal Balance Model: Environmental & Personal Variables (ISO 7730 / ASHRAE 55)',
+  'Relación analítica entre voto medio estimado (PMV) y porcentaje de insatisfechos (PPD)':
+    'Analytical Relationship Between Predicted Mean Vote (PMV) and PPD (%)',
+  'Ubicación de los tres sectores evaluados sobre la curva PMV–PPD (límite 10 %)':
+    'Evaluated Healthcare Logistics Sectors Plotted on the PMV–PPD Curve (10% Limit)',
+  'Instrumento de medición del índice WBGT / TGBH: disposición de sus tres sensores':
+    'WBGT Heat Stress Monitor: Three-Sensor Assembly (ISO 7243 / ACGIH TLV)',
+  'Sistema de ejes ortogonales para vibración mano-brazo (ISO 5349)':
+    'Basicentric Orthogonal Coordinate Axes for Hand-Arm Vibration (ISO 5349 / ANSI S2.70)',
+  'Articulación entre la planilla de registro, el método y el informe':
+    'Integration of Regulatory Screening Checklist, Analytical Method & Ergonomic Report',
+  'Ciclo continuo de la evaluación e intervención ergonómica':
+    'Continuous Cycle of Ergonomic Risk Assessment and Engineering Intervention',
+  'Seis criterios de decisión y jerarquía de prioridades (Cap. 10)':
+    'Six Decision Criteria and Biomechanical Intervention Priority Hierarchy (Ch. 10)',
+  'Valores límite umbral para la actividad manual (NAM — Res. 295/03)':
+    'ACGIH® Hand Activity Level (HAL) & Normalized Peak Force (NPF) Threshold Limit Values',
+  'Esquema geométrico del muelle de carga (desnivel 22 cm) y camioneta (55 cm)': (m) =>
+    m === 'eu_iso'
+      ? 'Loading Dock Step Geometry (+22 cm Step) and Delivery Van Bed Height (55 cm)'
+      : 'Loading Dock Step Geometry (+22 cm [8.7 in]) & Delivery Van Bed (55 cm [21.7 in])',
+  'Alturas de toma en el bin (45 cm) y depósito en carro (35 cm) — Cálculo NIOSH': (m) =>
+    m === 'eu_iso'
+      ? 'Bin Pick-Up Height (V1 = 45 cm) and Cart Placement Height (V2 = 35 cm) — NIOSH RNLE'
+      : 'Bin Pick-Up (V1 = 45 cm [17.7 in]) & Cart Placement (V2 = 35 cm [13.8 in]) — NIOSH RNLE',
+  'Esquema lateral del asiento del conductor con dimensiones y ajustes':
+    'Transit Bus Driver Suspension Seat: Lateral Dimensional & Adjustment Schematic',
+  'Espectro de aceleración del eje Z en bandas de 1/3 de octava (Tabla 13.7)':
+    'Z-Axis Whole-Body Acceleration Spectrum in 1/3-Octave Bands (Table 13.7 — ISO 2631-1)',
+  'Espectro de aceleración mano-brazo por eje en bandas de 1/3 de octava (Tabla 13.9)':
+    'Triaxial Hand-Arm Acceleration Spectrum in 1/3-Octave Bands (Table 13.9 — ISO 5349-1)',
+
+  // Fig 1.1
+  '1. Puesto Original': '1. Baseline Workstation',
+  'Exigencia biomecánica\nsuperior a la capacidad': 'Biomechanical demand\nexceeds tissue capacity',
+  '2. Medición y Método': '2. Field Measurement',
+  'Toma de datos e índice\ncuantitativo de riesgo': 'Instrumental data & quantitative\nrisk index calculation',
+  '3. Rediseño Técnico': '3. Engineering Redesign',
+  'Ingeniería · alturas\nayudas · pausas': 'Work heights · mechanical\naids · recovery breaks',
+  '4. Puesto Seguro': '4. Compliant Workstation',
+  'Reevaluación: nivel de\nriesgo aceptable': 'Post-intervention verification:\nacceptable risk level',
+  'Evolución de la carga biomecánica (Momento / Fuerza F vs. Umbral admisible)':
+    'Biomechanical Load Progression (Joint Moment / Force F vs. Permissible Threshold)',
+  'RIESGO ALTO': 'HIGH RISK',
+  'Demanda > Capacidad': 'Demand > Capacity',
+  'Límite de tolerancia tisular (RWL / TLV)': 'Tissue Tolerance Limit (RWL / TLV / EN Limit)',
+  'Intervención técnica': 'Engineering Control',
+  'Distancias (H) y ángulos (α)': 'Reach (H) & joint angles (α)',
+  'RIESGO ACEPTABLE': 'ACCEPTABLE RISK',
+  'Antes del rediseño': 'Pre-Intervention (Baseline)',
+  'Después del rediseño': 'Post-Intervention (Redesigned)',
+
+  // Fig 4.18 RULA Flow
+  'GRUPO A: Miembro Superior': 'GROUP A: Upper Limb',
+  'Brazo · Antebrazo · Muñeca · Giro': 'Upper Arm · Lower Arm · Wrist · Twist',
+  'GRUPO B: Cuello, Tronco y Piernas': 'GROUP B: Neck, Trunk & Legs',
+  'Ángulos respecto a ejes de referencia': 'Segment angles vs. anatomical vertical',
+  'Puntuación Global Grupo A': 'Posture Score A',
+  'Tabla 4.14 (valores de 1 a 9)': 'Table A / Table 4.14 (scores 1 to 9)',
+  'Puntuación Global Grupo B': 'Posture Score B',
+  'Tabla 4.15 (valores de 1 a 9)': 'Table B / Table 4.15 (scores 1 to 9)',
+  'Correcciones: Actividad Muscular y Fuerza': 'Modifiers: Muscle Use & Force / Load',
+  'Tabla 4.16 (+1 estática o repetitiva) + Tabla 4.17 (0 a +3 por carga/fuerza)': (m) =>
+    m === 'eu_iso'
+      ? 'Table 4.16 (+1 static >1 min or >4x/min) + Table 4.17 (0 to +3 for >2 / >10 kg)'
+      : 'Table 4.16 (+1 static or >4x/min) + Table 4.17 (0 to +3 for >2 kg [4.4 lb] / >10 kg [22 lb])',
+  'Puntuación C': 'Wrist & Arm Score C',
+  'Grupo A + Actividad + Fuerza': 'Score A + Muscle Use + Force/Load',
+  'Puntuación D': 'Neck, Trunk & Leg Score D',
+  'Grupo B + Actividad + Fuerza': 'Score B + Muscle Use + Force/Load',
+  'PUNTUACIÓN FINAL RULA (1 a 7)': 'RULA GRAND SCORE (1 to 7)',
+  'Tabla 4.18 (cruce de Puntuación C y Puntuación D)': 'Table C / Table 4.18 (Score C × Score D cross-lookup)',
+  'Nivel 1 (1–2 ptos): Postura aceptable si no se repite o mantiene':
+    'Action Level 1 (1–2 pts): Acceptable posture if not maintained or repeated for long periods',
+  'Nivel 2 (3–4 ptos): Pueden requerirse cambios · Investigar tarea':
+    'Action Level 2 (3–4 pts): Further investigation needed; workstation changes may be required',
+  'Nivel 3 (5–6 ptos): Se requiere rediseño pronto de la tarea':
+    'Action Level 3 (5–6 pts): Investigation and engineering changes required soon',
+  'Nivel 4 (7 ptos): Se requieren cambios urgentes en el puesto':
+    'Action Level 4 (7 pts): Investigate and implement workstation changes immediately',
+
+  // Fig 4.25 REBA Flow
+  'GRUPO A: Tronco, Cuello y Piernas': 'GROUP A: Trunk, Neck & Legs',
+  'Tablas 4.21 a 4.26 → Tabla 4.27 (1–8)': 'Tables 4.21–4.26 → Table A / 4.27 (1–9)',
+  'GRUPO B: Brazo, Antebrazo y Muñeca': 'GROUP B: Upper Arm, Lower Arm & Wrist',
+  'Tablas 4.28 a 4.32 → Tabla 4.33 (1–8)': 'Tables 4.28–4.32 → Table B / 4.33 (1–9)',
+  '+ Carga / Fuerza (Tabla 4.34)': '+ Load / Force Score (Table 4.34)',
+  '0 (<5 kg) · +1 (5–10 kg) · +2 (>10 kg)\n+1 si fuerza brusca o repentina': (m) =>
+    m === 'eu_iso'
+      ? '0 (<5 kg) · +1 (5–10 kg) · +2 (>10 kg)\n+1 shock or rapid force build-up'
+      : '0 (<5 kg [11 lb]) · +1 (5–10 kg [11–22 lb]) · +2 (>10 kg [22 lb])\n+1 shock or rapid force build-up',
+  '+ Tipo de Agarre (Tabla 4.35)': '+ Coupling Score (Table 4.35)',
+  '0 (bueno) · +1 (aceptable)\n+2 (malo) · +3 (inaceptable)':
+    '0 (Good) · +1 (Fair)\n+2 (Poor) · +3 (Unacceptable)',
+  'Puntuación A corregida': 'Score A (Posture A + Load)',
+  'Entrada por filas en Tabla C': 'Row input to Table C (1–12)',
+  'Puntuación B corregida': 'Score B (Posture B + Coupling)',
+  'Entrada por columnas en Tabla C': 'Column input to Table C (1–12)',
+  'Puntuación Tabla C (Tabla 4.37)': 'Table C Score (Table 4.37)',
+  'Combinación biomecánica global de ambos grupos': 'Combined whole-body biomechanical score (1–12)',
+  '+ Actividad Muscular (Tabla 4.36)': '+ Activity Score (Table 4.36)',
+  '+1 estática >1 min · +1 repetitiva >4/min · +1 cambio postural brusco':
+    '+1 static >1 min · +1 repeated >4x/min · +1 rapid large range posture change',
+  'PUNTUACIÓN FINAL REBA (1 a 15)': 'FINAL REBA SCORE (1 to 15)',
+  'Determinación del Nivel de Actuación (Tabla 4.38)': 'REBA Action Level Classification (Table 4.38)',
+  'Nivel 0 (1 pto): Riesgo inapreciable — No es necesaria actuación':
+    'Action Level 0 (1 pt): Negligible risk — Action is not necessary',
+  'Nivel 1 (2–3 ptos): Riesgo bajo — Puede ser necesaria la actuación':
+    'Action Level 1 (2–3 pts): Low risk — Action may be necessary',
+  'Nivel 2 (4–7 ptos): Riesgo medio — Es necesaria la actuación':
+    'Action Level 2 (4–7 pts): Medium risk — Corrective action is necessary',
+  'Nivel 3 (8–10 ptos): Riesgo alto — Es necesaria actuación cuanto antes':
+    'Action Level 3 (8–10 pts): High risk — Corrective action necessary soon',
+  'Nivel 4 (11–15 ptos): Riesgo muy alto — Es necesaria actuación inmediata':
+    'Action Level 4 (11–15 pts): Very high risk — Corrective action necessary NOW',
+
+  // Fig 4.26 OWAS Table
+  '1° Dígito: Espalda': '1st Digit: Back',
+  'Códigos 1 a 4 (Flexionada)': 'Codes 1 to 4 (2 = Bent)',
+  '2° Dígito: Brazos': '2nd Digit: Arms',
+  'Códigos 1 a 3 (1 sobre hombro)': 'Codes 1 to 3 (2 = One ≥ shoulder)',
+  '3° Dígito: Piernas': '3rd Digit: Legs',
+  'Códigos 1 a 7 (Flexionadas)': 'Codes 1 to 7 (4 = Both knees bent)',
+  '4° Dígito: Carga': '4th Digit: Load',
+  'Códigos 1 a 3 (> 20 kg)': (m) =>
+    m === 'eu_iso' ? 'Codes 1 to 3 (> 20 kg)' : 'Codes 1 to 3 (> 20 kg [44 lb])',
+  'Fase / Postura observada': 'Observed Task Phase / Posture',
+  'Código OWAS': 'OWAS Code',
+  'Frec. (N)': 'Count (N)',
+  'Frec. (%)': 'Rel. Freq. (%)',
+  'Categoría de Acción': 'Action Category',
+  'Tomar saco desde el suelo': 'Pick up sack from floor level',
+  'Categoría 4 (Inmediata)': 'Category 4 (Immediate)',
+  'Depositar saco en plataforma': 'Place sack onto platform',
+  'Categoría 3 (Corto plazo)': 'Category 3 (As soon as possible)',
+  'Caminar sin carga': 'Walk unloaded',
+  'Categoría 1 (Aceptable)': 'Category 1 (No action required)',
+  'Espera de material de pie': 'Standing material wait',
+  'Distribución porcentual del ciclo (N = 100 observaciones):':
+    'Work-Cycle Relative Frequency Distribution (N = 100 observations):',
+  'Cat. 1 (Aceptable): 35%': 'Cat. 1 (Acceptable): 35%',
+  'Cat. 3 (Pronto): 35%': 'Cat. 3 (Soon): 35%',
+  'Cat. 4 (Inmediata): 30%': 'Cat. 4 (Immediate): 30%',
+
+  // Fig 4.30 OWAS Loads
+  'Código 1 — Q < 10 kg': (m) =>
+    m === 'eu_iso' ? 'Code 1 — Q ≤ 10 kg' : 'Code 1 — Q ≤ 10 kg [22 lb]',
+  'Código 2 — 10 kg ≤ Q ≤ 20 kg': (m) =>
+    m === 'eu_iso' ? 'Code 2 — 10 kg < Q ≤ 20 kg' : 'Code 2 — 10–20 kg [22–44 lb]',
+  'Código 3 — Q > 20 kg': (m) =>
+    m === 'eu_iso' ? 'Code 3 — Q > 20 kg' : 'Code 3 — Q > 20 kg [44 lb]',
+  '4° Dígito OWAS = 1': 'OWAS 4th Digit = 1',
+  '4° Dígito OWAS = 2': 'OWAS 4th Digit = 2',
+  '4° Dígito OWAS = 3': 'OWAS 4th Digit = 3',
+  'Carga ligera o sin esfuerzo significativo': 'Light load or negligible external force requirement',
+  'Esfuerzo moderado sostenido o repetido': 'Moderate sustained or repeated external load demand',
+  'Carga elevada con alta exigencia raquídea': 'Heavy load generating high lumbosacral L5/S1 compression',
+  'F (Q < 10 kg)': (m) => (m === 'eu_iso' ? 'F (Q ≤ 10 kg)' : 'F (≤10 kg [22 lb])'),
+  'F (10 kg ≤ Q ≤ 20 kg)': (m) => (m === 'eu_iso' ? 'F (10–20 kg)' : 'F (10–20 kg [22–44 lb])'),
+  'F (Q > 20 kg)': (m) => (m === 'eu_iso' ? 'F (Q > 20 kg)' : 'F (>20 kg [44 lb])'),
+
+  // Fig 5.3 NIOSH D & A
+  'Vista Lateral: Desplazamiento D = |V₂ − V₁|': 'Sagittal View: Vertical Travel Distance D = |V2 − V1|',
+  'Vista Superior: Ángulo de Asimetría A (°)': 'Transverse Top View: Asymmetry Angle A (°)',
+  'Origen (V₁)': 'Origin (V1)',
+  'Destino (V₂)': 'Dest. (V2)',
+  'DM = 0,82 + 4,5 / D': (m) =>
+    m === 'us_ansi' ? 'DM = 0.82 + 1.8 / D[in]' : 'DM = 0.82 + 4.5 / D[cm]',
+  'Plano sagital neutro (0°)': 'Mid-sagittal plane (0°)',
+  'Carga': 'Load',
+  'Multiplicador de Asimetría': 'Asymmetry Multiplier (AM)',
+  'AM = 1 − 0,0032 · A': 'AM = 1 − 0.0032 · A',
+
+  // Fig 5.4 NIOSH Couplings
+  '1. Agarre Bueno': '1. Good Coupling',
+  'CM = 1,00 · Con asas anatómicas': 'CM = 1.00 · Optimal Cut-Out / Handles',
+  'Dedos y pulgar en oposición envuelven el asa cilíndrica con muñeca neutra (0°).':
+    'Full power wrap grip around optimal cylindrical handle or cut-out with neutral wrist (0°).',
+  'F sujeción firme': 'Firm power grip F',
+  '2. Agarre Regular': '2. Fair Coupling',
+  'CM = 0,95 (V<75) / 1,00': (m) =>
+    m === 'eu_iso' ? 'CM = 0.95 (V<75 cm) / 1.00' : 'CM = 0.95 (V<75 cm [30 in]) / 1.00',
+  'Caja sin asas: palma en base y los 4 dedos flexionados a 90° sujetando el borde.':
+    'Container without optimal handles: fingers flexed ~90° beneath lower edge.',
+  '3. Agarre Malo': '3. Poor Coupling',
+  'CM = 0,90 · Sin asideros': 'CM = 0.90 · Bulky / Non-Optimal',
+  'Bulto voluminoso o irregular: dedos abiertos por fricción y muñeca desviada.':
+    'Bulky, awkward, or sagging container: finger flexion <90°, high pinch friction & deviated wrist.',
+
+  // Fig 6.1 OCRA Structure
+  'Acciones Realizadas (ATA)': 'Actual Technical Actions (ATA)',
+  'Frecuencia × Duración neta (min)': 'Action frequency (actions/min) × Net duration (min)',
+  'Constante de Referencia': 'Frequency Constant (CF)',
+  '30 acciones técnicas / minuto': '30 actions/min under ideal reference conditions',
+  'Fm · Fuerza': 'FoM (Fm) · Force Multiplier',
+  'Escala de Borg CR-10 (0,15 a 1,00) — Tabla 6.3': 'Borg CR-10 perceived exertion scale (0.01 to 1.00) — Table 6.3',
+  'Fp · Postura': 'PoM (Fp) · Posture & Grip Multiplier',
+  'Hombro, codo, muñeca y tipo de prensión (0,50 a 1,00) — Tabla 6.4': 'Shoulder, elbow, wrist & pinch/grip stereotype (0.10 to 1.00) — Table 6.4',
+  'Ff · Repetitividad': 'ReM (Ff) · Repetitiveness Multiplier',
+  'Duración del ciclo y cadencia (0,30 a 1,00) — Tabla 6.5': 'Cycle time <15 s or high action cadence (0.70 to 1.00) — Table 6.5',
+  'Fe · Estereotipia': 'StM (Fe) · Stereotypy Multiplier',
+  'Identidad gestual entre ciclos (0,70 a 1,00) — Tabla 6.6': 'Identical gesture >50% or >80% of cycle time (0.70 to 1.00) — Table 6.6',
+  'Fa · Agentes físicos': 'AdM (Fa) · Complementary Factors',
+  'Vibraciones, frío, guantes o golpes (0,80 a 1,00) — Tabla 6.7': 'HAV vibration, cold contact, gloves, or mechanical shocks (0.80 to 1.00) — Table 6.7',
+  'Ft · Recuperación': 'RcM (Ft) · Lack of Recovery Multiplier',
+  'Distribución de pausas por hora (0,70 a 1,00) — Tabla 6.8': 'Hours without adequate 5:1 work-rest recovery (0.10 to 1.00) — Table 6.8',
+  'Fc · Duración': 'DuM (Fc) · Net Repetitive Duration Multiplier',
+  'Tiempo total repetitivo en jornada (0,60 a 1,00) — Tabla 6.9': 'Total net repetitive task duration in shift (0.50 to 2.00) — Table 6.9',
+  'ATA de referencia = 30 × Fm × Fp × Ff × Fe × Fa × Ft × Fc × t':
+    'Reference Technical Actions (RTA) = 30 × FoM × PoM × AdM × RcM × DuM × t',
+  'Capacidad admisible corregida para las condiciones reales del puesto':
+    'Recommended upper-limb action capacity adjusted for actual workstation multipliers',
+  'ÍNDICE OCRA = ATA realizadas / ATA de referencia':
+    'OCRA INDEX = Actual Technical Actions (ATA) / Reference Actions (RTA)',
+  '≤ 2,2 Aceptable · 2,3–3,5 Límite · 3,6–4,5 Riesgo Alto · > 4,5 Riesgo Muy Alto':
+    '≤ 2.2 Optimal/Acceptable · 2.3–3.5 Borderline · 3.6–4.5 Moderate/High · > 4.5 Very High Risk',
+
+  // Fig 6.2 OCRA Actions
+  'Acción Técnica Dinámica': 'Dynamic Technical Action',
+  'Conteo cíclico: Alcanzar · Tomar · Colocar': 'Cyclic count: Reach · Grasp · Place',
+  'Contracción isotónica breve con alternancia entre prensión de la pieza y relajación muscular.':
+    'Brief isotonic contraction alternating between active object grasp/placement and micro-relaxation.',
+  'Ciclo dinámico': 'Dynamic cycle',
+  'Acción Técnica Estática': 'Static Technical Action',
+  'Prensión en pinza sostenida ≥ 5 s continuos': 'Sustained pinch/grasp held ≥ 5 s continuously',
+  'Contracción isométrica continua: pulgar e índice sujetan la pieza sin soltarla (penaliza recuperación).':
+    'Continuous isometric contraction holding object ≥ 5 s (counted as 4.5 × duration[s] / 60 actions).',
+  'F pinza isométrica (t ≥ 5 s)': 'Isometric pinch F (t ≥ 5 s)',
+
+  // Fig 6.4 JSI Wrists
+  '1. Muñeca Neutra Alineada': '1. Neutral Aligned Wrist',
+  'PM = 1,0 · Postura muy buena': 'HWP = 1.0 · Very Good Posture',
+  'Eje del antebrazo y 3er metacarpiano colineales (α ≈ 0°) sujetando empuñadura.':
+    'Forearm longitudinal axis and 3rd metacarpal collinear (α ≈ 0°) on ergonomic handle.',
+  'α ≈ 0° (neutra)': 'α ≈ 0° (neutral)',
+  '2. Flexión / Ext. Marcada': '2. Non-Neutral Flexion / Ext.',
+  'PM = 3,0 · Riesgo moderado': 'HWP = 1.5–2.0 · Fair / Marked Posture',
+  'Agarre con flexión o extensión radiocarpiana evidente (25°–35°) sobre herramienta.':
+    'Visible radiocarpal flexion or extension (25°–35°) during tool grip.',
+  '3. Extrema + Desviación': '3. Extreme + Ulnar Deviation',
+  'PM = 4,0 a 5,0 · Postura crítica': 'HWP = 2.0–3.0 · Very Poor Posture',
+  'Prensión con flexión/extensión > 45° combinada con desviación cubital pronunciada.':
+    'Marked flexion/extension > 45° combined with pronounced ulnar deviation under force.',
+  'α > 45° + desv.': 'α > 45° + dev.',
+
+  // Fig 7.1 Fanger
+  'Balance Térmico Humano': 'Human Heat Balance',
+  'Ecuación de Fanger (ISO 7730)\n↓\nÍndices PMV (−3 a +3)\ny PPD (% insatisfechos)':
+    'Fanger Equation (ISO 7730 / ASHRAE 55)\n↓\nPMV (−3 to +3)\n& PPD (% Dissatisfied)',
+  'ta · Temperatura seca del aire (°C)': (m) =>
+    m === 'eu_iso' ? 'ta · Dry-Bulb Air Temp. (°C)' : 'ta · Dry-Bulb Air Temp. (°C [°F])',
+  'Variable ambiental: convección respiratoria y cutánea':
+    'Environmental input: skin & respiratory convective exchange',
+  'tr · Temperatura radiante media (°C)': (m) =>
+    m === 'eu_iso' ? 'tr · Mean Radiant Temp. (°C)' : 'tr · Mean Radiant Temp. (°C [°F])',
+  'Variable ambiental: intercambio por radiación térmica':
+    'Environmental input: surrounding radiant heat exchange',
+  'va · Velocidad relativa del aire (m/s)': (m) =>
+    m === 'eu_iso' ? 'va · Relative Air Velocity (m/s)' : 'va · Air Velocity (m/s [fpm])',
+  'Variable ambiental: transferencia convectiva (anemómetro)':
+    'Environmental input: forced convective heat transfer',
+  'HR · Humedad relativa (%)': 'RH · Relative Humidity (%)',
+  'Variable ambiental: presión de vapor y evaporación sudoral':
+    'Environmental input: water vapor pressure & sweat evaporation',
+  'M · Metabolismo energético (W/m² · met)': 'M · Metabolic Rate (W/m² · met)',
+  'Variable personal: carga física de la tarea (Tabla 7.3)':
+    'Personal input: task physical workload (1 met = 58.15 W/m²)',
+  'Icl · Aislamiento térmico de ropa (clo)': 'Icl · Clothing Insulation (clo · m²·K/W)',
+  'Variable personal: resistencia térmica indumentaria (Tabla 7.4)':
+    'Personal input: ensemble thermal resistance (1 clo = 0.155 m²·K/W)',
+  'Criterio de Confort Térmico Aceptable (Categoría B — Tabla 7.7)':
+    'General Thermal Comfort Criterion (ISO 7730 Cat. B / ASHRAE 55 — Table 7.7)',
+  '−0,5 ≤ PMV ≤ +0,5     ·     PPD < 10 % de personas insatisfechas':
+    '−0.5 ≤ PMV ≤ +0.5     ·     PPD < 10% Predicted Percentage of Dissatisfied',
+
+  // Fig 7.2 & 12.1 PMV-PPD
+  'Límite de confort PPD = 10 %': 'Comfort Threshold PPD = 10%',
+  'Carga y descarga (−0,38 · 8,0%)': 'Shipping Dock (−0.38 · 8.0%)',
+  'Separación bolsines (−0,27 · 6,5%)': 'Pouch Sorting (−0.27 · 6.5%)',
+  'Almacén salud (+0,63 · 13,3% > 10%)': 'Main Warehouse (+0.63 · 13.3% > 10%)',
+  'PMV (Voto Medio Estimado)': 'PMV — Predicted Mean Vote (−3 Cold to +3 Hot)',
+  'PPD (% de insatisfechos)': 'PPD — Predicted Percentage of Dissatisfied (%)',
+
+  // Fig 7.3 WBGT Sensors
+  '1. Termómetro de Globo (Tg)': '1. Black Globe Sensor (Tg)',
+  'Esfera hueca de cobre negro mate Ø 150 mm (carga radiante)': (m) =>
+    m === 'eu_iso'
+      ? 'Matte-black copper sphere Ø 150 mm (radiant heat load)'
+      : 'Matte-black copper sphere Ø 150 mm [6 in] (radiant heat)',
+  '2. Bulbo Húmedo Natural (Tbh)': '2. Natural Wet-Bulb (Tnwb)',
+  'Mecha de algodón en agua destilada (evaporación · peso 70 %)':
+    'Distilled-water cotton wick sensor (evaporative cooling · 70% weight)',
+  '3. Bulbo Seco del Aire (Ta)': '3. Shielded Dry-Bulb (Ta)',
+  'Temperatura seca del aire protegida de la radiación solar':
+    'Ambient air temperature shielded from direct solar radiation',
+  'UNIDAD REGISTRADORA DE ESTRÉS TÉRMICO (WBGT / TGBH)':
+    'WBGT HEAT STRESS MONITOR & DATALOGGER (ISO 7243 / ACGIH TLV)',
+  'Interior o exterior sin carga solar:   WBGT = 0,7 · Tbh + 0,3 · Tg\nExterior con carga solar:   WBGT = 0,7 · Tbh + 0,2 · Tg + 0,1 · Ta':
+    'Indoors or outdoors without solar load:   WBGTin = 0.7 · Tnwb + 0.3 · Tg\nOutdoors with direct solar load:   WBGTout = 0.7 · Tnwb + 0.2 · Tg + 0.1 · Ta',
+  'Ubicación a la altura del centro de gravedad del trabajador · Estabilización previa obligatoria del bulbo y globo':
+    'Mount at worker torso center-of-mass height (1.1 m [3.6 ft] standing) · Allow ≥15 min globe stabilization',
+
+  // Fig 8.2 ISO 5349 Axes
+  'Eje Zh (longitudinal)': 'zh-Axis (longitudinal)',
+  'Eje Xh (dorsopalmar)': 'xh-Axis (dorsopalmar)',
+  'Eje Yh (empuñadura)': 'yh-Axis (lateral / grip)',
+  'Origen Biodinámico (ISO 5349)': 'Basicentric Origin (ISO 5349-1)',
+  'Centrado en la cabeza del 3er metacarpiano (nudillo medio) de la mano acoplada a la empuñadura vibrante.':
+    'Centered on the head of the 3rd metacarpal (middle knuckle) at the vibrating tool handle interface.',
+  'Definición de los Tres Ejes': 'Orthogonal Axis Definitions',
+  '• Zh: Longitudinal al 3er metacarpiano y eje del antebrazo.\n• Xh: Perpendicular dorsopalmar a través de la palma.\n• Yh: Lateral paralelo al eje cilíndrico del mango.':
+    '• zh: Longitudinal along 3rd metacarpal & forearm axis.\n• xh: Dorsopalmar axis perpendicular through the palm.\n• yh: Lateral axis parallel to cylindrical handle centerline.',
+  'Criterio Res. 295/03 / UE': (m) =>
+    m === 'us_ansi'
+      ? 'ANSI S2.70 / ACGIH TLV Criteria'
+      : m === 'eu_iso'
+        ? 'EU Directive 2002/44/EC Criteria'
+        : 'EU 2002/44/EC & ANSI S2.70 Criteria',
+  'Nivel de Acción A(8) = 2,5 m/s²\nValor Límite Exposición = 5,0 m/s²\nPonderación frecuencial: Wh':
+    'Action Value EAV / DEAV: A(8) = 2.5 m/s²\nExposure Limit ELV / DELV: A(8) = 5.0 m/s²\nFrequency weighting: Wh (8–1000 Hz)',
+  'Valor Total de Vibración:  ahv = √(ahwx² + ahwy² + ahwz²)    ·    Exposición diaria:  A(8) = ahv · √(T / 8)':
+    'Vibration Total Value:  ahv = √(ahwx² + ahwy² + ahwz²)    ·    8-Hour Exposure:  A(8) = ahv · √(T / 8)',
+
+  // Fig 9.1 Protocol Relation
+  '1. PLANILLA / PROTOCOLO LEGAL (ej. Res. SRT 886/15)': (m) =>
+    m === 'us_ansi'
+      ? '1. REGULATORY HAZARD SCREENING CHECKLIST (OSHA / ANSI Z10)'
+      : m === 'eu_iso'
+        ? '1. STATUTORY RISK REGISTER (EU Framework Directive 89/391/EEC)'
+        : '1. REGULATORY ERGONOMIC SCREENING PROTOCOL (OSHA / EU 89/391/EEC)',
+  'Define QUÉ factores relevar, QUÉ datos administrativos y laborales asentar\ny CON QUÉ periodicidad mínima documentar el seguimiento.':
+    'Defines WHICH hazard factors to screen, WHICH administrative & shift exposure records to log,\nand AT WHAT statutory audit interval follow-up must be documented.',
+  'Remite para la cuantificación objetiva a': 'Triggers quantitative modeling via',
+  '2. MÉTODO TÉCNICO INTERNACIONAL DE EVALUACIÓN':
+    '2. INTERNATIONAL QUANTITATIVE ASSESSMENT METHOD',
+  'RULA · REBA · OWAS · NIOSH · Snook · OCRA · JSI · Fanger · WBGT · ISO 2631 / 5349\nDefine CÓMO medir las variables biomecánicas y CÓMO interpretar la escala de riesgo.':
+    'RULA · REBA · OWAS · NIOSH RNLE · Liberty Mutual · OCRA · JSI · ISO 7730 · WBGT · ISO 2631 / 5349\nDefines HOW to measure biomechanical inputs and HOW to compute validated risk indices.',
+  'Fundamenta técnicamente el dictamen en': 'Substantiates engineering controls in',
+  '3. INFORME TÉCNICO ERGONÓMICO PROFESIONAL':
+    '3. PROFESSIONAL ERGONOMIC ENGINEERING REPORT',
+  'Integra trazabilidad instrumental, memoria de cálculo, priorización de mejoras,\nmedidas de ingeniería concretas, responsables, plazos y verificación posterior.':
+    'Integrates instrument calibration traceability, full calculation sheets, priority ranking,\nengineering redesign specs, responsible owners, deadlines & post-intervention verification.',
+  'Documento': 'Tier / Document',
+  'Función Específica': 'Primary Engineering Role',
+  'Resultado / Exigencia': 'Deliverable / Requirement',
+  '1. Planilla Legal': '1. Statutory Checklist',
+  'Identificación inicial y registro formal auditable': 'Initial hazard identification & auditable legal record',
+  'Trazabilidad normativa por puesto': 'Workstation regulatory traceability',
+  '2. Método Técnico': '2. Analytical Method',
+  'Modelización biomecánica y cálculo de índices': 'Biomechanical modeling & risk index computation',
+  'Nivel cuantitativo de riesgo': 'Validated quantitative risk tier',
+  '3. Informe Final': '3. Engineering Report',
+  'Diagnóstico integral y plan de ingeniería priorizado': 'Comprehensive diagnosis & prioritized CAPA plan',
+  'Reducción verificable del riesgo': 'Verified post-redesign risk reduction',
+  '«La planilla sin método carece de rigor técnico; el método sin registro incumple la trazabilidad documental»':
+    '"A checklist without an analytical method lacks scientific rigor; a method without statutory records fails compliance traceability."',
+
+  // Fig 10.1 Eval Cycle
+  '1. Identificación de Peligros': '1. Hazard Identification',
+  'Observación de tareas, ciclos e indicadores': 'Work-cycle analysis, symptoms & exposure screening',
+  '2. Evaluación de Riesgos': '2. Quantitative Risk Assessment',
+  'Medición instrumental y aplicación de métodos': 'Instrumental measurement & standardized methods',
+  '3. Medidas Correctoras': '3. Engineering Controls (CAPA)',
+  'Rediseño técnico priorizado con plazos': 'Prioritized workstation redesign & target deadlines',
+  '4. Verificación / Reevaluación': '4. Post-Intervention Verification',
+  'Comprobación cuantitativa del descenso del riesgo': 'Quantitative re-evaluation confirming risk reduction',
+  'Cuantificar': 'Quantify',
+  'Priorizar': 'Prioritize',
+  'Controlar': 'Implement',
+  'Mejora continua': 'Verify & Sustain',
+
+  // Fig 10.2 Priority Criteria
+  'A. Criterios Técnicos de Priorización (Tabla 10.1):': 'A. Six Technical Prioritization Criteria (Table 10.1):',
+  '1. Naturaleza estructural del daño (lesión permanente vs. fatiga transitoria)':
+    '1. Structural severity of tissue damage (acute spinal/tendon injury vs. reversible discomfort)',
+  '2. Irreversibilidad anatomopatológica (hernia discal, STC, síndrome de Raynaud)':
+    '2. Pathophysiological irreversibility (disc herniation, CTS, HAVS vascular/neurological damage)',
+  '3. Número de trabajadores expuestos y acumulación histórica de exposición':
+    '3. Exposed worker headcount and cumulative historical shift exposure',
+  '4. Posibilidad técnica efectiva de intervención (o medida provisional inmediata)':
+    '4. Engineering control feasibility (or immediate interim administrative control)',
+  '5. Coexistencia y sinergia de múltiples factores de riesgo en el mismo puesto':
+    '5. Multi-hazard synergy (concurrent force, awkward posture, repetition, cold, or vibration)',
+  '6. Antecedentes clínicos o sintomatología ya registrada en el puesto':
+    '6. Recorded MSD incidence, medical surveillance findings, or worker symptom reports',
+  'B. Jerarquía General entre Factores de Riesgo (Tabla 10.2):':
+    'B. General Risk-Factor Intervention Priority Hierarchy (Table 10.2):',
+  'Prioridad 1°': 'Priority 1',
+  'Manipulación Manual de Cargas (NIOSH / Snook)':
+    'Manual Materials Handling — Lifting / Push-Pull (NIOSH RNLE / ISO 11228-1/-2)',
+  'Prioridad 2°': 'Priority 2',
+  'Movimientos Repetitivos de MMSS (OCRA / JSI)':
+    'Upper-Limb Repetitive Exertions (OCRA / Strain Index / ACGIH HAL / ISO 11228-3)',
+  'Prioridad 3°': 'Priority 3',
+  'Posturas Forzadas y Estáticas (RULA / REBA / OWAS)':
+    'Awkward & Sustained Static Working Postures (RULA / REBA / OWAS / ISO 11226)',
+  'Prioridad 4°': 'Priority 4',
+  'Vibraciones Mecánicas (ISO 2631 / ISO 5349)':
+    'Mechanical Vibration — Whole-Body & Hand-Arm (ISO 2631-1 / ISO 5349-1 / EU 2002/44/EC)',
+  'Prioridad 5°': 'Priority 5',
+  'Ambiente Térmico (WBGT / Fanger — salvo estrés térmico agudo)':
+    'Thermal Comfort (PMV–PPD); Note: Acute Heat Stress > WBGT TLV escalates to Priority 1',
+
+  // Fig 11.6 HAL / NAM Chart
+  'Mano derecha (NAM = 5; Fuerza = 1)': 'Right Hand (HAL = 5.0; NPF = 1.0)',
+  'Mano izquierda (NAM = 1; Fuerza = 0,5)': 'Left Hand (HAL = 1.0; NPF = 0.5)',
+  'ZONA DE RIESGO (> TLV)': 'HAZARDOUS ZONE (> ACGIH TLV)',
+  'Zona de precaución (> Límite Acción)': 'Caution Zone (Between AL & TLV)',
+  'ZONA DE SEGURIDAD': 'ACCEPTABLE ZONE (< Action Limit)',
+  'Nivel de Actividad Manual — NAM (0 a 10)': 'Hand Activity Level — HAL (0 to 10)',
+  'Fuerza Pico Normalizada (Escala de Borg 0–10)': 'Normalized Peak Force — NPF (0–10 Borg CR-10 Scale)',
+
+  // Fig 12.2 Dock Step
+  'Muelle interior elevado (+22 cm)': (m) =>
+    m === 'eu_iso' ? 'Elevated Interior Dock (+22 cm)' : 'Elevated Interior Dock (+22 cm [8.7 in])',
+  'Caja de carga camioneta': 'Delivery Van Cargo Bed',
+  'Desnivel 22 cm': (m) => (m === 'eu_iso' ? '22 cm Step' : '22 cm [8.7 in] Step'),
+  '55 cm al suelo': (m) => (m === 'eu_iso' ? '55 cm above grade' : '55 cm [21.7 in]'),
+  'Altura relativa = 33 cm': (m) => (m === 'eu_iso' ? 'Net height = 33 cm' : 'Net height = 33 cm [13.0 in]'),
+  'Al eliminar el desnivel de 22 cm y elevar carros a ≥ 55 cm, la manipulación queda entre nudillos y hombros': (m) =>
+    m === 'eu_iso'
+      ? 'Eliminating the 22 cm step and raising carts to ≥55 cm keeps handling within knuckle-to-shoulder height'
+      : 'Eliminating the 22 cm [8.7 in] step & raising carts ≥55 cm [21.7 in] keeps lifts in the knuckle-to-shoulder zone',
+
+  // Fig 12.4 NIOSH Heights
+  'Bulto 10 kg (IL = 1,37)': (m) =>
+    m === 'eu_iso' ? '10 kg Parcel (LI = 1.37)' : '10 kg [22 lb] Parcel (LI = 1.37)',
+  'CONTENEDOR (BIN)': 'BULK BIN CONTAINER',
+  'V₁ = 45 cm': (m) => (m === 'eu_iso' ? 'V1 = 45 cm' : 'V1 = 45 cm [17.7 in]'),
+  '3 lev./min (D = 10 cm)': (m) => (m === 'eu_iso' ? '3 lifts/min (D = 10 cm)' : '3 lifts/min (D = 10 cm [3.9 in])'),
+  'Depósito (IL = 0,89)': 'Cart Placement (LI = 0.89)',
+  'V₂ = 35 cm': (m) => (m === 'eu_iso' ? 'V2 = 35 cm' : 'V2 = 35 cm [13.8 in]'),
+  'Tabla 12.6: En origen IL = 1,37 (riesgo moderado sobre L5/S1) por postura forzada dentro del lateral del bin':
+    'Table 12.6: At bin origin LI = 1.37 (moderate L5/S1 risk) due to deep reach over rigid 95 cm bin wall',
+
+  // Fig 13.1 Seat Dimensions
+  'Profundidad: 400 mm (Ancho: 490 mm)': (m) =>
+    m === 'eu_iso'
+      ? 'Pan depth: 400 mm (Width: 490 mm)'
+      : 'Pan depth: 400 mm [15.7 in] (Width: 490 mm [19.3 in])',
+  'Altura: 600–650 mm\n(Reg. vert.: ±30 mm)': (m) =>
+    m === 'eu_iso'
+      ? 'Height: 600–650 mm\n(Vert. adj.: ±30 mm)'
+      : 'Height: 600–650 mm [23.6–25.6 in]\n(Vert. adj.: ±30 mm [±1.2 in])',
+  'Corredera longitudinal: 300 mm (±150 mm)': (m) =>
+    m === 'eu_iso'
+      ? 'Fore-aft slide travel: 300 mm (±150 mm)'
+      : 'Fore-aft slide: 300 mm [11.8 in] (±150 mm)',
+  'Especificaciones Tabla 13.3': 'Seat Specifications (Table 13.3)',
+  '• Regulación de peso (suspensión):\n   50 a 150 / 170 kg\n• Inclinación de banqueta: 5° ± 6°\n• Altura apoyacabezas: 685–860 mm\n• Ancho útil respaldo: 480 mm\n• Tapizado: esterilla PVC ventilada (6 mm)': (m) =>
+    m === 'eu_iso'
+      ? '• Suspension weight range:\n   50 to 150 / 170 kg\n• Cushion tilt: 5° ± 6°\n• Headrest height: 685–860 mm\n• Backrest width: 480 mm\n• Cushion pad: ventilated 6 mm mesh'
+      : '• Suspension weight range:\n   50–170 kg [110–375 lb]\n• Cushion tilt: 5° ± 6°\n• Headrest: 685–860 mm [27–33.9 in]\n• Backrest width: 480 mm [18.9 in]\n• Pad: ventilated 6 mm [0.24 in] mesh',
+  'Atenuación de Vibración Eje Z': 'Z-Axis WBV Isolation',
+  'El sistema neumático/hidráulico en tijera desacopla las resonancias de baja frecuencia (1–4 Hz) del chasis.':
+    'Pneumatic/hydraulic scissor suspension decouples low-frequency chassis resonances (1–4 Hz) from the spine.',
+
+  // Fig 13.3 & 13.4 Spectra
+  'Medido sin ponderar (m/s²)': 'Unweighted RMS Acceleration (m/s²)',
+  'Ponderado Res. 295/03 (Apz = 0,4286 m/s²)': 'Wk-Weighted RMS (awz = 0.4286 m/s² — ISO 2631-1)',
+  'Frecuencia central de banda de 1/3 de octava (Hz) · Ap global = 0,4463 m/s² (< 0,5 m/s²)':
+    '1/3-Octave Band Center Frequency (Hz) · Overall A(8) = 0.4463 m/s² (< EAV 0.50 m/s²)',
+  'Eje X (ahwx = 0,6271 m/s²)': 'xh-Axis (ahwx = 0.6271 m/s²)',
+  'Eje Y (ahwy = 0,8772 m/s²)': 'yh-Axis (ahwy = 0.8772 m/s²)',
+  'Eje Z (ahwz = 0,3154 m/s²)': 'zh-Axis (ahwz = 0.3154 m/s²)',
+  'Frecuencia central 1/3 octava (Hz) · Valor Total VTV = 1,1 m/s² (< Nivel Acción 2,5 m/s²)':
+    '1/3-Octave Center Frequency (Hz) · Total ahv = 1.123 m/s² (< EAV 2.50 m/s²)',
+};
+
+function trD(text: string | undefined): string {
+  if (!text) return '';
+  if (!activeDiagramLocale || activeDiagramLocale.lang !== 'en') return text;
+  const mode = activeDiagramLocale.mode || 'intl_dual';
+  if (/^FIGURA\s+/i.test(text)) {
+    return text.replace(/^FIGURA\s+/i, 'FIGURE ');
+  }
+  const entry = DIAGRAM_EN_EXACT[text];
+  if (entry) {
+    const resolved = typeof entry === 'function' ? entry(mode) : entry;
+    return applyLocaleDecimals(resolved, activeDiagramLocale);
+  }
+  return applyLocaleDecimals(text, activeDiagramLocale);
+}
+
 
 const C = {
   bg: '#ffffff',
@@ -112,7 +643,8 @@ function drawContainedTag(
   bounds: { x: number; y: number; w: number; h: number },
   font = 'bold 11px "Public Sans", sans-serif',
 ) {
-  const cleanLabel = sanitizeManualImageText(label) || label;
+  const translatedLabel = trD(label);
+  const cleanLabel = sanitizeManualImageText(translatedLabel) || translatedLabel;
   ctx.save();
   ctx.font = font;
   const maxTextW = Math.max(48, bounds.w - 22);
@@ -250,6 +782,8 @@ function drawFlowBox(
   accent: 'default' | 'blue' | 'orange' | 'dark' | 'green' = 'default',
   align: 'center' | 'left' = 'center',
 ): number {
+  title = trD(title);
+  sub = sub ? trD(sub) : sub;
   ctx.save();
   const padX = 11;
   const padY = 7;
@@ -355,6 +889,7 @@ function drawContainedBanner(
   textColor = C.ink,
   align: 'center' | 'left' = 'center',
 ) {
+  text = trD(text);
   ctx.save();
   const padX = 12;
   const availW = Math.max(40, w - padX * 2);
@@ -419,12 +954,14 @@ function drawContainedTable(
     colRatios,
     colAligns = [],
     colMono = [],
-    headers,
-    rows,
+    headers: rawHeaders,
+    rows: rawRows,
     highlightRowIdx = -1,
     minRowH = 34,
     fontSize = 11.2,
   } = opts;
+  const headers = rawHeaders.map((h) => trD(h));
+  const rows = rawRows.map((r) => r.map((c) => trD(c)));
 
   ctx.save();
   const ratioSum = colRatios.reduce((acc, v) => acc + v, 0) || 1;
@@ -541,8 +1078,10 @@ function drawContainedTable(
 }
 
 function drawHeader(ctx: CanvasRenderingContext2D, w: number, figLabel: string, title: string): number {
-  const cleanFigLabel = sanitizeManualImageText(figLabel) || figLabel;
-  const cleanTitle = sanitizeManualImageText(title) || title;
+  const trFig = trD(figLabel);
+  const trTitle = trD(title);
+  const cleanFigLabel = sanitizeManualImageText(trFig) || trFig;
+  const cleanTitle = sanitizeManualImageText(trTitle) || trTitle;
   ctx.save();
   ctx.font = 'bold 12px "IBM Plex Mono", monospace';
   const badgeW = Math.ceil(ctx.measureText(cleanFigLabel).width) + 14;
@@ -603,6 +1142,9 @@ function drawHumanHandCard(
     viewBounds: { x: number; y: number; w: number; h: number },
   ) => void,
 ) {
+  title = trD(title);
+  badge = trD(badge);
+  detailNote = trD(detailNote);
   const { x, y, w, h } = cardRect;
   ctx.save();
   ctx.fillStyle = '#ffffff';
@@ -672,7 +1214,16 @@ export function renderDiagramVariant(
   width: number,
   height: number,
   dpiScale = 1,
+  locale?: DiagramLocaleOptions,
 ) {
+  activeDiagramLocale = locale;
+  const isEn = locale?.lang === 'en';
+  const fmtChartDec = (numStr: string) =>
+    isEn && !(locale?.mode === 'eu_iso' && locale?.euComma)
+      ? numStr.replace(',', '.')
+      : numStr.replace('.', ',');
+  const footerText = isEn ? MEDICAL_MANUAL_FOOTER_EN : undefined;
+  try {
   const scale = Math.max(1, dpiScale);
   canvas.width = Math.round(width * scale);
   canvas.height = Math.round(height * scale);
@@ -759,7 +1310,7 @@ export function renderDiagramVariant(
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.fillText(
-        'Evolución de la carga biomecánica (Momento / Fuerza F vs. Umbral admisible)',
+        trD('Evolución de la carga biomecánica (Momento / Fuerza F vs. Umbral admisible)'),
         panelX + 20,
         panelY + 22,
       );
@@ -786,9 +1337,9 @@ export function renderDiagramVariant(
       ctx.fillStyle = '#ffffff';
       ctx.textAlign = 'center';
       ctx.font = 'bold 12px "IBM Plex Mono", monospace';
-      ctx.fillText('RIESGO ALTO', bar1X + barW / 2, bar1Y + 46);
+      ctx.fillText(trD('RIESGO ALTO'), bar1X + barW / 2, bar1Y + 46);
       ctx.font = '11px "Public Sans", system-ui, sans-serif';
-      ctx.fillText('Demanda > Capacidad', bar1X + barW / 2, bar1Y + 66);
+      ctx.fillText(trD('Demanda > Capacidad'), bar1X + barW / 2, bar1Y + 66);
 
       // Threshold line (drawn across chart with contained tag on right)
       const threshY = baseY - 82;
@@ -838,14 +1389,14 @@ export function renderDiagramVariant(
       ctx.fillStyle = '#ffffff';
       ctx.textAlign = 'center';
       ctx.font = 'bold 11.5px "IBM Plex Mono", monospace';
-      ctx.fillText('RIESGO ACEPTABLE', bar2X + barW / 2, bar2Y + bar2H / 2 + 1);
+      ctx.fillText(trD('RIESGO ACEPTABLE'), bar2X + barW / 2, bar2Y + bar2H / 2 + 1);
 
       // X-axis captions
       ctx.fillStyle = C.ink;
       ctx.font = 'bold 11.5px "Public Sans", system-ui, sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('Antes del rediseño', bar1X + barW / 2, baseY + 20);
-      ctx.fillText('Después del rediseño', bar2X + barW / 2, baseY + 20);
+      ctx.fillText(trD('Antes del rediseño'), bar1X + barW / 2, baseY + 20);
+      ctx.fillText(trD('Después del rediseño'), bar2X + barW / 2, baseY + 20);
       ctx.restore();
       break;
     }
@@ -1043,12 +1594,12 @@ export function renderDiagramVariant(
 
         ctx.fillStyle = C.ink;
         ctx.font = 'bold 11.5px "Plus Jakarta Sans", system-ui, sans-serif';
-        const nLines = wrapDiagramText(ctx, dg.name, cardW - 14);
+        const nLines = wrapDiagramText(ctx, trD(dg.name), cardW - 14);
         ctx.fillText(nLines[0], cx + cardW / 2, cardY + 52);
 
         ctx.fillStyle = C.sub;
         ctx.font = '10.5px "Public Sans", system-ui, sans-serif';
-        const rLines = wrapDiagramText(ctx, dg.r, cardW - 14);
+        const rLines = wrapDiagramText(ctx, trD(dg.r), cardW - 14);
         ctx.fillText(rLines[0], cx + cardW / 2, cardY + 70);
         ctx.restore();
       });
@@ -1086,7 +1637,7 @@ export function renderDiagramVariant(
       ctx.font = 'bold 11.8px "Plus Jakarta Sans", system-ui, sans-serif';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText('Distribución porcentual del ciclo (N = 100 observaciones):', 24, barLabelY);
+      ctx.fillText(trD('Distribución porcentual del ciclo (N = 100 observaciones):'), 24, barLabelY);
 
       const barY = barLabelY + 14;
       const barH = 30;
@@ -1109,9 +1660,9 @@ export function renderDiagramVariant(
       ctx.font = 'bold 11px "IBM Plex Mono", monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText('Cat. 1 (Aceptable): 35%', 24 + w1 / 2, barY + barH / 2 + 0.5);
-      ctx.fillText('Cat. 3 (Pronto): 35%', 24 + w1 + w2 / 2, barY + barH / 2 + 0.5);
-      ctx.fillText('Cat. 4 (Inmediata): 30%', 24 + w1 + w2 + w3 / 2, barY + barH / 2 + 0.5);
+      ctx.fillText(trD('Cat. 1 (Aceptable): 35%'), 24 + w1 / 2, barY + barH / 2 + 0.5);
+      ctx.fillText(trD('Cat. 3 (Pronto): 35%'), 24 + w1 + w2 / 2, barY + barH / 2 + 0.5);
+      ctx.fillText(trD('Cat. 4 (Inmediata): 30%'), 24 + w1 + w2 + w3 / 2, barY + barH / 2 + 0.5);
       ctx.restore();
       break;
     }
@@ -1184,7 +1735,7 @@ export function renderDiagramVariant(
           },
         );
       });
-      drawCenteredManualFooter(ctx, width, height, 26);
+      drawCenteredManualFooter(ctx, width, height, 26, footerText);
       break;
     }
 
@@ -1207,8 +1758,8 @@ export function renderDiagramVariant(
       ctx.fillStyle = C.ink;
       ctx.font = 'bold 12.5px "Plus Jakarta Sans", system-ui, sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('Vista Lateral: Desplazamiento D = |V₂ − V₁|', 200, headerH + 24);
-      ctx.fillText('Vista Superior: Ángulo de Asimetría A (°)', 600, headerH + 24);
+      ctx.fillText(trD('Vista Lateral: Desplazamiento D = |V₂ − V₁|'), 200, headerH + 24);
+      ctx.fillText(trD('Vista Superior: Ángulo de Asimetría A (°)'), 600, headerH + 24);
 
       // Left panel: Floor & boxes V1, V2
       ctx.strokeStyle = '#334155';
@@ -1224,14 +1775,14 @@ export function renderDiagramVariant(
       ctx.strokeRect(96, 350, 88, 48);
       ctx.fillStyle = C.ink;
       ctx.font = 'bold 11px "IBM Plex Mono", monospace';
-      ctx.fillText('Origen (V₁)', 140, 378);
+      ctx.fillText(trD('Origen (V₁)'), 140, 378);
 
       ctx.fillStyle = 'rgba(234, 88, 12, 0.14)';
       ctx.strokeStyle = C.arcOrange;
       ctx.fillRect(96, 170, 88, 48);
       ctx.strokeRect(96, 170, 88, 48);
       ctx.fillStyle = C.ink;
-      ctx.fillText('Destino (V₂)', 140, 198);
+      ctx.fillText(trD('Destino (V₂)'), 140, 198);
 
       drawArrow(ctx, 218, 374, 218, 194, '#090d16', 2.4);
       drawArrow(ctx, 218, 194, 218, 374, '#090d16', 2.4);
@@ -1336,7 +1887,7 @@ export function renderDiagramVariant(
 
       drawCurvedAngleArc(ctx, tx, ty, 76, -Math.PI / 2, asymRad, 'A = 45°', rightBounds);
       drawFlowBox(ctx, 465, 424, 260, 52, 'Multiplicador de Asimetría', 'AM = 1 − 0,0032 · A', 'blue');
-      drawCenteredManualFooter(ctx, width, height, 26);
+      drawCenteredManualFooter(ctx, width, height, 26, footerText);
       break;
     }
 
@@ -1399,7 +1950,7 @@ export function renderDiagramVariant(
           drawCurvedAngleArc(ctx, pts.wrist.x, pts.wrist.y, 34, -0.25, wAng, 'α > 25°', vb);
         },
       );
-      drawCenteredManualFooter(ctx, width, height, 26);
+      drawCenteredManualFooter(ctx, width, height, 26, footerText);
       break;
     }
 
@@ -1492,7 +2043,7 @@ export function renderDiagramVariant(
           drawContainedTag(ctx, 'F pinza isométrica (t ≥ 5 s)', pts.propCenter.x + 18, pts.indexTip.y - 46, '#090d16', '#090d16', vb);
         },
       );
-      drawCenteredManualFooter(ctx, width, height, 26);
+      drawCenteredManualFooter(ctx, width, height, 26, footerText);
       break;
     }
 
@@ -1582,7 +2133,7 @@ export function renderDiagramVariant(
           drawCurvedAngleArc(ctx, pts.wrist.x, pts.wrist.y, 34, refAng, handAng, 'α > 45° + desv.', vb);
         },
       );
-      drawCenteredManualFooter(ctx, width, height, 26);
+      drawCenteredManualFooter(ctx, width, height, 26, footerText);
       break;
     }
 
@@ -1824,11 +2375,11 @@ export function renderDiagramVariant(
       ctx.fillStyle = C.ink;
       ctx.font = 'bold 12px "Public Sans", system-ui, sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('PMV (Voto Medio Estimado)', gx + gw / 2, height - 14);
+      ctx.fillText(trD('PMV (Voto Medio Estimado)'), gx + gw / 2, height - 14);
       ctx.save();
       ctx.translate(26, gy + gh / 2);
       ctx.rotate(-Math.PI / 2);
-      ctx.fillText('PPD (% de insatisfechos)', 0, 0);
+      ctx.fillText(trD('PPD (% de insatisfechos)'), 0, 0);
       ctx.restore();
       break;
     }
@@ -2084,7 +2635,7 @@ export function renderDiagramVariant(
         '#0f172a',
         '#ffffff',
       );
-      drawCenteredManualFooter(ctx, width, height, 26);
+      drawCenteredManualFooter(ctx, width, height, 26, footerText);
       break;
     }
 
@@ -2229,7 +2780,7 @@ export function renderDiagramVariant(
       ctx.fillStyle = C.ink;
       ctx.font = 'bold 12px "Plus Jakarta Sans", system-ui, sans-serif';
       ctx.textAlign = 'left';
-      ctx.fillText('A. Criterios Técnicos de Priorización (Tabla 10.1):', 36, headerH + 22);
+      ctx.fillText(trD('A. Criterios Técnicos de Priorización (Tabla 10.1):'), 36, headerH + 22);
 
       crit.forEach((c, i) => {
         const y = headerH + 34 + i * 38;
@@ -2243,7 +2794,7 @@ export function renderDiagramVariant(
       ctx.fillStyle = C.ink;
       ctx.font = 'bold 12px "Plus Jakarta Sans", system-ui, sans-serif';
       ctx.textAlign = 'left';
-      ctx.fillText('B. Jerarquía General entre Factores de Riesgo (Tabla 10.2):', 36, secBY);
+      ctx.fillText(trD('B. Jerarquía General entre Factores de Riesgo (Tabla 10.2):'), 36, secBY);
 
       // Full-width 568px priority cards so Priority 5 text NEVER overflows its box!
       const ranks = [
@@ -2278,13 +2829,13 @@ export function renderDiagramVariant(
         ctx.font = 'bold 12px "IBM Plex Mono", monospace';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(rk.r, cardX + 59, y + cardH / 2);
+        ctx.fillText(trD(rk.r), cardX + 59, y + cardH / 2);
 
         // Wrapped factor description strictly inside right portion (426px wide)
         ctx.fillStyle = C.ink;
         ctx.font = 'bold 11.5px "Public Sans", system-ui, sans-serif';
         ctx.textAlign = 'left';
-        const fLines = wrapDiagramText(ctx, rk.f, cardW - 140);
+        const fLines = wrapDiagramText(ctx, trD(rk.f), cardW - 140);
         ctx.fillText(fLines[0], cardX + 130, y + 20);
         if (fLines[1]) {
           ctx.fillText(fLines[1], cardX + 130, y + 34);
@@ -2387,11 +2938,11 @@ export function renderDiagramVariant(
       ctx.fillStyle = C.ink;
       ctx.font = 'bold 12px "Public Sans", system-ui, sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('Nivel de Actividad Manual — NAM (0 a 10)', gx + gw / 2, height - 14);
+      ctx.fillText(trD('Nivel de Actividad Manual — NAM (0 a 10)'), gx + gw / 2, height - 14);
       ctx.save();
       ctx.translate(26, gy + gh / 2);
       ctx.rotate(-Math.PI / 2);
-      ctx.fillText('Fuerza Pico Normalizada (Escala de Borg 0–10)', 0, 0);
+      ctx.fillText(trD('Fuerza Pico Normalizada (Escala de Borg 0–10)'), 0, 0);
       ctx.restore();
       break;
     }
@@ -2696,7 +3247,7 @@ export function renderDiagramVariant(
         ctx.fillStyle = C.sub;
         ctx.font = '11px "IBM Plex Mono", monospace';
         ctx.textAlign = 'right';
-        ctx.fillText(v.toFixed(1).replace('.', ','), gx - 8, y + 4);
+        ctx.fillText(fmtChartDec(v.toFixed(1)), gx - 8, y + 4);
       }
 
       ctx.strokeStyle = C.ink;
@@ -2718,10 +3269,10 @@ export function renderDiagramVariant(
         ctx.fillStyle = C.ink;
         ctx.font = '10px "IBM Plex Mono", monospace';
         ctx.textAlign = 'center';
-        ctx.fillText(medido[idx].toFixed(2).replace('.', ','), x0 + bw / 2, gy + gh - h1 - 6);
-        ctx.fillText(pond[idx].toFixed(2).replace('.', ','), x0 + bw + 4 + bw / 2, gy + gh - h2 - 6);
+        ctx.fillText(fmtChartDec(medido[idx].toFixed(2)), x0 + bw / 2, gy + gh - h1 - 6);
+        ctx.fillText(fmtChartDec(pond[idx].toFixed(2)), x0 + bw + 4 + bw / 2, gy + gh - h2 - 6);
         ctx.font = 'bold 11.5px "IBM Plex Mono", monospace';
-        ctx.fillText(`${f} Hz`, x0 + bw + 2, gy + gh + 18);
+        ctx.fillText(`${fmtChartDec(f)} Hz`, x0 + bw + 2, gy + gh + 18);
       });
 
       // Contained Legend Card
@@ -2729,25 +3280,25 @@ export function renderDiagramVariant(
       ctx.fillStyle = 'rgba(255,255,255,0.95)';
       ctx.strokeStyle = '#cbd5e1';
       ctx.beginPath();
-      ctx.roundRect(436, gy + 12, 298, 52, 6);
+      ctx.roundRect(422, gy + 12, 314, 52, 6);
       ctx.fill();
       ctx.stroke();
       ctx.fillStyle = '#93c5fd';
-      ctx.fillRect(448, gy + 22, 16, 12);
+      ctx.fillRect(434, gy + 22, 16, 12);
       ctx.fillStyle = '#1e3a8a';
-      ctx.fillRect(448, gy + 42, 16, 12);
+      ctx.fillRect(434, gy + 42, 16, 12);
       ctx.fillStyle = C.ink;
       ctx.font = '11px "Public Sans", system-ui, sans-serif';
       ctx.textAlign = 'left';
-      ctx.fillText('Medido sin ponderar (m/s²)', 472, gy + 32);
-      ctx.fillText('Ponderado Res. 295/03 (Apz = 0,4286 m/s²)', 472, gy + 52);
+      ctx.fillText(trD('Medido sin ponderar (m/s²)'), 458, gy + 32);
+      ctx.fillText(trD('Ponderado Res. 295/03 (Apz = 0,4286 m/s²)'), 458, gy + 52);
       ctx.restore();
 
       ctx.textAlign = 'center';
       ctx.fillStyle = C.ink;
       ctx.font = 'bold 11.5px "Public Sans", system-ui, sans-serif';
       ctx.fillText(
-        'Frecuencia central de banda de 1/3 de octava (Hz) · Ap global = 0,4463 m/s² (< 0,5 m/s²)',
+        trD('Frecuencia central de banda de 1/3 de octava (Hz) · Ap global = 0,4463 m/s² (< 0,5 m/s²)'),
         gx + gw / 2,
         height - 14,
       );
@@ -2783,7 +3334,7 @@ export function renderDiagramVariant(
         ctx.fillStyle = C.sub;
         ctx.font = '11px "IBM Plex Mono", monospace';
         ctx.textAlign = 'right';
-        ctx.fillText(v.toFixed(1).replace('.', ','), gx - 8, y + 4);
+        ctx.fillText(fmtChartDec(v.toFixed(1)), gx - 8, y + 4);
       }
 
       freqs.forEach((f, i) => {
@@ -2827,15 +3378,15 @@ export function renderDiagramVariant(
       plotSeries(ez, '#d97706');
 
       const leg = [
-        { name: 'Eje X (ahwx = 0,6271 m/s²)', c: '#1d4ed8' },
-        { name: 'Eje Y (ahwy = 0,8772 m/s²)', c: '#dc2626' },
-        { name: 'Eje Z (ahwz = 0,3154 m/s²)', c: '#d97706' },
+        { name: trD('Eje X (ahwx = 0,6271 m/s²)'), c: '#1d4ed8' },
+        { name: trD('Eje Y (ahwy = 0,8772 m/s²)'), c: '#dc2626' },
+        { name: trD('Eje Z (ahwz = 0,3154 m/s²)'), c: '#d97706' },
       ];
       ctx.save();
       ctx.fillStyle = 'rgba(255,255,255,0.95)';
       ctx.strokeStyle = '#cbd5e1';
       ctx.beginPath();
-      ctx.roundRect(gx + 14, gy + 12, 258, 70, 6);
+      ctx.roundRect(gx + 14, gy + 12, 266, 70, 6);
       ctx.fill();
       ctx.stroke();
       leg.forEach((l, idx) => {
@@ -2852,7 +3403,7 @@ export function renderDiagramVariant(
       ctx.fillStyle = C.ink;
       ctx.font = 'bold 11.5px "Public Sans", system-ui, sans-serif';
       ctx.fillText(
-        'Frecuencia central 1/3 octava (Hz) · Valor Total VTV = 1,1 m/s² (< Nivel Acción 2,5 m/s²)',
+        trD('Frecuencia central 1/3 octava (Hz) · Valor Total VTV = 1,1 m/s² (< Nivel Acción 2,5 m/s²)'),
         gx + gw / 2,
         height - 14,
       );
@@ -2866,4 +3417,7 @@ export function renderDiagramVariant(
   ctx.lineWidth = 1.5;
   ctx.strokeRect(0.75, 0.75, width - 1.5, height - 1.5);
   ctx.restore();
+  } finally {
+    activeDiagramLocale = undefined;
+  }
 }

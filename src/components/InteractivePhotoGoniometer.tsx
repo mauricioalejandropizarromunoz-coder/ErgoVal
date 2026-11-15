@@ -1,6 +1,7 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
+  Compass,
   Crosshair,
   Lock,
   Move,
@@ -51,16 +52,36 @@ interface ActiveDragState {
 }
 
 const GONIO_PALETTE: Array<{ colorHex: string; fillRgba: string }> = [
-  { colorHex: '#0284c7', fillRgba: 'rgba(2, 132, 199, 0.18)' },
-  { colorHex: '#059669', fillRgba: 'rgba(5, 150, 105, 0.18)' },
-  { colorHex: '#d97706', fillRgba: 'rgba(217, 119, 6, 0.18)' },
-  { colorHex: '#7c3aed', fillRgba: 'rgba(124, 58, 237, 0.18)' },
-  { colorHex: '#dc2626', fillRgba: 'rgba(220, 38, 38, 0.18)' },
-  { colorHex: '#0f766e', fillRgba: 'rgba(15, 118, 110, 0.18)' },
+  { colorHex: '#0284c7', fillRgba: 'rgba(2, 132, 199, 0.22)' },
+  { colorHex: '#059669', fillRgba: 'rgba(5, 150, 105, 0.22)' },
+  { colorHex: '#d97706', fillRgba: 'rgba(217, 119, 6, 0.22)' },
+  { colorHex: '#7c3aed', fillRgba: 'rgba(124, 58, 237, 0.22)' },
+  { colorHex: '#dc2626', fillRgba: 'rgba(220, 38, 38, 0.22)' },
+  { colorHex: '#0f766e', fillRgba: 'rgba(15, 118, 110, 0.22)' },
 ];
 
 function clamp01(val: number): number {
-  return Math.max(0.03, Math.min(0.97, val));
+  return Math.max(0.02, Math.min(0.98, val));
+}
+
+function snapPointToOrtho(
+  anchor: Point2D,
+  raw: Point2D,
+  viewW: number,
+  viewH: number,
+  enableSnap: boolean,
+): Point2D {
+  if (!enableSnap) return raw;
+  const dx = (raw.x - anchor.x) * viewW;
+  const dy = (raw.y - anchor.y) * viewH;
+  const dist = Math.hypot(dx, dy);
+  if (dist < 2) return raw;
+  const step = Math.PI / 4; // 0°, 45°, 90°, 135°, 180°
+  const snapped = Math.round(Math.atan2(dy, dx) / step) * step;
+  return {
+    x: clamp01(anchor.x + (Math.cos(snapped) * dist) / Math.max(1, viewW)),
+    y: clamp01(anchor.y + (Math.sin(snapped) * dist) / Math.max(1, viewH)),
+  };
 }
 
 function makeDefaultGoniometer(index: number): GoniometerInstance {
@@ -103,7 +124,7 @@ function computeGonioGeometry(g: GoniometerInstance, viewW: number, viewH: numbe
 
   const lenRef = Math.hypot(rx - vx, ry - vy);
   const lenSeg = Math.hypot(sx - vx, sy - vy);
-  const radius = Math.max(34, Math.min(110, Math.min(lenRef, lenSeg) * 0.56));
+  const radius = Math.max(24, Math.min(92, Math.min(lenRef, lenSeg) * 0.52));
 
   const startX = vx + Math.cos(aRef) * radius;
   const startY = vy + Math.sin(aRef) * radius;
@@ -122,10 +143,14 @@ function computeGonioGeometry(g: GoniometerInstance, viewW: number, viewH: numbe
       ? ''
       : `M ${startX.toFixed(1)} ${startY.toFixed(1)} A ${radius.toFixed(1)} ${radius.toFixed(1)} 0 ${largeArcFlag} ${sweepFlag} ${endX.toFixed(1)} ${endY.toFixed(1)}`;
 
+  // Prolongación recta de referencia más allá del vértice para lectura visual inmediata
+  const extRefX = vx - Math.cos(aRef) * Math.min(54, lenRef * 0.36);
+  const extRefY = vy - Math.sin(aRef) * Math.min(54, lenRef * 0.36);
+
   const midAngle = aRef + diff * 0.5;
-  const badgeDist = radius + 42;
-  const bx = Math.max(84, Math.min(viewW - 84, vx + Math.cos(midAngle) * badgeDist));
-  const by = Math.max(34, Math.min(viewH - 34, vy + Math.sin(midAngle) * badgeDist));
+  const badgeDist = radius + 36;
+  const bx = Math.max(66, Math.min(viewW - 66, vx + Math.cos(midAngle) * badgeDist));
+  const by = Math.max(24, Math.min(viewH - 24, vy + Math.sin(midAngle) * badgeDist));
 
   return {
     vx,
@@ -134,6 +159,8 @@ function computeGonioGeometry(g: GoniometerInstance, viewW: number, viewH: numbe
     ry,
     sx,
     sy,
+    extRefX,
+    extRefY,
     absDeg,
     signedDeg,
     sectorPath,
@@ -160,9 +187,31 @@ export const InteractivePhotoGoniometer: React.FC<InteractivePhotoGoniometerProp
   const [dragState, setDragState] = useState<ActiveDragState | null>(null);
   const [zoom, setZoom] = useState<number>(1);
   const [imgError, setImgError] = useState<boolean>(false);
+  const [viewSize, setViewSize] = useState<{ w: number; h: number }>({ w: 800, h: 520 });
 
-  const VIEW_W = 1000;
-  const VIEW_H = 650;
+  // Modo rápido de trazo directo por 3 clics (Referencia -> Vértice -> Segmento)
+  const [traceMode, setTraceMode] = useState<boolean>(false);
+  const [traceDraftPts, setTraceDraftPts] = useState<Point2D[]>([]);
+  const [traceHoverPt, setTraceHoverPt] = useState<Point2D | null>(null);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const syncSize = () => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 10 && rect.height > 10) {
+        setViewSize({ w: Math.round(rect.width), h: Math.round(rect.height) });
+      }
+    };
+    syncSize();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(syncSize);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [zoom, imageUrl]);
+
+  const VIEW_W = viewSize.w;
+  const VIEW_H = viewSize.h;
 
   const activeGonio = useMemo(
     () => goniometers.find((g) => g.id === activeId) || goniometers[0],
@@ -175,7 +224,7 @@ export const InteractivePhotoGoniometer: React.FC<InteractivePhotoGoniometerProp
         instance: g,
         geom: computeGonioGeometry(g, VIEW_W, VIEW_H),
       })),
-    [goniometers],
+    [goniometers, VIEW_W, VIEW_H],
   );
 
   const activeComputed = useMemo(
@@ -195,6 +244,7 @@ export const InteractivePhotoGoniometer: React.FC<InteractivePhotoGoniometerProp
 
   const handleStartDrag =
     (gonioId: string, part: DragPart) => (e: React.PointerEvent<SVGGElement>) => {
+      if (traceMode) return;
       e.stopPropagation();
       setActiveId(gonioId);
       const targetGonio = goniometers.find((g) => g.id === gonioId);
@@ -214,13 +264,68 @@ export const InteractivePhotoGoniometer: React.FC<InteractivePhotoGoniometerProp
       }
     };
 
-  const handleSvgMove = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (!dragState) return;
-    const pt = getNormalizedPointer(e.clientX, e.clientY);
-    if (!pt) return;
+  const handleSvgClick = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (!traceMode || dragState) return;
+    const rawPt = getNormalizedPointer(e.clientX, e.clientY);
+    if (!rawPt) return;
 
-    const dx = pt.x - dragState.lastPt.x;
-    const dy = pt.y - dragState.lastPt.y;
+    const snapAnchor =
+      traceDraftPts.length === 1
+        ? traceDraftPts[0]
+        : traceDraftPts.length === 2
+          ? traceDraftPts[1]
+          : null;
+    const pt = snapAnchor
+      ? snapPointToOrtho(snapAnchor, rawPt, VIEW_W, VIEW_H, e.shiftKey)
+      : rawPt;
+
+    const nextPts = [...traceDraftPts, pt];
+    if (nextPts.length < 3) {
+      setTraceDraftPts(nextPts);
+      return;
+    }
+
+    // Fijar los 3 puntos trazados (Ref -> Vértice -> Segmento) sobre el goniómetro activo
+    setGoniometers((prev) =>
+      prev.map((g) =>
+        g.id === activeGonio.id && !g.locked
+          ? {
+              ...g,
+              refPt: nextPts[0],
+              vertexPt: nextPts[1],
+              segPt: nextPts[2],
+            }
+          : g,
+      ),
+    );
+    setTraceDraftPts([]);
+    setTraceHoverPt(null);
+    setTraceMode(false);
+  };
+
+  const handleSvgMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (traceMode && !dragState) {
+      const rawPt = getNormalizedPointer(e.clientX, e.clientY);
+      if (!rawPt) return;
+      const snapAnchor =
+        traceDraftPts.length === 1
+          ? traceDraftPts[0]
+          : traceDraftPts.length === 2
+            ? traceDraftPts[1]
+            : null;
+      const pt = snapAnchor
+        ? snapPointToOrtho(snapAnchor, rawPt, VIEW_W, VIEW_H, e.shiftKey)
+        : rawPt;
+      setTraceHoverPt(pt);
+      return;
+    }
+
+    if (!dragState) return;
+    const rawPt = getNormalizedPointer(e.clientX, e.clientY);
+    if (!rawPt) return;
+
+    const dx = rawPt.x - dragState.lastPt.x;
+    const dy = rawPt.y - dragState.lastPt.y;
 
     setGoniometers((prev) =>
       prev.map((g) => {
@@ -241,27 +346,29 @@ export const InteractivePhotoGoniometer: React.FC<InteractivePhotoGoniometerProp
             const refOffY = g.refPt.y - g.vertexPt.y;
             return {
               ...g,
-              vertexPt: pt,
-              refPt: { x: clamp01(pt.x + refOffX), y: clamp01(pt.y + refOffY) },
+              vertexPt: rawPt,
+              refPt: { x: clamp01(rawPt.x + refOffX), y: clamp01(rawPt.y + refOffY) },
             };
           }
-          return { ...g, vertexPt: pt };
+          return { ...g, vertexPt: rawPt };
         }
 
         if (dragState.part === 'ref') {
           if (g.fixedRefDirection) return g;
-          return { ...g, refPt: pt };
+          const snapped = snapPointToOrtho(g.vertexPt, rawPt, VIEW_W, VIEW_H, e.shiftKey);
+          return { ...g, refPt: snapped };
         }
 
         if (dragState.part === 'seg') {
-          return { ...g, segPt: pt };
+          const snapped = snapPointToOrtho(g.vertexPt, rawPt, VIEW_W, VIEW_H, e.shiftKey);
+          return { ...g, segPt: snapped };
         }
 
         return g;
       }),
     );
 
-    setDragState((prev) => (prev ? { ...prev, lastPt: pt } : null));
+    setDragState((prev) => (prev ? { ...prev, lastPt: rawPt } : null));
   };
 
   const handleSvgUp = (e: React.PointerEvent<SVGSVGElement>) => {
@@ -311,14 +418,306 @@ export const InteractivePhotoGoniometer: React.FC<InteractivePhotoGoniometerProp
     const first = makeDefaultGoniometer(0);
     setGoniometers([first]);
     setActiveId(first.id);
+    setTraceMode(false);
+    setTraceDraftPts([]);
     setZoom(1);
   };
+
+  const liveTraceGeom = useMemo(() => {
+    if (!traceMode || traceDraftPts.length < 2 || !traceHoverPt) return null;
+    return computeGonioGeometry(
+      {
+        ...activeGonio,
+        refPt: traceDraftPts[0],
+        vertexPt: traceDraftPts[1],
+        segPt: traceHoverPt,
+      },
+      VIEW_W,
+      VIEW_H,
+    );
+  }, [activeGonio, traceDraftPts, traceHoverPt, traceMode, VIEW_W, VIEW_H]);
+
+  const renderGonioVectors = () => (
+    <>
+      {computedList.map(({ instance, geom }) => {
+        const isSelected = instance.id === activeGonio.id;
+        const opacity = isSelected ? 1 : 0.8;
+        return (
+          <g key={instance.id} opacity={opacity}>
+            {geom.sectorPath && <path d={geom.sectorPath} fill={instance.fillRgba} />}
+            {geom.arcPath && (
+              <path
+                d={geom.arcPath}
+                fill="none"
+                stroke={instance.colorHex}
+                strokeWidth={isSelected ? 3.2 : 2.4}
+              />
+            )}
+
+            {/* Prolongación sutil detrás del vértice */}
+            <line
+              x1={geom.vx}
+              y1={geom.vy}
+              x2={geom.extRefX}
+              y2={geom.extRefY}
+              stroke="rgba(148, 163, 184, 0.75)"
+              strokeWidth="1.6"
+              strokeDasharray="4 4"
+              strokeLinecap="round"
+            />
+
+            {/* Recta de Referencia (doble trazo de alto contraste) */}
+            <line
+              x1={geom.vx}
+              y1={geom.vy}
+              x2={geom.rx}
+              y2={geom.ry}
+              stroke="rgba(15, 23, 42, 0.92)"
+              strokeWidth={isSelected ? 6 : 5}
+              strokeLinecap="round"
+            />
+            <line
+              x1={geom.vx}
+              y1={geom.vy}
+              x2={geom.rx}
+              y2={geom.ry}
+              stroke="#e2e8f0"
+              strokeWidth={isSelected ? 2.8 : 2.2}
+              strokeDasharray="8 5"
+              strokeLinecap="round"
+            />
+
+            {/* Recta del Segmento Corporal (doble trazo nítido) */}
+            <line
+              x1={geom.vx}
+              y1={geom.vy}
+              x2={geom.sx}
+              y2={geom.sy}
+              stroke="rgba(15, 23, 42, 0.92)"
+              strokeWidth={isSelected ? 6.6 : 5.4}
+              strokeLinecap="round"
+            />
+            <line
+              x1={geom.vx}
+              y1={geom.vy}
+              x2={geom.sx}
+              y2={geom.sy}
+              stroke={instance.colorHex}
+              strokeWidth={isSelected ? 3.4 : 2.6}
+              strokeLinecap="round"
+            />
+
+            {/* Etiqueta flotante arrastrable (traslada todo el goniómetro solidariamente) */}
+            <g
+              transform={`translate(${geom.bx.toFixed(1)}, ${geom.by.toFixed(1)})`}
+              onPointerDown={handleStartDrag(instance.id, 'whole')}
+              className={`pointer-events-auto ${instance.locked ? 'cursor-not-allowed' : 'cursor-move'}`}
+            >
+              <rect
+                x="-58"
+                y="-16"
+                width="116"
+                height="32"
+                rx="5"
+                fill="#0f172a"
+                fillOpacity="0.93"
+                stroke={instance.colorHex}
+                strokeWidth={isSelected ? 2 : 1.2}
+              />
+              <text
+                x="0"
+                y="4.5"
+                textAnchor="middle"
+                fill="#ffffff"
+                fontSize="13"
+                fontWeight="700"
+                fontFamily="ui-monospace, SFMono-Regular, monospace"
+              >
+                {instance.label}: {geom.absDeg.toFixed(1)}°
+              </text>
+            </g>
+
+            {/* Nodo Ref */}
+            <g
+              transform={`translate(${geom.rx.toFixed(1)}, ${geom.ry.toFixed(1)})`}
+              onPointerDown={handleStartDrag(instance.id, 'ref')}
+              className={`pointer-events-auto ${
+                instance.locked || instance.fixedRefDirection
+                  ? 'cursor-not-allowed'
+                  : 'cursor-grab active:cursor-grabbing'
+              }`}
+            >
+              <circle r="20" fill="transparent" />
+              <circle r="9.5" fill="#ffffff" stroke="#0f172a" strokeWidth="2.8" />
+              <text x="0" y="3.5" textAnchor="middle" fill="#0f172a" fontSize="9.5" fontWeight="800">
+                R
+              </text>
+            </g>
+
+            {/* Nodo Vértice */}
+            <g
+              transform={`translate(${geom.vx.toFixed(1)}, ${geom.vy.toFixed(1)})`}
+              onPointerDown={handleStartDrag(instance.id, 'vertex')}
+              className={`pointer-events-auto ${
+                instance.locked ? 'cursor-not-allowed' : 'cursor-grab active:cursor-grabbing'
+              }`}
+            >
+              <circle r="22" fill="transparent" />
+              <circle r="11" fill="#0f172a" stroke="#ffffff" strokeWidth="2.8" />
+              <circle r="3.8" fill="#38bdf8" />
+            </g>
+
+            {/* Nodo Segmento */}
+            <g
+              transform={`translate(${geom.sx.toFixed(1)}, ${geom.sy.toFixed(1)})`}
+              onPointerDown={handleStartDrag(instance.id, 'seg')}
+              className={`pointer-events-auto ${
+                instance.locked ? 'cursor-not-allowed' : 'cursor-grab active:cursor-grabbing'
+              }`}
+            >
+              <circle r="20" fill="transparent" />
+              <circle r="10" fill={instance.colorHex} stroke="#ffffff" strokeWidth="2.8" />
+              <text x="0" y="3.5" textAnchor="middle" fill="#ffffff" fontSize="9.5" fontWeight="800">
+                S
+              </text>
+            </g>
+          </g>
+        );
+      })}
+
+      {/* Vista previa elástica en modo Trazar 3 clics */}
+      {traceMode && traceDraftPts.length === 1 && traceHoverPt && (
+        <g className="pointer-events-none">
+          <line
+            x1={traceDraftPts[0].x * VIEW_W}
+            y1={traceDraftPts[0].y * VIEW_H}
+            x2={traceHoverPt.x * VIEW_W}
+            y2={traceHoverPt.y * VIEW_H}
+            stroke="rgba(15, 23, 42, 0.92)"
+            strokeWidth="5.5"
+            strokeLinecap="round"
+          />
+          <line
+            x1={traceDraftPts[0].x * VIEW_W}
+            y1={traceDraftPts[0].y * VIEW_H}
+            x2={traceHoverPt.x * VIEW_W}
+            y2={traceHoverPt.y * VIEW_H}
+            stroke="#facc15"
+            strokeWidth="2.8"
+            strokeDasharray="7 4"
+            strokeLinecap="round"
+          />
+          <circle
+            cx={traceDraftPts[0].x * VIEW_W}
+            cy={traceDraftPts[0].y * VIEW_H}
+            r="6"
+            fill="#facc15"
+            stroke="#0f172a"
+            strokeWidth="2"
+          />
+        </g>
+      )}
+
+      {traceMode && traceDraftPts.length === 2 && (
+        <g className="pointer-events-none">
+          {liveTraceGeom?.sectorPath && (
+            <path d={liveTraceGeom.sectorPath} fill="rgba(250, 204, 21, 0.25)" />
+          )}
+          {liveTraceGeom?.arcPath && (
+            <path d={liveTraceGeom.arcPath} fill="none" stroke="#facc15" strokeWidth="2.8" />
+          )}
+          <line
+            x1={traceDraftPts[0].x * VIEW_W}
+            y1={traceDraftPts[0].y * VIEW_H}
+            x2={traceDraftPts[1].x * VIEW_W}
+            y2={traceDraftPts[1].y * VIEW_H}
+            stroke="rgba(15, 23, 42, 0.92)"
+            strokeWidth="6"
+            strokeLinecap="round"
+          />
+          <line
+            x1={traceDraftPts[0].x * VIEW_W}
+            y1={traceDraftPts[0].y * VIEW_H}
+            x2={traceDraftPts[1].x * VIEW_W}
+            y2={traceDraftPts[1].y * VIEW_H}
+            stroke="#e2e8f0"
+            strokeWidth="2.8"
+            strokeDasharray="7 4"
+            strokeLinecap="round"
+          />
+          {traceHoverPt && (
+            <>
+              <line
+                x1={traceDraftPts[1].x * VIEW_W}
+                y1={traceDraftPts[1].y * VIEW_H}
+                x2={traceHoverPt.x * VIEW_W}
+                y2={traceHoverPt.y * VIEW_H}
+                stroke="rgba(15, 23, 42, 0.92)"
+                strokeWidth="6"
+                strokeLinecap="round"
+              />
+              <line
+                x1={traceDraftPts[1].x * VIEW_W}
+                y1={traceDraftPts[1].y * VIEW_H}
+                x2={traceHoverPt.x * VIEW_W}
+                y2={traceHoverPt.y * VIEW_H}
+                stroke="#38bdf8"
+                strokeWidth="3"
+                strokeLinecap="round"
+              />
+            </>
+          )}
+          {liveTraceGeom && (
+            <g transform={`translate(${liveTraceGeom.bx.toFixed(1)}, ${liveTraceGeom.by.toFixed(1)})`}>
+              <rect
+                x="-52"
+                y="-15"
+                width="104"
+                height="30"
+                rx="5"
+                fill="#0f172a"
+                stroke="#facc15"
+                strokeWidth="1.6"
+              />
+              <text
+                x="0"
+                y="4.5"
+                textAnchor="middle"
+                fill="#fef08a"
+                fontSize="12.5"
+                fontWeight="700"
+                fontFamily="ui-monospace, SFMono-Regular, monospace"
+              >
+                {liveTraceGeom.absDeg.toFixed(1)}°
+              </text>
+            </g>
+          )}
+          <circle
+            cx={traceDraftPts[0].x * VIEW_W}
+            cy={traceDraftPts[0].y * VIEW_H}
+            r="5.5"
+            fill="#ffffff"
+            stroke="#0f172a"
+            strokeWidth="2"
+          />
+          <circle
+            cx={traceDraftPts[1].x * VIEW_W}
+            cy={traceDraftPts[1].y * VIEW_H}
+            r="6.5"
+            fill="#38bdf8"
+            stroke="#0f172a"
+            strokeWidth="2"
+          />
+        </g>
+      )}
+    </>
+  );
 
   if (transparentOverlay) {
     return (
       <div className="absolute inset-0 pointer-events-none flex flex-col justify-between z-20">
         {/* Barra flotante superior para goniómetros superpuestos sobre el visor 3D */}
-        <div className="pointer-events-auto m-2 px-2.5 py-1.5 rounded bg-slate-900/90 text-white border border-slate-700 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+        <div className="pointer-events-auto m-2 px-2.5 py-1.5 rounded bg-slate-900/92 text-white border border-slate-700 flex flex-wrap items-center justify-between gap-2 text-[11px]">
           <div className="flex flex-wrap items-center gap-1.5">
             <Crosshair className="w-3.5 h-3.5 text-sky-400 shrink-0" />
             <span className="font-semibold">Goniómetro Libre 3D:</span>
@@ -336,10 +735,26 @@ export const InteractivePhotoGoniometer: React.FC<InteractivePhotoGoniometerProp
                   }`}
                 >
                   {instance.label}: {geom.absDeg.toFixed(1)}°
-                  {instance.locked ? ' 🔒' : ''}
                 </button>
               );
             })}
+            <button
+              type="button"
+              onClick={() => {
+                setTraceMode((v) => !v);
+                setTraceDraftPts([]);
+                setTraceHoverPt(null);
+              }}
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded font-semibold cursor-pointer border ${
+                traceMode
+                  ? 'bg-amber-500 text-slate-950 border-amber-300'
+                  : 'bg-slate-800 text-slate-100 border-slate-600 hover:bg-slate-700'
+              }`}
+              title="Trazar las dos rectas directamente haciendo 3 clics (Ref → Vértice → Segmento)"
+            >
+              <Compass className="w-3 h-3" />
+              {traceMode ? `Clic ${traceDraftPts.length + 1}/3` : 'Trazar 3 clics'}
+            </button>
             <button
               type="button"
               onClick={handleAddGoniometer}
@@ -347,7 +762,7 @@ export const InteractivePhotoGoniometer: React.FC<InteractivePhotoGoniometerProp
               title="Agregar otro goniómetro independiente en pantalla"
             >
               <Plus className="w-3 h-3" />
-              Otro goniómetro
+              Otro
             </button>
           </div>
 
@@ -411,7 +826,7 @@ export const InteractivePhotoGoniometer: React.FC<InteractivePhotoGoniometerProp
                 onClick={() =>
                   onApplyAngle(Math.round(activeComputed.geom.absDeg), activeGonio.label)
                 }
-                className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-sky-600 hover:bg-sky-500 text-white font-semibold cursor-pointer"
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-sky-600 hover:bg-sky-500 text-white font-semibold cursor-pointer tabular-nums"
               >
                 <Check className="w-3 h-3" />
                 Aplicar {Math.round(activeComputed.geom.absDeg)}°
@@ -423,113 +838,15 @@ export const InteractivePhotoGoniometer: React.FC<InteractivePhotoGoniometerProp
         <div ref={containerRef} className="relative flex-1 w-full h-full pointer-events-none">
           <svg
             viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
-            preserveAspectRatio="none"
+            onClick={handleSvgClick}
             onPointerMove={handleSvgMove}
             onPointerUp={handleSvgUp}
             onPointerCancel={handleSvgUp}
-            className="w-full h-full touch-none pointer-events-none"
+            className={`w-full h-full touch-none ${
+              traceMode ? 'pointer-events-auto cursor-crosshair' : 'pointer-events-none'
+            }`}
           >
-            {computedList.map(({ instance, geom }) => {
-              const isSelected = instance.id === activeGonio.id;
-              const opacity = isSelected ? 1 : 0.78;
-              return (
-                <g key={instance.id} opacity={opacity}>
-                  {geom.sectorPath && <path d={geom.sectorPath} fill={instance.fillRgba} />}
-                  {geom.arcPath && (
-                    <path
-                      d={geom.arcPath}
-                      fill="none"
-                      stroke={instance.colorHex}
-                      strokeWidth={isSelected ? 3.5 : 2.5}
-                    />
-                  )}
-                  <line
-                    x1={geom.vx}
-                    y1={geom.vy}
-                    x2={geom.rx}
-                    y2={geom.ry}
-                    stroke="#334155"
-                    strokeWidth={3}
-                    strokeDasharray="9 6"
-                  />
-                  <line
-                    x1={geom.vx}
-                    y1={geom.vy}
-                    x2={geom.sx}
-                    y2={geom.sy}
-                    stroke={instance.colorHex}
-                    strokeWidth={isSelected ? 4 : 3}
-                  />
-
-                  {/* Etiqueta flotante arrastrable (traslada todo el goniómetro solidariamente) */}
-                  <g
-                    transform={`translate(${geom.bx.toFixed(1)}, ${geom.by.toFixed(1)})`}
-                    onPointerDown={handleStartDrag(instance.id, 'whole')}
-                    className="pointer-events-auto cursor-move"
-                  >
-                    <rect
-                      x="-58"
-                      y="-17"
-                      width="116"
-                      height="34"
-                      rx="6"
-                      fill="#0f172a"
-                      fillOpacity="0.92"
-                      stroke={instance.colorHex}
-                      strokeWidth={isSelected ? 2 : 1.2}
-                    />
-                    <text
-                      x="0"
-                      y="5"
-                      textAnchor="middle"
-                      fill="#ffffff"
-                      fontSize="13.5"
-                      fontWeight="700"
-                      fontFamily="monospace"
-                    >
-                      {instance.label}: {geom.absDeg.toFixed(1)}°
-                    </text>
-                  </g>
-
-                  {/* Nodo Ref */}
-                  <g
-                    transform={`translate(${geom.rx.toFixed(1)}, ${geom.ry.toFixed(1)})`}
-                    onPointerDown={handleStartDrag(instance.id, 'ref')}
-                    className={`pointer-events-auto ${instance.locked || instance.fixedRefDirection ? 'cursor-not-allowed' : 'cursor-grab'}`}
-                  >
-                    <circle r="22" fill="transparent" />
-                    <circle r="10" fill="#ffffff" stroke="#334155" strokeWidth="3" />
-                    <text y="3.5" textAnchor="middle" fill="#0f172a" fontSize="9.5" fontWeight="800">
-                      R
-                    </text>
-                  </g>
-
-                  {/* Nodo Vértice */}
-                  <g
-                    transform={`translate(${geom.vx.toFixed(1)}, ${geom.vy.toFixed(1)})`}
-                    onPointerDown={handleStartDrag(instance.id, 'vertex')}
-                    className={`pointer-events-auto ${instance.locked ? 'cursor-not-allowed' : 'cursor-grab'}`}
-                  >
-                    <circle r="24" fill="transparent" />
-                    <circle r="12" fill="#0f172a" stroke="#ffffff" strokeWidth="3" />
-                    <circle r="4" fill="#38bdf8" />
-                  </g>
-
-                  {/* Nodo Segmento */}
-                  <g
-                    transform={`translate(${geom.sx.toFixed(1)}, ${geom.sy.toFixed(1)})`}
-                    onPointerDown={handleStartDrag(instance.id, 'seg')}
-                    className={`pointer-events-auto ${instance.locked ? 'cursor-not-allowed' : 'cursor-grab'}`}
-                  >
-                    <circle r="22" fill="transparent" />
-                    <circle r="11" fill={instance.colorHex} stroke="#ffffff" strokeWidth="3" />
-                    <text y="3.5" textAnchor="middle" fill="#ffffff" fontSize="9.5" fontWeight="800">
-                      S
-                    </text>
-                  </g>
-                </g>
-              );
-            })}
+            {renderGonioVectors()}
           </svg>
         </div>
       </div>
@@ -543,11 +860,11 @@ export const InteractivePhotoGoniometer: React.FC<InteractivePhotoGoniometerProp
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="inline-flex items-center gap-1.5 font-semibold text-slate-900">
             <Crosshair className="w-3.5 h-3.5 text-sky-700" />
-            Goniómetros Libres / Fijos
+            Goniómetros de Rectas
           </span>
           {figureCode && (
-            <span className="font-mono text-[11px] font-semibold text-sky-800 bg-sky-50 border border-sky-200 px-1.5 py-0.5 rounded">
-              {figureCode}
+            <span className="font-mono text-[11px] font-semibold text-sky-800">
+              · {figureCode}
             </span>
           )}
 
@@ -579,12 +896,30 @@ export const InteractivePhotoGoniometer: React.FC<InteractivePhotoGoniometerProp
 
           <button
             type="button"
+            onClick={() => {
+              setTraceMode((v) => !v);
+              setTraceDraftPts([]);
+              setTraceHoverPt(null);
+            }}
+            className={`min-h-[32px] inline-flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-semibold cursor-pointer border transition-colors ${
+              traceMode
+                ? 'bg-sky-700 text-white border-sky-700'
+                : 'bg-white text-slate-800 border-slate-300 hover:bg-slate-100'
+            }`}
+            title="Trazar las dos rectas en 3 clics (Referencia → Vértice → Segmento); Shift bloquea 0°/90°/45°"
+          >
+            <Compass className="w-3.5 h-3.5" />
+            {traceMode ? `Trazando (${traceDraftPts.length + 1}/3)…` : 'Trazar 3 clics'}
+          </button>
+
+          <button
+            type="button"
             onClick={handleAddGoniometer}
             className="min-h-[32px] inline-flex items-center gap-1 px-2.5 py-1 rounded bg-emerald-700 hover:bg-emerald-800 text-white text-[11px] font-semibold cursor-pointer shadow-2xs"
             title="Agregar otro goniómetro independiente sobre la misma imagen"
           >
             <Plus className="w-3.5 h-3.5" />
-            Agregar otro goniómetro
+            Otro goniómetro
           </button>
         </div>
 
@@ -626,7 +961,7 @@ export const InteractivePhotoGoniometer: React.FC<InteractivePhotoGoniometerProp
             title="Mantener fijo el ángulo del eje de referencia al mover el vértice libremente"
           >
             <Move className="w-3 h-3" />
-            {activeGonio.fixedRefDirection ? 'Ref. Fija Libre' : 'Ref. Libre'}
+            {activeGonio.fixedRefDirection ? 'Ref. Fija' : 'Ref. Libre'}
           </button>
           <button
             type="button"
@@ -684,7 +1019,7 @@ export const InteractivePhotoGoniometer: React.FC<InteractivePhotoGoniometerProp
         </div>
       </div>
 
-      {/* Lienzo interactivo con múltiples goniómetros */}
+      {/* Lienzo interactivo con múltiples goniómetros sin distorsión de relación de aspecto */}
       <div className="border border-slate-300 rounded-md bg-white overflow-auto max-h-[560px]">
         <div
           ref={containerRef}
@@ -698,6 +1033,15 @@ export const InteractivePhotoGoniometer: React.FC<InteractivePhotoGoniometerProp
               src={imageUrl}
               alt={figureLabel || 'Lámina anatómica de referencia'}
               onError={() => setImgError(true)}
+              onLoad={() => {
+                if (containerRef.current) {
+                  const r = containerRef.current.getBoundingClientRect();
+                  if (r.width > 10 && r.height > 10) {
+                    setViewSize({ w: Math.round(r.width), h: Math.round(r.height) });
+                  }
+                }
+              }}
+              referrerPolicy="no-referrer"
               draggable={false}
               className="w-full h-auto block object-contain pointer-events-none select-none"
             />
@@ -709,128 +1053,15 @@ export const InteractivePhotoGoniometer: React.FC<InteractivePhotoGoniometerProp
 
           <svg
             viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
-            preserveAspectRatio="none"
+            onClick={handleSvgClick}
             onPointerMove={handleSvgMove}
             onPointerUp={handleSvgUp}
             onPointerCancel={handleSvgUp}
-            className="absolute inset-0 w-full h-full touch-none"
+            className={`absolute inset-0 w-full h-full touch-none ${
+              traceMode ? 'cursor-crosshair' : ''
+            }`}
           >
-            {computedList.map(({ instance, geom }) => {
-              const isSelected = instance.id === activeGonio.id;
-              return (
-                <g key={instance.id} opacity={isSelected ? 1 : 0.8}>
-                  {geom.sectorPath && <path d={geom.sectorPath} fill={instance.fillRgba} />}
-                  {geom.arcPath && (
-                    <path
-                      d={geom.arcPath}
-                      fill="none"
-                      stroke={instance.colorHex}
-                      strokeWidth={isSelected ? 3.5 : 2.5}
-                    />
-                  )}
-
-                  {/* Brazo Referencia */}
-                  <line
-                    x1={geom.vx}
-                    y1={geom.vy}
-                    x2={geom.rx}
-                    y2={geom.ry}
-                    stroke="#334155"
-                    strokeWidth={3.2}
-                    strokeDasharray="10 6"
-                  />
-
-                  {/* Brazo Segmento */}
-                  <line
-                    x1={geom.vx}
-                    y1={geom.vy}
-                    x2={geom.sx}
-                    y2={geom.sy}
-                    stroke={instance.colorHex}
-                    strokeWidth={isSelected ? 4 : 3}
-                  />
-
-                  {/* Etiqueta arrastrable para mover todo el goniómetro libremente */}
-                  <g
-                    transform={`translate(${geom.bx.toFixed(1)}, ${geom.by.toFixed(1)})`}
-                    onPointerDown={handleStartDrag(instance.id, 'whole')}
-                    className={instance.locked ? 'cursor-not-allowed' : 'cursor-move'}
-                  >
-                    <rect
-                      x="-62"
-                      y="-18"
-                      width="124"
-                      height="36"
-                      rx="6"
-                      fill="#0f172a"
-                      fillOpacity="0.93"
-                      stroke={instance.colorHex}
-                      strokeWidth={isSelected ? 2.2 : 1.3}
-                    />
-                    <text
-                      x="0"
-                      y="5"
-                      textAnchor="middle"
-                      fill="#ffffff"
-                      fontSize="14.5"
-                      fontWeight="700"
-                      fontFamily="monospace"
-                    >
-                      {instance.label}: {geom.absDeg.toFixed(1)}°
-                    </text>
-                  </g>
-
-                  {/* Nodo 1: Eje de Referencia */}
-                  <g
-                    transform={`translate(${geom.rx.toFixed(1)}, ${geom.ry.toFixed(1)})`}
-                    onPointerDown={handleStartDrag(instance.id, 'ref')}
-                    className={
-                      instance.locked || instance.fixedRefDirection
-                        ? 'cursor-not-allowed'
-                        : 'cursor-grab active:cursor-grabbing'
-                    }
-                  >
-                    <circle r="24" fill="transparent" />
-                    <circle r="11" fill="#ffffff" stroke="#334155" strokeWidth="3.5" />
-                    <text x="0" y="4" textAnchor="middle" fill="#0f172a" fontSize="10" fontWeight="800">
-                      R
-                    </text>
-                  </g>
-
-                  {/* Nodo 2: Vértice Articular */}
-                  <g
-                    transform={`translate(${geom.vx.toFixed(1)}, ${geom.vy.toFixed(1)})`}
-                    onPointerDown={handleStartDrag(instance.id, 'vertex')}
-                    className={
-                      instance.locked
-                        ? 'cursor-not-allowed'
-                        : 'cursor-grab active:cursor-grabbing'
-                    }
-                  >
-                    <circle r="26" fill="transparent" />
-                    <circle r="13" fill="#0f172a" stroke="#ffffff" strokeWidth="3.5" />
-                    <circle r="4.5" fill="#38bdf8" />
-                  </g>
-
-                  {/* Nodo 3: Segmento */}
-                  <g
-                    transform={`translate(${geom.sx.toFixed(1)}, ${geom.sy.toFixed(1)})`}
-                    onPointerDown={handleStartDrag(instance.id, 'seg')}
-                    className={
-                      instance.locked
-                        ? 'cursor-not-allowed'
-                        : 'cursor-grab active:cursor-grabbing'
-                    }
-                  >
-                    <circle r="24" fill="transparent" />
-                    <circle r="11.5" fill={instance.colorHex} stroke="#ffffff" strokeWidth="3.5" />
-                    <text x="0" y="4" textAnchor="middle" fill="#ffffff" fontSize="10" fontWeight="800">
-                      S
-                    </text>
-                  </g>
-                </g>
-              );
-            })}
+            {renderGonioVectors()}
           </svg>
         </div>
       </div>
@@ -838,20 +1069,16 @@ export const InteractivePhotoGoniometer: React.FC<InteractivePhotoGoniometerProp
       {/* Pie explicativo + botón de transferencia directa del goniómetro seleccionado */}
       <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded-md px-3 py-2">
         <div className="flex flex-wrap items-center gap-3">
-          <span className="inline-flex items-center gap-1.5">
-            <span className="w-3 h-3 rounded-full bg-slate-900 border-2 border-sky-400 inline-block" />
+          <span>
             <strong>Centro:</strong> Vértice articular
           </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="w-3 h-3 rounded-full bg-white border-2 border-slate-700 inline-block" />
-            <strong>R:</strong> Eje referencia (libre o fijo)
+          <span>·</span>
+          <span>
+            <strong>R:</strong> Recta referencia (Shift = 0°/90°/45°)
           </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span
-              className="w-3 h-3 rounded-full border border-white inline-block"
-              style={{ backgroundColor: activeGonio.colorHex }}
-            />
-            <strong>S:</strong> Segmento corporal · Arrastrar etiqueta traslada todo {activeGonio.label}
+          <span>·</span>
+          <span>
+            <strong>S:</strong> Recta segmento · Arrastrar etiqueta traslada todo {activeGonio.label}
           </span>
         </div>
 
@@ -871,3 +1098,4 @@ export const InteractivePhotoGoniometer: React.FC<InteractivePhotoGoniometerProp
     </div>
   );
 };
+

@@ -33,7 +33,7 @@ const clamp = (val: number, min: number, max: number) => Math.max(min, Math.min(
 // ============================================================================
 // 1. MÉTODO RULA (Capítulo 4.2 - Tablas 4.14, 4.15, 4.18, 4.19)
 // ============================================================================
-const RULA_TABLE_A: number[][][] = [
+export const RULA_TABLE_A: number[][][] = [
   // Brazo 1
   [
     [1, 2, 2, 2, 2, 3, 3, 3], // Antebrazo 1
@@ -72,7 +72,7 @@ const RULA_TABLE_A: number[][][] = [
   ],
 ];
 
-const RULA_TABLE_B: number[][] = [
+export const RULA_TABLE_B: number[][] = [
   // Cuello 1..6; cols: (Tronco 1..6) x (Piernas 1..2) -> 12 cols
   [1, 3, 2, 3, 3, 4, 5, 5, 6, 6, 7, 7],
   [2, 3, 2, 3, 4, 5, 5, 5, 6, 7, 7, 7],
@@ -82,7 +82,7 @@ const RULA_TABLE_B: number[][] = [
   [8, 8, 8, 8, 8, 8, 8, 9, 9, 9, 9, 9],
 ];
 
-const RULA_TABLE_C: number[][] = [
+export const RULA_TABLE_C: number[][] = [
   // C = 1..8+; D = 1..7+
   [1, 2, 3, 3, 4, 5, 5],
   [2, 2, 3, 4, 4, 5, 5],
@@ -259,7 +259,7 @@ export function evaluateRula(data: RulaData): MethodEvaluationResult {
 // ============================================================================
 // 2. MÉTODO REBA (Capítulo 4.3 + Tabla Oficial Hignett & McAtamney)
 // ============================================================================
-const REBA_TABLE_A: number[][][] = [
+export const REBA_TABLE_A: number[][][] = [
   // Tronco 1..5 -> Cuello 1..3 -> Piernas 1..4
   [
     [1, 2, 3, 4],
@@ -288,7 +288,7 @@ const REBA_TABLE_A: number[][][] = [
   ],
 ];
 
-const REBA_TABLE_B: number[][][] = [
+export const REBA_TABLE_B: number[][][] = [
   // Brazo 1..6 -> Antebrazo 1..2 -> Muñeca 1..3
   [
     [1, 2, 2],
@@ -316,7 +316,7 @@ const REBA_TABLE_B: number[][][] = [
   ],
 ];
 
-const REBA_TABLE_C: number[][] = [
+export const REBA_TABLE_C: number[][] = [
   [1, 1, 1, 2, 3, 3, 4, 5, 6, 7, 7, 7],
   [1, 2, 2, 3, 4, 4, 5, 6, 6, 7, 7, 8],
   [2, 3, 3, 3, 4, 5, 6, 7, 7, 8, 8, 8],
@@ -502,7 +502,7 @@ export function evaluateReba(data: RebaData): MethodEvaluationResult {
 // 3. MÉTODO OWAS (Capítulo 4.4 - Matriz oficial 4 x 3 x 7 x 3 = 252 celdas)
 // ============================================================================
 // OWAS_MATRIX[back 1..4][arms 1..3][legs 1..7][load 1..3]
-const OWAS_MATRIX: number[][][][] = [
+export const OWAS_MATRIX: number[][][][] = [
   // Espalda 1 (Recta)
   [
     // Brazos 1

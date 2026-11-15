@@ -89,8 +89,8 @@ export function sanitizeManualImageText(raw: string | undefined | null): string 
     .replace(/modelo\s+anat[oó]mico\s+3d\s+s[oó]lido/gi, '')
     .replace(/modelo\s+humano\s+3d\s+s[oó]lido/gi, '')
     .replace(/contorno\s+anat[oó]mico\s+humano\s+3d/gi, '')
-    .replace(/3d\s+model\s+posture/gi, 'EVALUACIÓN POSTURAL')
-    .replace(/3d\s+wireframe/gi, 'EVALUACIÓN')
+    .replace(/3d\s+model\s+posture/gi, 'POSTURAL ASSESSMENT')
+    .replace(/3d\s+wireframe/gi, 'ASSESSMENT')
     .replace(/wireframe\s+3d/gi, '')
     .replace(/wf-3d/gi, 'EVAL')
     .replace(/motor\s+3d(\s+aislado)?/gi, '')
@@ -2267,6 +2267,9 @@ export function drawEllipticalStudioShadow(
 /**
  * Draws the standardized centered Spanish technical footer at the bottom of an illustration.
  */
+export const MEDICAL_MANUAL_FOOTER_EN =
+  'Assessment Posture · Goniometric Markers · Reference Plane';
+
 export function drawCenteredManualFooter(
   ctx: CanvasRenderingContext2D,
   widthPx: number,
@@ -2275,9 +2278,12 @@ export function drawCenteredManualFooter(
   customCaption?: string,
 ): void {
   const cleanCaption = sanitizeManualImageText(customCaption) || MEDICAL_MANUAL_FOOTER_ES;
-  const finalCaption = cleanCaption.includes('Postura de evaluación')
-    ? cleanCaption
-    : MEDICAL_MANUAL_FOOTER_ES;
+  const finalCaption =
+    cleanCaption.includes('Postura de evaluación') ||
+    cleanCaption.includes('Assessment Posture') ||
+    cleanCaption.includes('Goniometric')
+      ? cleanCaption
+      : MEDICAL_MANUAL_FOOTER_ES;
 
   ctx.save();
   ctx.fillStyle = '#ffffff';

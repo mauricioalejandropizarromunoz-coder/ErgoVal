@@ -22,8 +22,11 @@ import {
   Scale,
   Sliders,
   Thermometer,
+  UserCheck,
   Video,
   X,
+  ExternalLink,
+  FileCode,
 } from 'lucide-react';
 import {
   DisplayPreferences,
@@ -64,6 +67,11 @@ const FreeAvatarStudioWorkspace = lazy(() =>
     default: m.FreeAvatarStudioWorkspace,
   })),
 );
+const RitualPosturesBiomechWorkspace = lazy(() =>
+  import('./components/RitualPosturesBiomechWorkspace').then((m) => ({
+    default: m.RitualPosturesBiomechWorkspace,
+  })),
+);
 const OnionSkinAvatarWorkspace = lazy(() =>
   import('./components/OnionSkinAvatarWorkspace').then((m) => ({
     default: m.OnionSkinAvatarWorkspace,
@@ -82,6 +90,11 @@ const HandRepetitionTesterWorkspace = lazy(() =>
 const EnvironmentalMethodsWorkspace = lazy(() =>
   import('./components/EnvironmentalMethodsWorkspace').then((m) => ({
     default: m.EnvironmentalMethodsWorkspace,
+  })),
+);
+const KatePosePlatesWorkspace = lazy(() =>
+  import('./components/KatePosePlatesWorkspace').then((m) => ({
+    default: m.KatePosePlatesWorkspace,
   })),
 );
 
@@ -213,11 +226,14 @@ export default function App() {
     | 'medidor_angulos'
     | 'testeo_repetitividad'
     | 'avatar_libre'
+    | 'posturas_rituales'
     | 'avatar_cebolla'
     | 'testeo_avatar'
     | 'figuras3d'
     | 'ambiente_fisico'
     | 'formulas'
+    | 'html_v5'
+    | 'kate_laminas'
   >('evaluador');
   const [isMobileMoreOpen, setIsMobileMoreOpen] = useState<boolean>(false);
   const [envWorkspaceMethodId, setEnvWorkspaceMethodId] = useState<EnvironmentalMethodId>(MethodId.FANGER);
@@ -564,11 +580,14 @@ export default function App() {
     medidor_angulos: 'Medidor de Ángulos · Testeo',
     testeo_repetitividad: 'Repetitividad Manos · Testeo',
     avatar_libre: 'Avatar Libre 3D',
+    posturas_rituales: 'Posturas Rituales 1:1 · Biomecánica & Trance',
     avatar_cebolla: 'Cáscara de Cebolla · Foto',
     testeo_avatar: 'Testeo Avatar 3D',
     figuras3d: 'Motor 3D · Figuras',
     ambiente_fisico: 'Confort Térmico · Planillas',
     formulas: 'Editor de Fórmulas',
+    html_v5: 'Ángulos v5 (HTML Original · ergoc)',
+    kate_laminas: 'Láminas Kate 3D · B&N',
   };
 
   return (
@@ -762,6 +781,34 @@ export default function App() {
 
             <button
               type="button"
+              onClick={() => setActiveWorkspace('kate_laminas')}
+              className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
+                activeWorkspace === 'kate_laminas'
+                  ? 'bg-slate-100 text-slate-950 border-white shadow-md ring-2 ring-slate-300/60'
+                  : 'bg-slate-950 text-white border-slate-500 hover:bg-slate-800'
+              }`}
+              title="Avatar 3D Kate (kate.glb): sube foto, corrige postura como Avatar Libre e imprime láminas B&N en verdadera magnitud (Cambria 12)"
+            >
+              <UserCheck className="w-3.5 h-3.5" />
+              <span>Láminas Kate 3D (B&amp;N)</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveWorkspace('html_v5')}
+              className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
+                activeWorkspace === 'html_v5'
+                  ? 'bg-emerald-600 text-white border-emerald-300 shadow-md ring-2 ring-emerald-400/50'
+                  : 'bg-emerald-950 text-emerald-200 border-emerald-600 hover:bg-emerald-900 hover:text-white'
+              }`}
+              title="Ángulos RULA · REBA · OWAS: video y láminas 3D (v5) — Ejecución directa tal cual del HTML original de ergoc.pdf"
+            >
+              <FileCode className="w-3.5 h-3.5" />
+              <span>Ángulos v5 (HTML Original)</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setActiveWorkspace('video_ia')}
               className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
                 activeWorkspace === 'video_ia'
@@ -800,6 +847,20 @@ export default function App() {
             >
               <Move3d className="w-3.5 h-3.5" />
               <span>Avatar Libre 3D</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveWorkspace('posturas_rituales')}
+              className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer border transition-colors ${
+                activeWorkspace === 'posturas_rituales'
+                  ? 'bg-rose-600 text-white border-rose-400 shadow-xs'
+                  : 'bg-rose-950/80 text-rose-200 border-rose-700/80 hover:bg-rose-900 hover:text-white'
+              }`}
+              title="Posturas Rituales 1:1 del Libro de Felicitas Goodman: Copia Fiel en Avatar 3D, Validación Técnica B&W y Análisis Energético"
+            >
+              <Compass className="w-3.5 h-3.5" />
+              <span>Posturas Rituales 1:1</span>
             </button>
 
             <button
@@ -1071,6 +1132,17 @@ export default function App() {
             </Suspense>
           </ErrorBoundary>
         </main>
+      ) : activeWorkspace === 'posturas_rituales' ? (
+        <main className="flex-1 max-w-[1440px] w-full mx-auto px-3 sm:px-6 py-3 sm:py-6 overflow-x-hidden">
+          <ErrorBoundary>
+            <Suspense fallback={<WorkspaceLoadingCard label={workspaceLabelMap[activeWorkspace]} />}>
+              <RitualPosturesBiomechWorkspace
+                onBackToEvaluator={() => setActiveWorkspace('evaluador')}
+                onAddPoseTabToStudy={handleAddTestedTabToStudy}
+              />
+            </Suspense>
+          </ErrorBoundary>
+        </main>
       ) : activeWorkspace === 'avatar_cebolla' ? (
         <main className="flex-1 max-w-[1440px] w-full mx-auto px-3 sm:px-6 py-3 sm:py-6 overflow-x-hidden">
           <ErrorBoundary>
@@ -1116,6 +1188,7 @@ export default function App() {
                   setEnvWorkspaceMethodId(MethodId.FANGER);
                   setActiveWorkspace('ambiente_fisico');
                 }}
+                onOpenRepetitionWorkspace={() => setActiveWorkspace('testeo_repetitividad')}
               />
             </Suspense>
           </ErrorBoundary>
@@ -1191,6 +1264,52 @@ export default function App() {
                   navigateToSlide(firstVidIdx >= 0 ? firstVidIdx + 1 : Math.max(1, tabs.length));
                 }}
               />
+            </Suspense>
+          </ErrorBoundary>
+        </main>
+      ) : activeWorkspace === 'html_v5' ? (
+        <main className="flex-1 w-full mx-auto overflow-hidden flex flex-col bg-slate-900 min-h-[calc(100vh-110px)]">
+          <div className="bg-slate-950 text-white px-4 py-2.5 flex items-center justify-between text-xs border-b border-slate-800 shadow-xs">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
+              <span className="font-semibold text-slate-100 truncate">
+                Ángulos RULA · REBA · OWAS: video y láminas 3D (v5)
+              </span>
+              <span className="hidden sm:inline text-slate-400 font-mono text-[11px] shrink-0">
+                (Código fuente tal cual de ergoc.pdf)
+              </span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setActiveWorkspace('evaluador')}
+                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded font-medium transition-colors"
+              >
+                Volver al Evaluador
+              </button>
+              <a
+                href="/ergoc_v5.html"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded font-medium transition-colors inline-flex items-center gap-1.5 shadow-xs"
+              >
+                <span>Abrir en pestaña nueva</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+            </div>
+          </div>
+          <iframe
+            src="/ergoc_v5.html"
+            title="Ángulos RULA · REBA · OWAS (v5)"
+            className="w-full flex-1 border-0 bg-white"
+            style={{ minHeight: 'calc(100vh - 150px)' }}
+          />
+        </main>
+      ) : activeWorkspace === 'kate_laminas' ? (
+        <main className="flex-1 max-w-[1440px] w-full mx-auto px-3 sm:px-6 py-3 sm:py-6 overflow-x-hidden">
+          <ErrorBoundary>
+            <Suspense fallback={<WorkspaceLoadingCard label={workspaceLabelMap[activeWorkspace]} />}>
+              <KatePosePlatesWorkspace onBackToEvaluator={() => setActiveWorkspace('evaluador')} />
             </Suspense>
           </ErrorBoundary>
         </main>
@@ -1434,6 +1553,38 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => {
+                  setActiveWorkspace('kate_laminas');
+                  setIsMobileMoreOpen(false);
+                }}
+                className={`min-h-[48px] px-3 py-2 rounded-md border text-left text-xs font-semibold flex items-center gap-2 ${
+                  activeWorkspace === 'kate_laminas'
+                    ? 'bg-slate-900 text-white border-slate-950'
+                    : 'bg-slate-100 text-slate-950 border-slate-400'
+                }`}
+              >
+                <UserCheck className="w-4 h-4 shrink-0" />
+                <span>Láminas Kate 3D (B&amp;N)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveWorkspace('html_v5');
+                  setIsMobileMoreOpen(false);
+                }}
+                className={`min-h-[48px] px-3 py-2 rounded-md border text-left text-xs font-semibold flex items-center gap-2 ${
+                  activeWorkspace === 'html_v5'
+                    ? 'bg-emerald-700 text-white border-emerald-800'
+                    : 'bg-emerald-50 text-emerald-950 border-emerald-300'
+                }`}
+              >
+                <FileCode className="w-4 h-4 shrink-0" />
+                <span>Ángulos v5 (HTML)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
                   setActiveWorkspace('video_ia');
                   setIsMobileMoreOpen(false);
                 }}
@@ -1477,6 +1628,22 @@ export default function App() {
               >
                 <Move3d className="w-4 h-4 shrink-0" />
                 <span>Avatar Libre 3D</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveWorkspace('posturas_rituales');
+                  setIsMobileMoreOpen(false);
+                }}
+                className={`min-h-[48px] px-3 py-2 rounded-md border text-left text-xs font-semibold flex items-center gap-2 ${
+                  activeWorkspace === 'posturas_rituales'
+                    ? 'bg-rose-700 text-white border-rose-800'
+                    : 'bg-rose-50 text-rose-950 border-rose-300'
+                }`}
+              >
+                <Compass className="w-4 h-4 shrink-0" />
+                <span>Posturas Rituales 1:1</span>
               </button>
 
               <button
@@ -1730,7 +1897,8 @@ export default function App() {
               activeWorkspace === 'avatar_cebolla' ||
               activeWorkspace === 'testeo_avatar' ||
               activeWorkspace === 'figuras3d' ||
-              activeWorkspace === 'formulas'
+              activeWorkspace === 'formulas' ||
+              activeWorkspace === 'kate_laminas'
                 ? 'text-white bg-slate-800/90'
                 : 'text-slate-300 hover:text-white'
             }`}

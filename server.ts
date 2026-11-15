@@ -1962,6 +1962,18 @@ CONVENCIÓN GONIOMÉTRICA OBLIGATORIA DEL AVATAR 3D (0° = posición anatómica 
     }
   });
 
+  app.get('/api/download/posturas-rituales-zip', (_req: Request, res: Response) => {
+    const filePath = path.resolve(__dirname, 'public/downloads/posturas_rituales_dibujos_kdp.zip');
+    if (!fs.existsSync(filePath)) {
+      res.status(404).json({ error: 'Archivo ZIP no encontrado en servidor.' });
+      return;
+    }
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename="posturas_rituales_dibujos_kdp.zip"');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.download(filePath, 'posturas_rituales_dibujos_kdp.zip');
+  });
+
   const applyStaticHeaders = (res: Response, filePath: string) => {
     if (filePath.endsWith('.glb')) {
       res.setHeader('Content-Type', 'model/gltf-binary');

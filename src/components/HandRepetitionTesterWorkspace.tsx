@@ -48,6 +48,16 @@ type TargetRepetitiveMethod =
 
 type TimelineClickTool = 'scrub' | 'edit_right' | 'edit_left';
 
+export const SAMPLE_REPETITIVE_WORK_VIDEO_URL =
+  '/assets/aistudio/Trabajo_repetitivo__1__d04b4273.mp4';
+
+type ActiveRepetitionVideoSource =
+  | { kind: 'file'; file: File; label: string }
+  | { kind: 'url'; url: string; label: string };
+
+type ScanFpsOption = 6 | 8 | 10 | 12 | 15 | 20;
+type MaxFramesCapOption = 40 | 65 | 100 | 160;
+
 function clamp(v: number, min: number, max: number): number {
   if (!Number.isFinite(v)) return min;
   return Math.max(min, Math.min(max, v));
@@ -140,14 +150,22 @@ export const HandRepetitionTesterWorkspace: React.FC<HandRepetitionTesterWorkspa
   const oscillogramCanvasRef = useRef<HTMLCanvasElement>(null);
 
   const [videoObjectUrl, setVideoObjectUrl] = useState<string | null>(null);
-  const [uploadedFileRef, setUploadedFileRef] = useState<File | null>(null);
+  const [activeSource, setActiveSource] = useState<ActiveRepetitionVideoSource | null>(null);
   const [rawTrace, setRawTrace] = useState<HandRepetitionRawTrace | null>(null);
 
   const [isScanning, setIsScanning] = useState<boolean>(false);
   const [scanProgressPct, setScanProgressPct] = useState<number>(0);
   const [scanStatusMsg, setScanStatusMsg] = useState<string>('');
   const [scanError, setScanError] = useState<string | null>(null);
-  const [targetScanFps, setTargetScanFps] = useState<12 | 15 | 20 | 24>(20);
+  const [targetScanFps, setTargetScanFps] = useState<ScanFpsOption>(() =>
+    typeof window !== 'undefined' && window.innerWidth < 768 ? 8 : 10,
+  );
+  const [reduceFramesEnabled, setReduceFramesEnabled] = useState<boolean>(true);
+  const [maxFramesCap, setMaxFramesCap] = useState<MaxFramesCapOption>(() =>
+    typeof window !== 'undefined' && window.innerWidth < 768 ? 40 : 65,
+  );
+  const [quickWindow15s, setQuickWindow15s] = useState<boolean>(false);
+  const [enableRoiZoom, setEnableRoiZoom] = useState<boolean>(false);
 
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [playbackRate, setPlaybackRate] = useState<0.25 | 0.5 | 1>(1);
@@ -186,10 +204,10 @@ export const HandRepetitionTesterWorkspace: React.FC<HandRepetitionTesterWorkspa
   );
   const [sentConfirmation, setSentConfirmation] = useState<string | null>(null);
 
-  // Limpiar URL blob anterior al desmontar o reemplazar vídeo
+  // Limpiar URL blob anterior al desmontar o reemplazar vídeo (sin revocar rutas estáticas /assets/...)
   useEffect(() => {
     return () => {
-      if (videoObjectUrl) {
+      if (videoObjectUrl && videoObjectUrl.startsWith('blob:')) {
         URL.revokeObjectURL(videoObjectUrl);
       }
     };
@@ -201,15 +219,24 @@ export const HandRepetitionTesterWorkspace: React.FC<HandRepetitionTesterWorkspa
     return deduceHandRepetitiveMovements(rawTrace, params, manualAdjustments);
   }, [rawTrace, params, manualAdjustments]);
 
-  const runAnalysisOnFile = useCallback(
-    async (file: File, fpsToUse: 12 | 15 | 20 | 24) => {
+  const runAnalysisOnSource = useCallback(
+    async (
+      source: ActiveRepetitionVideoSource,
+      scanOpts: {
+        fps: ScanFpsOption;
+        limitFrames: boolean;
+        framesCap: MaxFramesCapOption;
+        first15sOnly: boolean;
+        roiZoom: boolean;
+      },
+    ) => {
       setIsScanning(true);
       setScanError(null);
       setSentConfirmation(null);
       setIsPlaying(false);
       setRawTrace(null);
       setScanProgressPct(3);
-      setScanStatusMsg('Preparando vídeo con fotogramas clave densos (24 fps H.264)...');
+      setScanStatusMsg('Abriendo vídeo directamente en el decodificador local...');
 
       let workingUrl: string | null = null;
       const probeVid = document.createElement('video');
@@ -228,58 +255,92 @@ export const HandRepetitionTesterWorkspace: React.FC<HandRepetitionTesterWorkspa
       probeVid.preload = 'auto';
       document.body.appendChild(probeVid);
 
+      const safeRevoke = (u: string | null) => {
+        if (u && u.startsWith('blob:')) {
+          URL.revokeObjectURL(u);
+        }
+      };
+
       try {
-        // 1. Si el vídeo <= 120 MB, normalizar primero en servidor con FFmpeg (-g 6 -r 24)
-        //    para garantizar decodificación exacta cuadro a cuadro sin congelamiento de GOP/B-frames.
-        if (file.size <= 120 * 1024 * 1024) {
-          const normBlob = await normalizeVideoViaServer(file);
-          if (normBlob) {
-            workingUrl = URL.createObjectURL(normBlob);
-          }
-        }
-        if (!workingUrl) {
-          workingUrl = URL.createObjectURL(file);
-        }
+        // 1. Decodificación local directa (< 80 ms) en web y celular sin bloquear en subida al servidor
+        workingUrl =
+          source.kind === 'file' ? URL.createObjectURL(source.file) : source.url;
 
         probeVid.src = workingUrl;
         probeVid.load();
-        let ready = await waitForVideoReady(probeVid, 7500);
+        let ready = await waitForVideoReady(probeVid, 6500);
 
-        if (!ready) {
-          setScanProgressPct(7);
+        // 2. Solo recodificar en servidor si el archivo tiene códec incompatible (p.ej. HEVC/AVI sin soporte nativo)
+        if (!ready && source.kind === 'file' && source.file.size <= 120 * 1024 * 1024) {
+          setScanProgressPct(6);
           setScanStatusMsg('Recodificando códec de vídeo (MOV/HEVC → H.264 compatible)...');
-          const retryBlob = await normalizeVideoViaServer(file, 35000);
+          const retryBlob = await normalizeVideoViaServer(source.file, 25000);
           if (retryBlob) {
-            URL.revokeObjectURL(workingUrl);
+            safeRevoke(workingUrl);
             workingUrl = URL.createObjectURL(retryBlob);
             probeVid.src = workingUrl;
             probeVid.load();
-            ready = await waitForVideoReady(probeVid, 9000);
+            ready = await waitForVideoReady(probeVid, 8000);
           }
         }
 
         if (!ready) {
-          URL.revokeObjectURL(workingUrl);
+          safeRevoke(workingUrl);
           setScanError(
-            'El navegador no pudo decodificar este formato de vídeo. Pruebe convirtiéndolo a MP4 (H.264) o WebM.',
+            'El navegador no pudo decodificar este formato de vídeo. Pruebe con un archivo MP4 (H.264) o WebM.',
           );
           return;
         }
 
-        const finalUrl = workingUrl;
-        setVideoObjectUrl((prev) => {
-          if (prev && prev !== finalUrl) URL.revokeObjectURL(prev);
-          return finalUrl;
-        });
-
-        const trace = await extractHandRepetitionTimeline(probeVid, {
-          targetFps: fpsToUse,
-          maxDurationSec: 90,
-          sourceLabel: file.name,
+        let trace = await extractHandRepetitionTimeline(probeVid, {
+          targetFps: scanOpts.fps,
+          maxTotalFrames: scanOpts.limitFrames ? scanOpts.framesCap : undefined,
+          maxDurationSec: scanOpts.first15sOnly ? 15 : 90,
+          enableRoiZoom: scanOpts.roiZoom,
+          sourceLabel: source.label,
           onProgress: (pct, msg) => {
             setScanProgressPct(pct);
             setScanStatusMsg(msg);
           },
+        });
+
+        // 3. Si un archivo subido tenía GOP largo congelado en el navegador, recodificar solo en ese caso
+        if (
+          trace.frozenKeyframeSteppingDetected &&
+          source.kind === 'file' &&
+          source.file.size <= 80 * 1024 * 1024
+        ) {
+          setScanProgressPct(15);
+          setScanStatusMsg('Optimizando fotogramas clave (GOP) para lectura fluida...');
+          const fixedBlob = await normalizeVideoViaServer(source.file, 22000);
+          if (fixedBlob) {
+            safeRevoke(workingUrl);
+            workingUrl = URL.createObjectURL(fixedBlob);
+            probeVid.src = workingUrl;
+            probeVid.load();
+            const fixedReady = await waitForVideoReady(probeVid, 7500);
+            if (fixedReady) {
+              trace = await extractHandRepetitionTimeline(probeVid, {
+                targetFps: scanOpts.fps,
+                maxTotalFrames: scanOpts.limitFrames ? scanOpts.framesCap : undefined,
+                maxDurationSec: scanOpts.first15sOnly ? 15 : 90,
+                enableRoiZoom: scanOpts.roiZoom,
+                sourceLabel: source.label,
+                onProgress: (pct, msg) => {
+                  setScanProgressPct(pct);
+                  setScanStatusMsg(msg);
+                },
+              });
+            }
+          }
+        }
+
+        const finalUrl = workingUrl;
+        setVideoObjectUrl((prev) => {
+          if (prev && prev !== finalUrl && prev.startsWith('blob:')) {
+            URL.revokeObjectURL(prev);
+          }
+          return finalUrl;
         });
 
         // Verificar con parámetros base (3.0 cm); si ambas manos tienen 0 en 3.0 cm pero presentan
@@ -314,9 +375,7 @@ export const HandRepetitionTesterWorkspace: React.FC<HandRepetitionTesterWorkspa
           videoRef.current.currentTime = 0;
         }
       } catch (err) {
-        if (workingUrl) {
-          URL.revokeObjectURL(workingUrl);
-        }
+        safeRevoke(workingUrl);
         const msg =
           err instanceof Error
             ? err.message
@@ -337,17 +396,44 @@ export const HandRepetitionTesterWorkspace: React.FC<HandRepetitionTesterWorkspa
     [],
   );
 
+  const currentScanOptions = useMemo(
+    () => ({
+      fps: targetScanFps,
+      limitFrames: reduceFramesEnabled,
+      framesCap: maxFramesCap,
+      first15sOnly: quickWindow15s,
+      roiZoom: enableRoiZoom,
+    }),
+    [targetScanFps, reduceFramesEnabled, maxFramesCap, quickWindow15s, enableRoiZoom],
+  );
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = '';
-    setUploadedFileRef(file);
-    await runAnalysisOnFile(file, targetScanFps);
+    const src: ActiveRepetitionVideoSource = { kind: 'file', file, label: file.name };
+    setActiveSource(src);
+    await runAnalysisOnSource(src, currentScanOptions);
+  };
+
+  const handleLoadSampleRepetitiveVideo = async () => {
+    if (isScanning) return;
+    const src: ActiveRepetitionVideoSource = {
+      kind: 'url',
+      url: SAMPLE_REPETITIVE_WORK_VIDEO_URL,
+      label: 'Trabajo repetitivo · Empaque en línea (33,5 s)',
+    };
+    setActiveSource(src);
+    await runAnalysisOnSource(src, currentScanOptions);
   };
 
   const handleReanalyze = async () => {
-    if (!uploadedFileRef || isScanning) return;
-    await runAnalysisOnFile(uploadedFileRef, targetScanFps);
+    if (isScanning) return;
+    if (activeSource) {
+      await runAnalysisOnSource(activeSource, currentScanOptions);
+    } else {
+      await handleLoadSampleRepetitiveVideo();
+    }
   };
 
   const handleLoadCalibratedDemo = () => {
@@ -355,9 +441,9 @@ export const HandRepetitionTesterWorkspace: React.FC<HandRepetitionTesterWorkspa
     setScanError(null);
     setSentConfirmation(null);
     setIsPlaying(false);
-    setUploadedFileRef(null);
+    setActiveSource(null);
     setVideoObjectUrl((prev) => {
-      if (prev) URL.revokeObjectURL(prev);
+      if (prev && prev.startsWith('blob:')) URL.revokeObjectURL(prev);
       return null;
     });
     const demo = buildCalibratedHandRepetitionDemo();
@@ -520,7 +606,7 @@ export const HandRepetitionTesterWorkspace: React.FC<HandRepetitionTesterWorkspa
     const parent = canvas.parentElement;
     if (!parent) return;
 
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = Math.min(window.devicePixelRatio || 1, isPlaying ? 1.25 : 1.75);
     const cw = Math.max(240, parent.clientWidth);
     const ch = Math.max(200, parent.clientHeight);
     if (canvas.width !== Math.round(cw * dpr) || canvas.height !== Math.round(ch * dpr)) {
@@ -1104,17 +1190,30 @@ export const HandRepetitionTesterWorkspace: React.FC<HandRepetitionTesterWorkspa
             <span className="mr-1.5 text-slate-500">Muestreo:</span>
             <select
               value={targetScanFps}
-              onChange={(e) => setTargetScanFps(Number(e.target.value) as 12 | 15 | 20 | 24)}
+              onChange={(e) => setTargetScanFps(Number(e.target.value) as ScanFpsOption)}
               disabled={isScanning}
               className="bg-transparent font-mono font-semibold text-slate-900 focus:outline-none cursor-pointer tabular-nums"
-              title="Fotogramas por segundo analizados sobre las manos"
+              title="Fotogramas por segundo objetivo sobre las manos"
             >
+              <option value={6}>6 fps (ligero)</option>
+              <option value={8}>8 fps (celular)</option>
+              <option value={10}>10 fps (rápido)</option>
               <option value={12}>12 fps</option>
               <option value={15}>15 fps</option>
-              <option value={20}>20 fps</option>
-              <option value={24}>24 fps (máx.)</option>
+              <option value={20}>20 fps (denso)</option>
             </select>
           </div>
+
+          <button
+            type="button"
+            onClick={handleLoadSampleRepetitiveVideo}
+            disabled={isScanning}
+            className="min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-rose-300 bg-rose-50 hover:bg-rose-100 disabled:opacity-60 text-rose-900 text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+            title="Analizar el vídeo real de empaque repetitivo (33,5 s) con la configuración de fotogramas elegida"
+          >
+            <Play className="w-3.5 h-3.5 text-rose-600" />
+            <span>Trabajo Repetitivo (34 s)</span>
+          </button>
 
           <button
             type="button"
@@ -1123,16 +1222,16 @@ export const HandRepetitionTesterWorkspace: React.FC<HandRepetitionTesterWorkspa
             className="min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors"
           >
             <Upload className="w-3.5 h-3.5" />
-            <span>Subir Vídeo PC</span>
+            <span>Subir Vídeo</span>
           </button>
 
-          {uploadedFileRef && (
+          {activeSource && (
             <button
               type="button"
               onClick={handleReanalyze}
               disabled={isScanning}
               className="min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-50 text-slate-800 text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
-              title="Re-ejecutar el rastreo óptico de manos desde cero sobre el vídeo cargado"
+              title="Re-ejecutar el rastreo óptico aplicando las opciones actuales de fotogramas"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isScanning ? 'animate-spin' : ''}`} />
               <span>Re-analizar</span>
@@ -1148,6 +1247,79 @@ export const HandRepetitionTesterWorkspace: React.FC<HandRepetitionTesterWorkspa
             <span>Volver al Estudio</span>
           </button>
         </div>
+      </div>
+
+      {/* PANEL DE OPCIONES DE MENOS FOTOGRAMAS Y OPTIMIZACIÓN WEB / CELULAR */}
+      <div className="bg-white border border-slate-300 rounded-lg px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <label className="inline-flex items-center gap-1.5 font-semibold text-slate-800 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={reduceFramesEnabled}
+              onChange={(e) => setReduceFramesEnabled(e.target.checked)}
+              disabled={isScanning}
+              className="rounded border-slate-300 text-rose-600 focus:ring-rose-500 cursor-pointer"
+            />
+            <span>Evaluar menos fotogramas (carga veloz):</span>
+          </label>
+
+          <div className="inline-flex items-center rounded-md border border-slate-300 overflow-hidden">
+            {([40, 65, 100, 160] as const).map((cap) => (
+              <button
+                key={cap}
+                type="button"
+                disabled={isScanning || !reduceFramesEnabled}
+                onClick={() => setMaxFramesCap(cap)}
+                className={`px-2.5 py-1 text-[11px] font-mono font-semibold whitespace-nowrap tabular-nums cursor-pointer transition-colors ${
+                  reduceFramesEnabled && maxFramesCap === cap
+                    ? 'bg-rose-600 text-white'
+                    : 'bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-45'
+                }`}
+                title={`Tope máximo de ${cap} fotogramas muestreados en todo el tramo analizado`}
+              >
+                {cap} cuadros
+              </button>
+            ))}
+          </div>
+
+          <label
+            className="inline-flex items-center gap-1.5 text-slate-700 cursor-pointer select-none"
+            title="Evalúa únicamente los primeros 15 segundos representativos del vídeo para concentrar los fotogramas y obtener el ciclo en menos de 1 segundo"
+          >
+            <input
+              type="checkbox"
+              checked={quickWindow15s}
+              onChange={(e) => setQuickWindow15s(e.target.checked)}
+              disabled={isScanning}
+              className="rounded border-slate-300 text-rose-600 focus:ring-rose-500 cursor-pointer"
+            />
+            <span>Recorte rápido 15 s representativos</span>
+          </label>
+
+          <label
+            className="inline-flex items-center gap-1.5 text-slate-700 cursor-pointer select-none"
+            title="Activa doble pasada de aumento sobre las muñecas; desactívelo en web/celular para máxima velocidad cuando las manos ya se ven claras"
+          >
+            <input
+              type="checkbox"
+              checked={enableRoiZoom}
+              onChange={(e) => setEnableRoiZoom(e.target.checked)}
+              disabled={isScanning}
+              className="rounded border-slate-300 text-rose-600 focus:ring-rose-500 cursor-pointer"
+            />
+            <span>Auto-Zoom manos lejanas</span>
+          </label>
+        </div>
+
+        <button
+          type="button"
+          onClick={handleReanalyze}
+          disabled={isScanning}
+          className="min-h-[32px] inline-flex items-center gap-1.5 px-3 py-1 rounded-md border border-rose-300 bg-rose-50 hover:bg-rose-100 disabled:opacity-50 text-rose-900 font-semibold whitespace-nowrap shrink-0 cursor-pointer"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${isScanning ? 'animate-spin' : ''}`} />
+          <span>{activeSource ? 'Aplicar tildes al vídeo' : 'Probar Trabajo Repetitivo con tildes'}</span>
+        </button>
       </div>
 
       {/* BARRA DE PROGRESO O ERROR DE ESCANEO */}
@@ -1272,19 +1444,27 @@ export const HandRepetitionTesterWorkspace: React.FC<HandRepetitionTesterWorkspa
                   <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
                     <button
                       type="button"
+                      onClick={handleLoadSampleRepetitiveVideo}
+                      className="min-h-[38px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold whitespace-nowrap cursor-pointer transition-colors"
+                    >
+                      <Play className="w-3.5 h-3.5" />
+                      <span>Cargar Vídeo Trabajo Repetitivo (34 s)</span>
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => fileInputRef.current?.click()}
-                      className="min-h-[38px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold cursor-pointer transition-colors"
+                      className="min-h-[38px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md border border-slate-600 bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold whitespace-nowrap cursor-pointer transition-colors"
                     >
                       <Upload className="w-3.5 h-3.5" />
-                      <span>Subir Vídeo desde PC</span>
+                      <span>Subir Vídeo Propio</span>
                     </button>
                     <button
                       type="button"
                       onClick={handleLoadCalibratedDemo}
-                      className="min-h-[38px] inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-slate-700 bg-slate-900 hover:bg-slate-800 text-slate-200 text-xs font-semibold cursor-pointer transition-colors"
+                      className="min-h-[38px] inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-slate-700 bg-slate-900 hover:bg-slate-800 text-slate-200 text-xs font-semibold whitespace-nowrap cursor-pointer transition-colors"
                     >
                       <Play className="w-3.5 h-3.5 text-sky-400" />
-                      <span>Probar Señal Calibrada (36 / 18 min)</span>
+                      <span>Señal Calibrada (36 / 18 min)</span>
                     </button>
                   </div>
                 </div>

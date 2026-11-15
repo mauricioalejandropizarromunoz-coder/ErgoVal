@@ -1,0 +1,54 @@
+N,Postura,Axis_Mundi,Elemento,Base_Postural,A_Cuello,B_Tronco,C_Brazo_Izq,D_Brazo_Der,E_Antebrazo_Izq,F_Antebrazo_Der,G_Pierna_Izq,H_Pierna_Der,MI_Muneca_Izq,MD_Muneca_Der,RULA_Izq,RULA_Der,REBA_Izq,REBA_Der,OWAS_Codigo,OWAS_Categoria
+1,"EL ALBATROS","Cielo + Aire","Aire","lotus",-28,18,-29,-26,51,50,145,142,0,0,6,6,5,5,"1141",2
+2,"LLAMADA DE LOS ESPÍRITUS","Cielo / Mundo Medio + Fuego","Fuego","stand",-20,10,-28,-25,65,60,22,18,0,0,6,6,4,4,"1121",1
+3,"EL HOMBRE CORNUDO DE GUNDESTRUP","Los Tres Mundos + Tierra/Fuego","Fuego","lotus",2,0,40,40,78,78,145,145,0,0,3,3,2,2,"1141",2
+4,"VIAJE AL REINO DE LOS MUERTOS","Inframundo + Tierra","Tierra","stand",-5,2,13,18,83,79,41,22,0,0,3,3,2,2,"1151",2
+5,"EL HOMBRE DE LASCAUX","Inframundo / Cielo + Aire/Fuego","Aire","supine_37",34,-44,52,21,20,9,57,55,0,0,6,6,8,7,"2141",3
+6,"EL OLMECA DE RÍO ZUMPANGO","Mundo Medio / Cielo + Tierra","Tierra","seated_open",-16,25,87,-36,64,17,92,8,0,0,6,6,5,5,"2151",3
+7,"EL SAMI RECLINADO","Inframundo + Agua/Tierra","Agua","prone_bridge",0,66,114,126,95,52,3,3,0,0,7,7,6,7,"2221",2
+8,"VIAJE ESPIRITUAL SUDAMERICANO","Cielo + Aire","Aire","supine",148,-85,-96,19,108,0,3,3,0,0,6,6,5,5,"2121",2
+9,"LA MUJER DE GALGENBERG (VENUS DANZANTE)","Cielo / Inframundo + Aire/Tierra","Aire","stand",16,-3,87,8,41,9,16,15,0,0,4,4,3,2,"1121",1
+10,"LA MUJER DE MALTA","Inframundo + Tierra","Tierra","stand",-27,19,29,-3,59,29,33,26,0,0,6,6,5,5,"1151",2
+11,"EL ZAPOTECA DE MONTE ALBÁN","Cielo + Fuego/Aire","Fuego","lotus",-31,17,38,41,41,72,131,136,0,0,6,6,5,4,"1141",2
+12,"LA MUJER PÁJARO DE TESALIA","Cielo + Aire","Aire","kneel_asym",-42,22,34,30,16,25,157,145,0,0,6,6,5,5,"2141",3
+13,"POSTURA DE PARTO RITUAL","Inframundo / Mundo Medio + Agua","Agua","stand",-12,2,30,13,80,71,24,19,0,0,6,5,3,3,"1121",1
+14,"PAREJA DE JALISCO","Mundo Medio / Inframundo + Tierra/Fuego","Tierra","kneel_heels",-30,15,165,107,87,48,104,104,0,0,7,7,5,6,"1241",2
+15,"LA MUJER DE LA AMAPOLA DE GAZI","Cielo + Aire/Agua","Agua","stand",-27,-28,57,65,76,85,14,8,0,0,6,6,5,5,"2121",2
+16,"LA SERPIENTE EMPLUMADA","Inframundo / Cielo + Fuego/Tierra","Fuego","stand",-20,7,47,44,75,78,14,23,0,0,6,6,5,4,"1121",1
+17,"LA MUJER ESQUELETO DE SANTA CRUZ","Inframundo + Tierra/Fuego","Tierra","kneel_wide",-53,35,42,40,30,38,153,143,0,0,6,6,5,5,"2141",3
+18,"LA MUJER SERPIENTE DE MYRTOS","Inframundo + Agua","Agua","lotus",-22,6,-17,-16,53,55,154,149,0,0,6,6,4,4,"1141",2
+19,"LA MUJER DE LAUSSEL (VENUS DEL CUERNO)","Cielo / Inframundo + Tierra/Agua","Tierra","stand",-41,21,38,44,77,50,43,37,0,0,6,6,7,7,"2141",3
+20,"PIPA ANTROPOMORFA ADENA","Mundo Medio / Cielo + Fuego/Aire","Fuego","stand",-60,-29,-156,95,64,13,62,32,0,0,6,7,5,7,"2141",3
+21,"LA POSTURA DEL OSO SEDENTE","Inframundo / Mundo Medio + Tierra/Fuego","Tierra","stand",-21,10,23,22,54,71,36,27,0,0,6,6,5,5,"1151",2
+22,"LA POSTURA CHILTAN","Mundo Medio + Agua/Aire","Agua","lotus",-15,15,-7,28,28,92,29,17,0,0,6,6,4,4,"1121",1
+23,"LA PAREJA DE CERNAVODA (LOS PENSADORES)","Inframundo + Tierra","Tierra","seated_stool",-42,21,86,82,83,88,93,119,0,0,6,6,5,5,"2141",3
+24,"LA DIOSA TLAZOLTÉOTL","Inframundo / Mundo Medio + Fuego/Tierra","Fuego","stand",4,-6,33,41,85,84,36,32,0,0,3,3,4,4,"1141",2
+25,"EL HOMBRE CORNUDO DE COLIMA","Mundo Medio / Cielo + Fuego","Fuego","seated_open",-20,7,36,33,38,50,134,139,0,0,6,6,5,5,"1141",2
+26,"EL BEBÉ OLMECA","Mundo Medio / Inframundo + Agua","Agua","seated_open",-12,-4,25,29,28,41,14,51,0,0,6,6,4,4,"1151",2
+27,"FIGURA PINTADA DE MACHALILLA","Inframundo + Fuego/Tierra","Fuego","seated_open",8,-17,48,31,50,43,106,116,0,0,3,3,4,4,"1141",2
+28,"EL CHAMÁN CANTOR","Mundo Medio / Cielo + Aire/Fuego","Aire","stand",-12,5,16,21,91,94,33,25,0,0,5,6,5,5,"1151",2
+29,"LA MUJER SERPIENTE DE FAARDAL","Mundo Medio / Inframundo + Fuego/Agua","Fuego","kneel_heels",-32,20,64,93,73,73,129,128,0,0,6,7,5,5,"1141",2
+30,"LA MUJER DE ATOTONILCO","Inframundo + Tierra/Agua","Tierra","kneel_asym",-11,3,20,27,29,118,139,134,0,0,6,6,3,4,"1141",2
+31,"LA MUJER DE CARCHI","Mundo Medio + Tierra/Aire","Tierra","seated_straight",2,0,28,-24,92,88,0,0,0,0,3,3,2,2,"1121",1
+32,"LA MUJER DE HACILAR","Mundo Medio / Inframundo + Tierra/Fuego","Tierra","stand",4,-6,33,41,85,84,36,32,0,0,3,3,4,4,"1141",2
+33,"LA MUJER DE MORAVIA (HLUBOKÉ MAŠŮVKY)","Cielo / Inframundo + Aire/Tierra","Aire","stand",-10,2,28,31,96,87,31,25,0,0,3,3,2,2,"1151",2
+34,"JAGUAR AGAZAPADO","Mundo Medio / Inframundo + Tierra/Fuego","Fuego","kneel_asym",-22,11,56,23,86,50,128,110,0,0,6,6,5,5,"1141",2
+35,"FIGURA DE LA TOLITA","Mundo Medio + Aire/Fuego","Aire","lotus",-10,8,29,39,48,43,130,136,0,0,3,3,4,4,"1141",2
+36,"DIOSA XOCHIQUETZAL","Mundo Medio / Cielo + Tierra/Agua","Tierra","kneel_heels",-46,35,43,37,27,38,135,121,0,0,6,6,5,5,"2141",3
+37,"EL HOMBRE DE BAHÍA","Mundo Medio / Inframundo + Fuego","Fuego","lotus",-26,9,20,14,23,32,149,144,0,0,6,6,4,4,"1141",2
+38,"EL HOMBRE DE JAMA-COAQUE","Mundo Medio / Cielo + Aire","Aire","seated_open",-3,0,26,20,38,54,19,66,0,0,3,3,2,2,"1151",2
+39,"EL PRÍNCIPE OLMECA (CRUZ DEL MILAGRO)","Mundo Medio + Tierra/Fuego","Tierra","lotus",-28,22,26,23,27,24,143,143,0,0,6,6,5,5,"2141",3
+40,"MUJER DE CHALCHIHUITLICUE","Mundo Medio / Inframundo + Agua","Agua","lotus",-13,-1,27,30,32,29,133,135,0,0,6,6,4,4,"1141",2
+41,"EL JAGUAR TATUADO","Mundo Medio / Inframundo + Fuego/Tierra","Fuego","kneel_wide",-38,39,-35,-34,21,21,104,79,0,0,6,6,5,5,"2141",3
+42,"PIPA EFIGIE DE ALABAMA (MOUNDVILLE)","Inframundo + Fuego/Humo","Fuego","squat",-3,10,31,21,72,86,147,147,0,0,3,3,3,3,"1141",2
+43,"EL HOMBRE DE CUAUTLA","Mundo Medio + Tierra/Agua","Agua","seated_open",-15,-4,40,29,76,83,144,147,0,0,6,6,3,3,"1141",2
+44,"LA FLAUTA MAYA (MAYA FLUTE PLAYER)","Cielo + Aire/Fuego","Aire","lotus",-38,17,116,115,110,103,133,123,0,0,7,7,6,6,"1241",2
+45,"LA MUJER LUNAR DE IXCHEL","Mundo Medio / Cielo + Agua/Luz","Agua","lotus",7,-7,35,20,80,55,148,89,0,0,3,3,3,3,"1141",2
+46,"EL HOMBRE PÁJARO DE VERACRUZ","Cielo + Aire/Agua","Aire","stand",-11,2,14,-16,29,33,19,18,0,0,6,6,3,3,"1121",1
+47,"EL MALLAM NUPE (SOUTHERN SAHARA)","Inframundo / Mundo Medio + Tierra/Arena","Tierra","kneel_asym",-22,22,23,-18,18,32,146,120,0,0,6,6,5,5,"2141",3
+48,"EL ADIVINO OLMECA DE PUEBLA","Mundo Medio + Fuego/Tierra","Tierra","seated_open",-22,11,50,59,33,77,144,153,0,0,6,6,5,5,"1141",2
+49,"EL ADIVINO DE TENNESSEE","Mundo Medio / Cielo + Aire","Aire","kneel_asym",-26,16,-19,35,20,76,136,132,0,0,6,6,4,4,"1141",2
+50,"LA MUJER CON TURBANTE DE TLATILCO","Mundo Medio / Inframundo + Tierra","Tierra","seated_open",-16,14,58,27,109,25,136,130,0,0,6,6,5,5,"1141",2
+51,"LA MUJER DE CHOLULA","Cielo / Mundo Medio + Aire/Fuego","Aire","seated_stool",2,12,39,39,32,44,90,90,0,0,3,3,4,4,"1141",2
+52,"LLAMADA DE LOS ANIMALES","Mundo Medio + Tierra/Fuego","Tierra","stand",-24,12,106,87,52,57,32,12,0,0,7,6,7,6,"1251",2
+53,"EL CAZADOR ADIVINO","Mundo Medio / Inframundo + Tierra/Aire","Aire","stand",12,-3,60,-63,44,51,18,14,0,0,4,4,3,2,"1121",1

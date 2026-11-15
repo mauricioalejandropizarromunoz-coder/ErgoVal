@@ -71,12 +71,15 @@ import {
   PredictiveKinematicsEvaluationV26,
   resolveOperatorAnthropometry,
 } from '../utils/predictiveKinematicsV26';
-import { getPrebakedSampleWorkerMocapTimeline } from '../utils/sampleWorkerMocapData';
+import {
+  getPrebakedCaso1AlmacenMocapTimeline,
+  getPrebakedSampleWorkerMocapTimeline,
+} from '../utils/sampleWorkerMocapData';
 
 export const SAMPLE_WORKER_MOCAP_VIDEO_URL =
   '/assets/aistudio/sin-t-tulo-video-de-persona__1__fcbde593.mp4';
-export const SAMPLE_REPETITIVE_WORK_VIDEO_URL =
-  '/assets/aistudio/Trabajo_repetitivo__1__d04b4273.mp4';
+export const CASO1_ALMACEN_VIDEO_URL =
+  '/assets/aistudio/caso1_almacen.mp4_fc2af865.mp4';
 
 export interface TwinAvatarVideoStudioProps {
   general: GeneralStudyData;
@@ -178,17 +181,21 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
 }) => {
   const [mode, setMode] = useState<'pc_upload' | 'demo_cycle'>('pc_upload');
   const [demoSampleId, setDemoSampleId] = useState<CeneaSampleCaseId>('cenea_mmc_almacen');
+  const posturalDemoCatalog = useMemo(
+    () => CENEA_SAMPLE_VIDEOS_CATALOG.filter((s) => s.id !== 'cenea_ocra_repetitivos'),
+    [],
+  );
   const activeDemoSample = useMemo(
     () =>
-      CENEA_SAMPLE_VIDEOS_CATALOG.find((s) => s.id === demoSampleId) ||
-      CENEA_SAMPLE_VIDEOS_CATALOG[0],
-    [demoSampleId],
+      posturalDemoCatalog.find((s) => s.id === demoSampleId) ||
+      posturalDemoCatalog[0],
+    [demoSampleId, posturalDemoCatalog],
   );
 
-  // Vídeo activo (inicia precargado al instante en < 2 ms con la secuencia 3D calibrada del taller)
-  const initialPrebaked = useMemo(() => getPrebakedSampleWorkerMocapTimeline(), []);
-  const [pcVideoName, setPcVideoName] = useState<string>('operario_levantamiento_taller.mp4');
-  const [pcVideoUrl, setPcVideoUrl] = useState<string | null>(SAMPLE_WORKER_MOCAP_VIDEO_URL);
+  // Vídeo activo (inicia precargado al instante en < 3 ms con el caso real de almacén 19.5 s)
+  const initialPrebaked = useMemo(() => getPrebakedCaso1AlmacenMocapTimeline(), []);
+  const [pcVideoName, setPcVideoName] = useState<string>('caso1_almacen.mp4');
+  const [pcVideoUrl, setPcVideoUrl] = useState<string | null>(CASO1_ALMACEN_VIDEO_URL);
   const [videoDurationSec, setVideoDurationSec] = useState<number>(initialPrebaked.durationSec);
   const [currentTimeSec, setCurrentTimeSec] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
@@ -203,16 +210,20 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
   const [trackingMsg, setTrackingMsg] = useState<string>('');
   const [showVideoSkeletonOverlay, setShowVideoSkeletonOverlay] = useState<boolean>(true);
   const [showAvatarAngleHUD, setShowAvatarAngleHUD] = useState<boolean>(true);
-  const [autoAssistSevereOcclusion, setAutoAssistSevereOcclusion] = useState<boolean>(false);
+  const [autoAssistSevereOcclusion, setAutoAssistSevereOcclusion] = useState<boolean>(true);
 
-  // Opciones de tilde para evaluar menos fotogramas, motor rápido y estabilización de mesa/zoom
+  // Opciones de tilde para cantidad de fotogramas, motor GPU Full y rastreo en vivo
   const [reduceFramesEnabled, setReduceFramesEnabled] = useState<boolean>(true);
-  const [reducedFrameCap, setReducedFrameCap] = useState<20 | 40 | 75>(40);
+  const [reducedFrameCap, setReducedFrameCap] = useState<30 | 60 | 100>(() =>
+    typeof window !== 'undefined' && window.innerWidth < 768 ? 30 : 60,
+  );
   const [preferFastModel, setPreferFastModel] = useState<boolean>(true);
   const [liveRealtimeOnly, setLiveRealtimeOnly] = useState<boolean>(false);
-  const [lockWorkbenchLowerBody, setLockWorkbenchLowerBody] = useState<boolean>(true);
-  const [stabilizeCloseupAndProfile, setStabilizeCloseupAndProfile] = useState<boolean>(true);
   const liveTrackerRef = useRef<LiveMocapStreamTracker | null>(null);
+  const lastV26EvalCacheRef = useRef<{
+    tSec: number;
+    eval: PredictiveKinematicsEvaluationV26;
+  } | null>(null);
 
   // Opción C: Pines híbridos de corrección asistida en oclusiones
   const [correctionPins, setCorrectionPins] = useState<MocapCorrectionPin[]>([]);
@@ -360,11 +371,6 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
           }
           const liveSample = liveTrackerRef.current.detectCurrentPlayingFrame(
             sourceVideoRef.current,
-            {
-              lockWorkbenchLowerBody,
-              stabilizeCloseupCuts: stabilizeCloseupAndProfile,
-              antiProfileSpin180: stabilizeCloseupAndProfile,
-            },
           );
           if (liveSample) return liveSample;
         }
@@ -381,8 +387,6 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
       mode,
       mocapTimeline,
       liveRealtimeOnly,
-      lockWorkbenchLowerBody,
-      stabilizeCloseupAndProfile,
       previewFrame0Sample,
       effectivePins,
       autoAssistSevereOcclusion,
@@ -505,14 +509,24 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
         if (mode === 'pc_upload') {
           const sample = getMocapSampleAtTime(tSec, pinsOverride);
           if (sample) {
-            const v26Frame = evaluateV26AtTime(tSec, sample);
+            let overlaySpecToUse: PredictiveKinematicsEvaluationV26['overlaySpec'] | undefined;
+            if (showPredictiveGuideV26) {
+              const cached = lastV26EvalCacheRef.current;
+              if (isPlaying && cached && Math.abs(tSec - cached.tSec) < 0.075) {
+                overlaySpecToUse = cached.eval.overlaySpec;
+              } else {
+                const freshEval = evaluateV26AtTime(tSec, sample);
+                lastV26EvalCacheRef.current = { tSec, eval: freshEval };
+                overlaySpecToUse = freshEval.overlaySpec;
+              }
+            }
             renderMocapTwinFrameToCanvas(sample, avatarCanvasRef.current, 640, 480, orbit, {
               cameraPreset,
               sceneProp: liveEffectiveProp,
               propPlacement: propPlacementConfig,
               showAngleHUD: showAvatarAngleHUD,
-              predictiveOverlay: v26Frame.overlaySpec,
-              dpiScale: 1.5,
+              predictiveOverlay: overlaySpecToUse,
+              dpiScale: isPlaying ? 1.15 : 1.5,
             });
 
             const ovCanvas = videoOverlayCanvasRef.current;
@@ -630,6 +644,8 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
       previewFinalPhotoProp,
       showAvatarAngleHUD,
       showVideoSkeletonOverlay,
+      showPredictiveGuideV26,
+      isPlaying,
       videoDurationSec,
       activeDemoSample,
     ],
@@ -908,12 +924,18 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
       URL.revokeObjectURL(pcVideoUrl);
     }
 
-    // Ruta ultrarrápida (0 ms de espera en celular y web) para el vídeo real de prueba integrado
-    if (!isFile && fileOrUrl === SAMPLE_WORKER_MOCAP_VIDEO_URL) {
-      const prebaked = getPrebakedSampleWorkerMocapTimeline();
+    // Ruta ultrarrápida (0 ms de espera en celular y web) para los vídeos reales calibrados integrados
+    if (
+      !isFile &&
+      (fileOrUrl === CASO1_ALMACEN_VIDEO_URL || fileOrUrl === SAMPLE_WORKER_MOCAP_VIDEO_URL)
+    ) {
+      const prebaked =
+        fileOrUrl === CASO1_ALMACEN_VIDEO_URL
+          ? getPrebakedCaso1AlmacenMocapTimeline()
+          : getPrebakedSampleWorkerMocapTimeline();
       setIsTracking(false);
       setTrackingMsg('');
-      setPcVideoUrl(SAMPLE_WORKER_MOCAP_VIDEO_URL);
+      setPcVideoUrl(fileOrUrl);
       setVideoDurationSec(prebaked.durationSec);
       setCurrentTimeSec(0);
       setPreviewFrame0Sample(prebaked.frames[0] ?? null);
@@ -927,7 +949,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
       }
       setNotice({
         tone: 'success',
-        text: `Vídeo de prueba listo al instante (${prebaked.frames.length} cuadros 3D sincronizados a ${prebaked.sampledFps} fps). Pulse "Reproducir Sincronizado".`,
+        text: `Vídeo ${videoName} sincronizado al instante (${prebaked.frames.length} cuadros 3D calibrados a ${prebaked.sampledFps} fps). Pulse "Reproducir Sincronizado".`,
       });
       return;
     }
@@ -1054,10 +1076,10 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
       const effectiveMaxSamples = reduceFramesEnabled
         ? reducedFrameCap
         : isMobileDevice
-          ? 72
-          : 140;
+          ? 90
+          : 180;
       const effectiveTargetFps = reduceFramesEnabled
-        ? Math.max(1, reducedFrameCap / Math.max(1, dur))
+        ? Math.max(1.2, reducedFrameCap / Math.max(1, dur))
         : isMobileDevice
           ? 8
           : 10;
@@ -1070,7 +1092,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
         setMocapTimeline(null);
         setNotice({
           tone: 'success',
-          text: 'Vídeo listo en modo Rastreo en Vivo (0 s de pre-escaneo). Pulse "Reproducir Sincronizado" para evaluar los fotogramas al vuelo.',
+          text: 'Vídeo listo en modo Rastreo en Vivo (0 s de espera). Pulse "Reproducir Sincronizado" para copiar el movimiento al vuelo.',
         });
       } else {
         const tStartMs = performance.now();
@@ -1078,9 +1100,6 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
           targetFps: effectiveTargetFps,
           maxTotalSamples: effectiveMaxSamples,
           preferFastModel,
-          lockWorkbenchLowerBody,
-          stabilizeCloseupCuts: stabilizeCloseupAndProfile,
-          antiProfileSpin180: stabilizeCloseupAndProfile,
           onFirstFrameSample: (sample0) => {
             setPreviewFrame0Sample(sample0);
           },
@@ -1103,13 +1122,9 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
           setVideoDurationSec(timeline.durationSec);
           setPreviewFrame0Sample(timeline.frames[0]);
           setMocapTimeline(timeline);
-          const occCount = timeline.occlusionSegments.length;
           setNotice({
             tone: 'success',
-            text:
-              occCount > 0
-                ? `Vídeo procesado en ${elapsedSec} s (${timeline.modelTier.toUpperCase()} · ${timeline.frames.length} fotogramas evaluados + interpolación 60 FPS). Se estabilizaron ${occCount} tramo(s) con oclusión/corte.`
-                : `Vídeo procesado en ${elapsedSec} s (${timeline.modelTier.toUpperCase()} · ${timeline.frames.length} fotogramas evaluados + interpolación 60 FPS). Pulse Reproducir.`,
+            text: `Movimiento copiado en ${elapsedSec} s (${timeline.modelTier.toUpperCase()} · ${timeline.frames.length} fotogramas reales + interpolación 60 FPS). Pulse Reproducir.`,
           });
         } else {
           setMocapTimeline(null);
@@ -1183,10 +1198,10 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
       const effectiveMaxSamples = reduceFramesEnabled
         ? reducedFrameCap
         : isMobileDevice
-          ? 72
-          : 140;
+          ? 90
+          : 180;
       const effectiveTargetFps = reduceFramesEnabled
-        ? Math.max(1, reducedFrameCap / Math.max(1, dur))
+        ? Math.max(1.2, reducedFrameCap / Math.max(1, dur))
         : isMobileDevice
           ? 8
           : 10;
@@ -1196,9 +1211,6 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
         targetFps: effectiveTargetFps,
         maxTotalSamples: effectiveMaxSamples,
         preferFastModel,
-        lockWorkbenchLowerBody,
-        stabilizeCloseupCuts: stabilizeCloseupAndProfile,
-        antiProfileSpin180: stabilizeCloseupAndProfile,
         onFirstFrameSample: (sample0) => {
           setPreviewFrame0Sample(sample0);
         },
@@ -1216,7 +1228,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
         setMocapTimeline(timeline);
         setNotice({
           tone: 'success',
-          text: `Evaluación completada en ${elapsedSec} s (${timeline.modelTier.toUpperCase()} · ${timeline.frames.length} fotogramas evaluados a ${timeline.sampledFps} fps).`,
+          text: `Movimiento copiado en ${elapsedSec} s (${timeline.modelTier.toUpperCase()} · ${timeline.frames.length} fotogramas evaluados a ${timeline.sampledFps} fps).`,
         });
       } else {
         setNotice({
@@ -1814,7 +1826,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
               Estudio de Vídeo Mellizo 3D + Estabilización Industrial
             </h2>
             <p className="text-xs text-slate-600 mt-1 max-w-3xl">
-              Muestreo inteligente configurable (20, 40 o 75 fotogramas con interpolación a 60 FPS o rastreo en vivo en 0 s), estabilización automática ante mesas de empaque, giros de perfil y cortes de cámara a manos.
+              Copia cinemática 3D de manipulación manual de cargas, giros de 180°, traslados y flexión profunda de tronco/rodillas (muestreo rápido de 30, 60 o 100 fotogramas con interpolación a 60 FPS o rastreo en vivo en 0 s).
             </p>
           </div>
 
@@ -1822,7 +1834,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
             <button
               type="button"
               onClick={onBackToEvaluator}
-              className="px-3 py-2 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 flex items-center gap-1.5 cursor-pointer"
+              className="px-3 py-2 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
             >
               <ArrowLeft className="w-3.5 h-3.5" />
               Volver al Evaluador
@@ -1843,7 +1855,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
                 type="button"
                 disabled={isTracking || isRecordingTwin}
                 onClick={() => void handleReanalyzeCurrentVideo()}
-                className="px-3 py-2 rounded-md border border-sky-300 bg-sky-50 hover:bg-sky-100 disabled:opacity-50 text-sky-900 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                className="px-3 py-2 rounded-md border border-sky-300 bg-sky-50 hover:bg-sky-100 disabled:opacity-50 text-sky-900 text-xs font-bold flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isTracking ? 'animate-spin' : ''}`} />
                 Re-analizar Vídeo
@@ -1852,28 +1864,36 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
             <button
               type="button"
               disabled={isTracking || isRecordingTwin}
-              onClick={() => void handleLoadVideo(SAMPLE_WORKER_MOCAP_VIDEO_URL, 'operario_levantamiento_taller.mp4')}
-              className="px-3 py-2 rounded-md border border-sky-400 bg-sky-50 hover:bg-sky-100 disabled:opacity-50 text-sky-900 text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
-              title="Cargar vídeo real de operario manipulando carga en taller"
+              onClick={() => void handleLoadVideo(CASO1_ALMACEN_VIDEO_URL, 'caso1_almacen.mp4')}
+              className={`px-3 py-2 rounded-md border text-xs font-bold flex items-center gap-1.5 whitespace-nowrap cursor-pointer shadow-xs ${
+                pcVideoUrl === CASO1_ALMACEN_VIDEO_URL
+                  ? 'border-emerald-600 bg-emerald-600 text-white'
+                  : 'border-emerald-400 bg-emerald-50 hover:bg-emerald-100 text-emerald-950'
+              } disabled:opacity-50`}
+              title="Cargar vídeo Caso 1 Almacén (manipulación manual de cajas entre rack y autoelevador, 19,5 s)"
             >
-              <Play className="w-3.5 h-3.5 text-sky-700" />
+              <Play className="w-3.5 h-3.5" />
+              Caso 1 Almacén (19 s)
+            </button>
+            <button
+              type="button"
+              disabled={isTracking || isRecordingTwin}
+              onClick={() => void handleLoadVideo(SAMPLE_WORKER_MOCAP_VIDEO_URL, 'operario_levantamiento_taller.mp4')}
+              className={`px-3 py-2 rounded-md border text-xs font-bold flex items-center gap-1.5 whitespace-nowrap cursor-pointer shadow-xs ${
+                pcVideoUrl === SAMPLE_WORKER_MOCAP_VIDEO_URL
+                  ? 'border-sky-600 bg-sky-600 text-white'
+                  : 'border-sky-400 bg-sky-50 hover:bg-sky-100 text-sky-900'
+              } disabled:opacity-50`}
+              title="Cargar vídeo real de operario en banco de taller (5,2 s)"
+            >
+              <Play className="w-3.5 h-3.5" />
               Vídeo Taller (5 s)
             </button>
             <button
               type="button"
               disabled={isTracking || isRecordingTwin}
-              onClick={() => void handleLoadVideo(SAMPLE_REPETITIVE_WORK_VIDEO_URL, 'Trabajo_repetitivo_mesa.mp4')}
-              className="px-3 py-2 rounded-md border border-teal-400 bg-teal-50 hover:bg-teal-100 disabled:opacity-50 text-teal-950 text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
-              title="Probar vídeo de trabajo repetitivo en mesa con cambio de zoom (33,5 s)"
-            >
-              <Activity className="w-3.5 h-3.5 text-teal-700" />
-              Trabajo Repetitivo (34 s)
-            </button>
-            <button
-              type="button"
-              disabled={isTracking || isRecordingTwin}
               onClick={() => fileInputRef.current?.click()}
-              className="px-4 py-2 rounded-md bg-sky-700 hover:bg-sky-800 disabled:opacity-50 text-white text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer"
+              className="px-4 py-2 rounded-md bg-sky-700 hover:bg-sky-800 disabled:opacity-50 text-white text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shadow-xs cursor-pointer"
             >
               <Upload className="w-3.5 h-3.5" />
               Subir Vídeo (Celular / PC)
@@ -1881,18 +1901,18 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
           </div>
         </div>
 
-        {/* Panel de Opciones de Tilde: Reducción de Fotogramas y Estabilización Industrial */}
+        {/* Panel de Opciones de Tilde: Cantidad de Fotogramas y Velocidad de Copia 3D */}
         <div className="mt-3 p-3 rounded-md bg-slate-50 border border-slate-200 space-y-2.5">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="text-[11px] font-bold uppercase tracking-wider text-slate-700">
-              Opciones de Fluidez, Cantidad de Fotogramas y Estabilización
+              Opciones de Copia del Vídeo y Cantidad de Fotogramas
             </span>
-            {mode === 'pc_upload' && pcVideoUrl && pcVideoUrl !== SAMPLE_WORKER_MOCAP_VIDEO_URL && (
+            {mode === 'pc_upload' && pcVideoUrl && (
               <button
                 type="button"
                 disabled={isTracking || isRecordingTwin}
                 onClick={() => void handleReanalyzeCurrentVideo()}
-                className="px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                className="px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white text-[11px] font-semibold inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
               >
                 <RefreshCw className="w-3 h-3" />
                 Aplicar tildes al vídeo actual
@@ -1900,7 +1920,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
             )}
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 text-xs text-slate-800">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs text-slate-800">
             <label className="flex items-start gap-2 p-2 rounded border border-slate-200 bg-white cursor-pointer">
               <input
                 type="checkbox"
@@ -1910,16 +1930,16 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
                 className="mt-0.5 rounded border-slate-300 text-sky-700 focus:ring-sky-600"
               />
               <div className="min-w-0 flex-1">
-                <div className="font-semibold text-slate-900">Evaluar menos fotogramas</div>
+                <div className="font-semibold text-slate-900">Evaluar muestra de fotogramas</div>
                 <div className="text-[11px] text-slate-500">
-                  Interpola suavemente a 60 FPS sin escanear cientos de cuadros
+                  Copia fielmente brazos, tronco, giros y piernas interpolando a 60 FPS
                 </div>
                 {reduceFramesEnabled && !liveRealtimeOnly && (
                   <div className="mt-1.5 flex flex-wrap items-center gap-1">
                     {([
-                      { cap: 20 as const, label: '20 cuadros (~1 s)' },
-                      { cap: 40 as const, label: '40 cuadros (~2 s)' },
-                      { cap: 75 as const, label: '75 cuadros (~3,5 s)' },
+                      { cap: 30 as const, label: '30 cuadros (~0,9 s)' },
+                      { cap: 60 as const, label: '60 cuadros (~1,7 s)' },
+                      { cap: 100 as const, label: '100 cuadros (~2,8 s)' },
                     ]).map((opt) => (
                       <button
                         key={opt.cap}
@@ -1928,7 +1948,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
                           ev.preventDefault();
                           setReducedFrameCap(opt.cap);
                         }}
-                        className={`px-2 py-0.5 rounded text-[11px] font-semibold border cursor-pointer ${
+                        className={`px-2 py-0.5 rounded text-[11px] font-semibold border whitespace-nowrap tabular-nums cursor-pointer ${
                           reducedFrameCap === opt.cap
                             ? 'bg-sky-700 text-white border-sky-800'
                             : 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200'
@@ -1950,9 +1970,9 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
                 className="mt-0.5 rounded border-slate-300 text-sky-700 focus:ring-sky-600"
               />
               <div>
-                <div className="font-semibold text-slate-900">Motor Ligero GPU (Lite / Full)</div>
+                <div className="font-semibold text-slate-900">Motor GPU Rápido (Modelo Full)</div>
                 <div className="text-[11px] text-slate-500">
-                  8× más rápido en vídeos de 30–60 s (evita modelo Heavy lento)
+                  Precisión 3D completa en GPU (~5 ms/cuadro) sin esperar los 30 MB del modelo Heavy
                 </div>
               </div>
             </label>
@@ -1967,39 +1987,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
               <div>
                 <div className="font-semibold text-slate-900">Rastreo en Vivo (0 s de espera)</div>
                 <div className="text-[11px] text-slate-500">
-                  Omitir pre-escaneo y evaluar fotogramas al vuelo al reproducir
-                </div>
-              </div>
-            </label>
-
-            <label className="flex items-start gap-2 p-2 rounded border border-slate-200 bg-white cursor-pointer">
-              <input
-                type="checkbox"
-                checked={lockWorkbenchLowerBody}
-                onChange={(e) => setLockWorkbenchLowerBody(e.target.checked)}
-                className="mt-0.5 rounded border-slate-300 text-sky-700 focus:ring-sky-600"
-              />
-              <div>
-                <div className="font-semibold text-slate-900">Fijar piernas si hay mesa / corte</div>
-                <div className="text-[11px] text-slate-500">
-                  Evita sacudidas de cadera y caminatas falsas cuando la mesa tapa piernas
-                </div>
-              </div>
-            </label>
-
-            <label className="flex items-start gap-2 p-2 rounded border border-slate-200 bg-white cursor-pointer md:col-span-2">
-              <input
-                type="checkbox"
-                checked={stabilizeCloseupAndProfile}
-                onChange={(e) => setStabilizeCloseupAndProfile(e.target.checked)}
-                className="mt-0.5 rounded border-slate-300 text-sky-700 focus:ring-sky-600"
-              />
-              <div>
-                <div className="font-semibold text-slate-900">
-                  Proteger Zoom Cerrado de Manos y Perfil (Anti-giro 180°)
-                </div>
-                <div className="text-[11px] text-slate-500">
-                  Mantiene torso y cabeza estables en primeros planos de manos, batas holgadas y cierres en negro
+                  Omitir pre-escaneo y copiar el movimiento en tiempo real al reproducir
                 </div>
               </div>
             </label>
@@ -2018,7 +2006,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              Vídeo Subido desde PC {pcVideoName ? `(${pcVideoName})` : ''}
+              Vídeo Real {pcVideoName ? `(${pcVideoName})` : ''}
             </button>
             <button
               type="button"
@@ -2034,7 +2022,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              Ciclo de Prueba
+              Ciclo de Prueba Postural
             </button>
           </div>
 
@@ -2044,7 +2032,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
               onChange={(e) => setDemoSampleId(e.target.value as CeneaSampleCaseId)}
               className="border border-slate-300 rounded-md px-2.5 py-1.5 text-xs bg-white text-slate-800"
             >
-              {CENEA_SAMPLE_VIDEOS_CATALOG.map((c) => (
+              {posturalDemoCatalog.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.title}
                 </option>
@@ -2278,7 +2266,7 @@ export const TwinAvatarVideoStudio: React.FC<TwinAvatarVideoStudioProps> = ({
                   setCameraPreset(e.target.value as CameraPreset);
                   setOrbit(DEFAULT_ORBIT_OVERRIDE);
                 }}
-                className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-[11px] text-slate-100"
+                className="bg-slate-100 border border-slate-300 rounded px-2 py-1 text-[11px] text-slate-900 font-semibold"
               >
                 <option value="frontal">Vista 1:1 Cámara del Vídeo</option>
                 <option value="sagittal_right">Perfil Derecho (90°)</option>

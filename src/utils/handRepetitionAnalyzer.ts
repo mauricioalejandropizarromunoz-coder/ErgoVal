@@ -36,6 +36,8 @@ export interface HandTimelineSample {
   left: HandFrameData;
   torsoAnchorDetected: boolean;
   torsoAnchor2D: HandPoint2D | null;
+  /** True cuando ocurre un corte brusco de plano o zoom de cámara */
+  isSceneCut?: boolean;
 }
 
 export interface HandRepetitionRawTrace {
@@ -184,9 +186,8 @@ const HAND_MODEL_URL =
   'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 
 const POSE_MODEL_URLS = [
-  'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task',
-  'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task',
   'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+  'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task',
 ];
 
 /** Conexiones anatómicas de los 21 puntos de la mano (MediaPipe Hand) */
@@ -241,15 +242,18 @@ function medianSigned(values: number[], fallback: number): number {
 }
 
 export async function resetHandRepetitionDetectors(): Promise<void> {
+  const sameHandInstance = dedicatedRoiHandLandmarker === dedicatedHandLandmarker;
   try {
     dedicatedHandLandmarker?.close();
   } catch {
     // Ignorar error de cierre WASM
   }
-  try {
-    dedicatedRoiHandLandmarker?.close();
-  } catch {
-    // Ignorar error de cierre WASM
+  if (!sameHandInstance) {
+    try {
+      dedicatedRoiHandLandmarker?.close();
+    } catch {
+      // Ignorar error de cierre WASM
+    }
   }
   try {
     dedicatedPoseLandmarker?.close();
@@ -282,7 +286,9 @@ export async function initHandRepetitionDetectors(preferCpu = false): Promise<{
     try {
       const vision = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM_CDN);
 
-      // 1. Inicializar HandLandmarker de cuadro completo (modo VIDEO)
+      // 1. Inicializar HandLandmarker sin estado (modo IMAGE):
+      //    - Inmune a saltos grandes entre fotogramas (opciones de menos fotogramas) y cortes de zoom
+      //    - Elimina errores `Packet timestamp mismatch` y sirve también para recorte ROI sin duplicar memoria WASM
       for (const delegate of delegateOrder) {
         if (dedicatedHandLandmarker) break;
         try {
@@ -291,38 +297,19 @@ export async function initHandRepetitionDetectors(preferCpu = false): Promise<{
               modelAssetPath: HAND_MODEL_URL,
               delegate,
             },
-            runningMode: 'VIDEO',
-            numHands: 2,
-            minHandDetectionConfidence: 0.30,
-            minHandPresenceConfidence: 0.30,
-            minTrackingConfidence: 0.30,
-          });
-        } catch {
-          // Intentar siguiente delegado
-        }
-      }
-
-      // 1b. Inicializar HandLandmarker sin estado (modo IMAGE) dedicado al Auto-Zoom IA (recorte ROI de muñeca)
-      //     sin contaminar el estado óptico interno del rastreador de cuadro completo
-      for (const delegate of delegateOrder) {
-        if (dedicatedRoiHandLandmarker) break;
-        try {
-          dedicatedRoiHandLandmarker = await HandLandmarker.createFromOptions(vision, {
-            baseOptions: {
-              modelAssetPath: HAND_MODEL_URL,
-              delegate,
-            },
             runningMode: 'IMAGE',
             numHands: 2,
             minHandDetectionConfidence: 0.28,
             minHandPresenceConfidence: 0.28,
+            minTrackingConfidence: 0.28,
           });
         } catch {
           // Intentar siguiente delegado
         }
       }
+      dedicatedRoiHandLandmarker = dedicatedHandLandmarker;
 
-      // 2. Inicializar PoseLandmarker (Heavy -> Full -> Lite) para escala ósea 2D/3D,
+      // 2. Inicializar PoseLandmarker ligero (Lite -> Full, modo IMAGE) para escala ósea,
       //    profundidad métrica Z hacia cámara y respaldo continuo en desenfoque rápido
       for (const modelUrl of POSE_MODEL_URLS) {
         if (dedicatedPoseLandmarker) break;
@@ -333,11 +320,11 @@ export async function initHandRepetitionDetectors(preferCpu = false): Promise<{
                 modelAssetPath: modelUrl,
                 delegate,
               },
-              runningMode: 'VIDEO',
+              runningMode: 'IMAGE',
               numPoses: 1,
-              minPoseDetectionConfidence: 0.36,
-              minPosePresenceConfidence: 0.36,
-              minTrackingConfidence: 0.36,
+              minPoseDetectionConfidence: 0.34,
+              minPosePresenceConfidence: 0.34,
+              minTrackingConfidence: 0.34,
             });
             break;
           } catch {
@@ -379,7 +366,7 @@ function seekVideoExact(video: HTMLVideoElement, timeSec: number): Promise<void>
       globalThis.clearTimeout(timer);
       finish();
     };
-    const timer = globalThis.setTimeout(finish, 380);
+    const timer = globalThis.setTimeout(finish, 105);
     video.addEventListener('seeked', onSeeked, { once: true });
     try {
       video.currentTime = target;
@@ -460,6 +447,7 @@ interface RawFrameObservation {
   torsoLenIso: number;
   upperArmLenIso: number;
   forearmLenIso: number;
+  isSceneCut: boolean;
 }
 
 function buildHandCandidateFrom21(
@@ -557,13 +545,16 @@ export async function extractHandRepetitionTimeline(
   video: HTMLVideoElement,
   options: {
     targetFps?: number;
+    maxTotalFrames?: number;
     maxDurationSec?: number;
+    enableRoiZoom?: boolean;
     sourceLabel?: string;
     onProgress?: (pct: number, msg: string) => void;
   } = {},
 ): Promise<HandRepetitionRawTrace> {
-  const targetFps = clamp(options.targetFps ?? 20, 10, 24);
+  const targetFps = clamp(options.targetFps ?? 10, 1.5, 24);
   const maxDuration = options.maxDurationSec ?? 90;
+  const enableRoiZoom = options.enableRoiZoom === true;
 
   if (video.readyState < 2) {
     await new Promise<void>((resolve) => {
@@ -589,7 +580,7 @@ export async function extractHandRepetitionTimeline(
   const aspectScaleX = videoAspect >= 1 ? videoAspect : 1;
   const aspectScaleY = videoAspect < 1 ? 1 / Math.max(0.25, videoAspect) : 1;
 
-  options.onProgress?.(4, 'Inicializando detectores ópticos de manos (21 puntos) y postura 3D...');
+  options.onProgress?.(4, 'Inicializando detectores rápidos de manos (21 puntos) y postura...');
   let detectors = await initHandRepetitionDetectors(false);
   if (!detectors.hand && !detectors.pose) {
     await resetHandRepetitionDetectors();
@@ -599,12 +590,19 @@ export async function extractHandRepetitionTimeline(
     throw new Error('No fue posible inicializar los detectores ópticos de manos en el navegador.');
   }
 
-  const totalSteps = Math.max(12, Math.min(900, Math.round(durationSec * targetFps)));
+  const maxFramesCap = options.maxTotalFrames
+    ? clamp(Math.round(options.maxTotalFrames), 16, 900)
+    : 600;
+  const totalSteps = Math.max(16, Math.min(maxFramesCap, Math.round(durationSec * targetFps)));
   const dt = durationSec / totalSteps;
+  const effectiveSampledFps = totalSteps / Math.max(0.2, durationSec);
   const stepMs = Math.max(18, Math.round(dt * 1000));
 
-  // Lienzo principal acelerado por hardware (sin getImageData encima para no degradar WebGL de MediaPipe)
-  const maxDetectDim = 960;
+  // Lienzo optimizado para web y celular: compacto (368–480 px) para inferencia en ~5 ms/cuadro
+  const isMobileViewport =
+    typeof window !== 'undefined' &&
+    (window.innerWidth < 768 || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || ''));
+  const maxDetectDim = isMobileViewport ? 368 : 480;
   const detectScale = Math.min(1, maxDetectDim / Math.max(videoW, videoH, 1));
   const frameW = Math.max(96, Math.round(videoW * detectScale));
   const frameH = Math.max(96, Math.round(videoH * detectScale));
@@ -613,14 +611,16 @@ export async function extractHandRepetitionTimeline(
   frameCanvas.height = frameH;
   const frameCtx = frameCanvas.getContext('2d', { willReadFrequently: false });
 
-  // Lienzo dedicado 320x320 para Auto-Zoom IA sobre muñecas lejanas (< 60 px en cuerpo entero / 9:16)
-  const roiSize = 320;
-  const roiCanvas = document.createElement('canvas');
-  roiCanvas.width = roiSize;
-  roiCanvas.height = roiSize;
-  const roiCtx = roiCanvas.getContext('2d', { willReadFrequently: false });
+  // Lienzo opcional 288x288 para Auto-Zoom IA (activable solo cuando las manos están muy lejanas)
+  const roiSize = 288;
+  const roiCanvas = enableRoiZoom ? document.createElement('canvas') : null;
+  if (roiCanvas) {
+    roiCanvas.width = roiSize;
+    roiCanvas.height = roiSize;
+  }
+  const roiCtx = roiCanvas ? roiCanvas.getContext('2d', { willReadFrequently: false }) : null;
 
-  // Mini-lienzo separado de 48x27 sólo para verificar que el navegador no haya congelado keyframes GOP
+  // Mini-lienzo separado de 48x27 para firma visual y detección de cortes de cámara / GOP
   const sigCanvas = document.createElement('canvas');
   sigCanvas.width = 48;
   sigCanvas.height = 27;
@@ -646,8 +646,8 @@ export async function extractHandRepetitionTimeline(
     const t = Math.min(Math.max(0, durationSec - 0.02), i * dt);
     await seekVideoExact(video, t);
     lastGlobalHandRepTimestampMs += stepMs;
-    const timestampMs = lastGlobalHandRepTimestampMs;
 
+    let isSceneCut = false;
     let inputSource: HTMLCanvasElement | HTMLVideoElement = video;
     if (frameCtx && video.videoWidth > 0 && video.videoHeight > 0) {
       try {
@@ -661,6 +661,9 @@ export async function extractHandRepetitionTimeline(
             const diff = meanAbsSignatureDiff(sig, prevLumaSig);
             if (diff > 0.30) uniqueVisualTransitions++;
             if (diff > 3.2) bigStepTransitions++;
+            if (i > 1 && diff > 18.0) {
+              isSceneCut = true;
+            }
           }
           if (sig) prevLumaSig = sig;
         }
@@ -682,10 +685,10 @@ export async function extractHandRepetitionTimeline(
 
     let frameErrored = false;
 
-    const runDetectorsOnFrame = (ts: number) => {
+    const runDetectorsOnFrame = () => {
       if (detectors.hand) {
         try {
-          const hRes = detectors.hand.detectForVideo(inputSource, ts);
+          const hRes = detectors.hand.detect(inputSource);
           const lms = hRes.landmarks ?? [];
           const handed = hRes.handedness ?? hRes.handednesses ?? [];
           for (let k = 0; k < lms.length; k++) {
@@ -705,7 +708,7 @@ export async function extractHandRepetitionTimeline(
 
       if (detectors.pose) {
         try {
-          const pRes = detectors.pose.detectForVideo(inputSource, ts);
+          const pRes = detectors.pose.detect(inputSource);
           const plm = pRes.landmarks?.[0];
           const wlm = pRes.worldLandmarks?.[0];
           if (plm && plm.length >= 23) {
@@ -843,10 +846,8 @@ export async function extractHandRepetitionTimeline(
               wlm?.[19],
             );
 
-            // Auto-Zoom IA (recorte ROI 320x320 alrededor de muñecas):
-            // Cuando el vídeo es lejano o vertical (9:16 cuerpo entero) y HandLandmarker de cuadro completo
-            // pierde los 21 puntos de una o ambas manos, recortar y ampliar la zona distal de la muñeca.
-            if (detectors.roiHand && roiCtx && (poseRightWrist || poseLeftWrist)) {
+            // Auto-Zoom IA opcional (recorte ROI 288x288 alrededor de muñecas lejanas)
+            if (enableRoiZoom && detectors.roiHand && roiCanvas && roiCtx && (poseRightWrist || poseLeftWrist)) {
               const hasNear21 = (pw: PoseHandObservation | null): boolean => {
                 if (!pw || pw.vis < 0.25) return true;
                 return handCandidates.some(
@@ -946,7 +947,7 @@ export async function extractHandRepetitionTimeline(
       }
     };
 
-    runDetectorsOnFrame(timestampMs);
+    runDetectorsOnFrame();
 
     // Si en los primeros 4 fotogramas ningún detector devolvió puntos (p.ej. contexto WebGL saturado),
     // reiniciar automáticamente en modo CPU WASM igual que hace el motor MoCap 3D.
@@ -963,9 +964,8 @@ export async function extractHandRepetitionTimeline(
       didEarlyCpuRecovery = true;
       await resetHandRepetitionDetectors();
       detectors = await initHandRepetitionDetectors(true);
-      lastGlobalHandRepTimestampMs += 5000;
       frameErrored = false;
-      runDetectorsOnFrame(lastGlobalHandRepTimestampMs);
+      runDetectorsOnFrame();
     }
 
     if (frameErrored && handCandidates.length === 0 && !poseRightWrist && !poseLeftWrist) {
@@ -973,7 +973,6 @@ export async function extractHandRepetitionTimeline(
       if (consecutiveDetectorErrors === 3) {
         await resetHandRepetitionDetectors();
         detectors = await initHandRepetitionDetectors(true);
-        lastGlobalHandRepTimestampMs += 5000;
       }
     } else {
       consecutiveDetectorErrors = 0;
@@ -991,14 +990,16 @@ export async function extractHandRepetitionTimeline(
       torsoLenIso,
       upperArmLenIso,
       forearmLenIso,
+      isSceneCut,
     });
 
-    if (i % 5 === 0 || i === totalSteps) {
+    if (i % 4 === 0 || i === totalSteps) {
       const pct = Math.round(10 + (i / Math.max(1, totalSteps)) * 84);
       options.onProgress?.(
         pct,
-        `Rastreando manos (${i}/${totalSteps} fotogramas · ${t.toFixed(1)}s / ${durationSec.toFixed(1)}s)...`,
+        `Rastreando manos (${i}/${totalSteps} cuadros · ${t.toFixed(1)}s / ${durationSec.toFixed(1)}s)...`,
       );
+      await new Promise<void>((r) => globalThis.setTimeout(r, 0));
     }
   }
 
@@ -1007,46 +1008,65 @@ export async function extractHandRepetitionTimeline(
   const frozenKeyframeSteppingDetected =
     observations.length >= 16 && uniqueFramesPct < 36 && bigStepTransitions >= 2;
 
-  // Escala anatómica métrica (cm por unidad isótropa de imagen):
-  // - Usa la MEDIANA de huesos largos inmunes a escorzo (tronco centro-hombro a centro-cadera ~46 cm,
-  //   húmero ~28 cm, antebrazo ~25 cm) en lugar de `Math.max` para no subestimar desplazamientos de banco.
-  // - Excluye el ancho biacromial cuando el operario está grabado de perfil lateral (`shSpan / torso < 0.48`).
-  const minRelSamples = Math.max(3, Math.floor(observations.length * 0.14));
-  const validTorso = observations.map((o) => o.torsoLenIso).filter((v) => v >= 0.065);
-  const validUpperArm = observations.map((o) => o.upperArmLenIso).filter((v) => v >= 0.04);
-  const validForearm = observations.map((o) => o.forearmLenIso).filter((v) => v >= 0.038);
-  const validShoulders = observations.map((o) => o.shoulderSpanIso).filter((v) => v >= 0.055);
-  const validPalms = observations
-    .flatMap((o) => o.handCandidates.map((c) => c.palmLengthNorm))
-    .filter((v) => v >= 0.025);
+  // Escala anatómica métrica (cm por unidad isótropa de imagen), con soporte multi-plano
+  // cuando el vídeo incluye un corte de cámara o zoom (p. ej. plano medio -> primer plano de manos).
+  const computeSegmentCmPerIso = (
+    slice: RawFrameObservation[],
+    fallbackCmPerIso: number,
+  ): { cmPerIso: number; isLat: boolean } => {
+    const minRel = Math.max(2, Math.floor(slice.length * 0.14));
+    const vTorso = slice.map((o) => o.torsoLenIso).filter((v) => v >= 0.065);
+    const vUpper = slice.map((o) => o.upperArmLenIso).filter((v) => v >= 0.04);
+    const vFore = slice.map((o) => o.forearmLenIso).filter((v) => v >= 0.038);
+    const vSh = slice.map((o) => o.shoulderSpanIso).filter((v) => v >= 0.055);
+    const vPalms = slice
+      .flatMap((o) => o.handCandidates.map((c) => c.palmLengthNorm))
+      .filter((v) => v >= 0.025);
 
-  const medTorsoIso = validTorso.length >= minRelSamples ? medianOf(validTorso, 0.25) : 0;
-  const medShouldersIso = validShoulders.length >= minRelSamples ? medianOf(validShoulders, 0.18) : 0;
-  const isLateralProfile =
-    medTorsoIso > 0.06 &&
-    (validShoulders.length < minRelSamples || medShouldersIso / medTorsoIso < 0.48);
+    const mTorso = vTorso.length >= minRel ? medianOf(vTorso, 0.25) : 0;
+    const mSh = vSh.length >= minRel ? medianOf(vSh, 0.18) : 0;
+    const isLat = mTorso > 0.06 && (vSh.length < minRel || mSh / mTorso < 0.48);
 
-  const bodyIsoPerCmCandidates: number[] = [];
-  if (validTorso.length >= minRelSamples) {
-    bodyIsoPerCmCandidates.push(medTorsoIso / 46.0);
-  }
-  if (validUpperArm.length >= minRelSamples) {
-    bodyIsoPerCmCandidates.push(medianOf(validUpperArm, 0.15) / 28.0);
-  }
-  if (validForearm.length >= minRelSamples) {
-    bodyIsoPerCmCandidates.push(medianOf(validForearm, 0.13) / 25.0);
-  }
-  if (validShoulders.length >= minRelSamples && !isLateralProfile) {
-    bodyIsoPerCmCandidates.push(medShouldersIso / 37.0);
+    const cands: number[] = [];
+    if (vTorso.length >= minRel) cands.push(mTorso / 46.0);
+    if (vUpper.length >= minRel) cands.push(medianOf(vUpper, 0.15) / 28.0);
+    if (vFore.length >= minRel) cands.push(medianOf(vFore, 0.13) / 25.0);
+    if (vSh.length >= minRel && !isLat) cands.push(mSh / 37.0);
+
+    let isoPerCm = 0;
+    if (cands.length > 0) {
+      isoPerCm = medianOf(cands, 1 / fallbackCmPerIso);
+    } else if (vPalms.length >= Math.max(2, Math.floor(slice.length * 0.1))) {
+      isoPerCm = medianOf(vPalms, 0.085) / 9.2;
+    } else {
+      return { cmPerIso: fallbackCmPerIso, isLat };
+    }
+    return {
+      cmPerIso: clamp(1.0 / Math.max(1e-4, isoPerCm), 28, 380),
+      isLat,
+    };
+  };
+
+  const globalScaleInfo = computeSegmentCmPerIso(observations, 160.0);
+  const cmPerIsoUnit = globalScaleInfo.cmPerIso;
+  const isLateralProfile = globalScaleInfo.isLat;
+
+  const perFrameCmPerIso = new Array<number>(observations.length).fill(cmPerIsoUnit);
+  let shotStart = 0;
+  for (let idx = 1; idx <= observations.length; idx++) {
+    if (idx === observations.length || observations[idx].isSceneCut) {
+      const shotSlice = observations.slice(shotStart, idx);
+      const shotCmPerIso =
+        shotSlice.length >= 4
+          ? computeSegmentCmPerIso(shotSlice, cmPerIsoUnit).cmPerIso
+          : cmPerIsoUnit;
+      for (let m = shotStart; m < idx; m++) {
+        perFrameCmPerIso[m] = shotCmPerIso;
+      }
+      shotStart = idx;
+    }
   }
 
-  let bestIsoPerCm = 1 / 160.0;
-  if (bodyIsoPerCmCandidates.length > 0) {
-    bestIsoPerCm = medianOf(bodyIsoPerCmCandidates, 1 / 160.0);
-  } else if (validPalms.length >= Math.max(2, Math.floor(observations.length * 0.1))) {
-    bestIsoPerCm = medianOf(validPalms, 0.085) / 9.2;
-  }
-  const cmPerIsoUnit = clamp(1.0 / Math.max(1e-4, bestIsoPerCm), 32, 380);
   const estimatedHandSizePx = Math.max(
     14,
     Math.round((16.5 / cmPerIsoUnit) * Math.min(videoW, videoH)),
@@ -1195,6 +1215,14 @@ export async function extractHandRepetitionTimeline(
   };
 
   for (const obs of observations) {
+    if (obs.isSceneCut) {
+      prevRightPt = null;
+      prevLeftPt = null;
+      pendingRightJump = null;
+      pendingLeftJump = null;
+      poseToHandOffsetR = { x: 0, y: 0 };
+      poseToHandOffsetL = { x: 0, y: 0 };
+    }
     let rSide = emptyRawSide();
     let lSide = emptyRawSide();
     const cands = obs.handCandidates.slice(0, 2);
@@ -1368,8 +1396,8 @@ export async function extractHandRepetitionTimeline(
     );
   }
 
-  // Interpolación lineal breve (hasta ~0.40 s) ante oclusión momentánea
-  const maxGapFrames = Math.max(2, Math.round(targetFps * 0.4));
+  // Interpolación lineal breve (hasta ~0.45 s) ante oclusión momentánea, sin cruzar cortes de escena
+  const maxGapFrames = Math.max(2, Math.round(effectiveSampledFps * 0.45));
   const fillShortGaps = (
     arr: AssignedRawSide[],
   ): Array<AssignedRawSide & { interpolated?: boolean }> => {
@@ -1384,7 +1412,14 @@ export async function extractHandRepetitionTimeline(
       while (i < out.length && !out[i].detected) i++;
       const gapEnd = i;
       const gapLen = gapEnd - gapStart;
-      if (gapStart > 0 && gapEnd < out.length && gapLen <= maxGapFrames) {
+      let crossesSceneCut = false;
+      for (let cIdx = gapStart; cIdx <= Math.min(out.length - 1, gapEnd); cIdx++) {
+        if (observations[cIdx]?.isSceneCut) {
+          crossesSceneCut = true;
+          break;
+        }
+      }
+      if (!crossesSceneCut && gapStart > 0 && gapEnd < out.length && gapLen <= maxGapFrames) {
         const a = out[gapStart - 1];
         const b = out[gapEnd];
         for (let k = gapStart; k < gapEnd; k++) {
@@ -1424,7 +1459,15 @@ export async function extractHandRepetitionTimeline(
     arr: Array<AssignedRawSide & { interpolated?: boolean }>,
   ): Array<AssignedRawSide & { interpolated?: boolean }> => {
     return arr.map((cur, idx) => {
-      if (!cur.detected || idx === 0 || idx === arr.length - 1) return cur;
+      if (
+        !cur.detected ||
+        idx === 0 ||
+        idx === arr.length - 1 ||
+        observations[idx]?.isSceneCut ||
+        observations[idx + 1]?.isSceneCut
+      ) {
+        return cur;
+      }
       const prev = arr[idx - 1];
       const next = arr[idx + 1];
       if (!prev.detected || !next.detected) return cur;
@@ -1446,31 +1489,46 @@ export async function extractHandRepetitionTimeline(
   const filledRight = despikeWorkingTrajectory(fillShortGaps(assignedRight));
   const filledLeft = despikeWorkingTrajectory(fillShortGaps(assignedLeft));
 
-  // Estabilizador de deriva ultra-lenta de cámara/paneo (0.08 Hz): corrige paneos lentos sin restar alcances de brazos
+  // Estabilizador de deriva ultra-lenta de cámara/paneo (0.08 Hz) por plano de cámara:
+  // mantiene un origen continuo dentro de cada plano sin saltos cuando un fotograma pierde los hombros
+  const perFrameHasBodyRef = new Array<boolean>(observations.length).fill(false);
+  let anchorShotStart = 0;
+  for (let idx = 1; idx <= observations.length; idx++) {
+    if (idx === observations.length || observations[idx].isSceneCut) {
+      const shotSlice = observations.slice(anchorShotStart, idx);
+      const shotAnchors = shotSlice.filter((o) => o.bodyAnchor !== null).length;
+      const hasShotRef = shotAnchors >= Math.max(3, Math.floor(shotSlice.length * 0.28));
+      for (let m = anchorShotStart; m < idx; m++) {
+        perFrameHasBodyRef[m] = hasShotRef;
+      }
+      anchorShotStart = idx;
+    }
+  }
+
   const bodyAnchors = observations
     .map((o) => o.bodyAnchor)
     .filter((b): b is HandPoint2D => b !== null);
-  const hasBodyDriftRef = bodyAnchors.length >= Math.max(4, Math.floor(observations.length * 0.28));
-  const initialBodyAnchor: HandPoint2D = hasBodyDriftRef
-    ? {
-        x: medianSigned(bodyAnchors.map((b) => b.x), 0.5),
-        y: medianSigned(bodyAnchors.map((b) => b.y), 0.5),
-      }
-    : { x: 0.5, y: 0.5 };
-  const bodyFilterX = new OneEuroScalarFilter(0.08, 0.01, 1.0);
-  const bodyFilterY = new OneEuroScalarFilter(0.08, 0.01, 1.0);
+  const initialBodyAnchor: HandPoint2D =
+    bodyAnchors.length > 0
+      ? {
+          x: medianSigned(bodyAnchors.map((b) => b.x), 0.5),
+          y: medianSigned(bodyAnchors.map((b) => b.y), 0.5),
+        }
+      : { x: 0.5, y: 0.5 };
+  let bodyFilterX = new OneEuroScalarFilter(0.08, 0.01, 1.0);
+  let bodyFilterY = new OneEuroScalarFilter(0.08, 0.01, 1.0);
   let lastValidBodyAnchor: HandPoint2D = { ...initialBodyAnchor };
 
   // Filtros 1€ calibrados para preservar alcances cortos de banco (hasta 4.5 Hz) suprimiendo vibración estática (< 0.25 cm)
-  const rFilterX = new OneEuroScalarFilter(1.85, 0.55, 1.0);
-  const rFilterY = new OneEuroScalarFilter(1.85, 0.55, 1.0);
-  const rFilterZ = new OneEuroScalarFilter(0.95, 0.25, 1.0);
-  const rPinchFilter = new OneEuroScalarFilter(1.5, 0.35, 1.0);
+  let rFilterX = new OneEuroScalarFilter(1.85, 0.55, 1.0);
+  let rFilterY = new OneEuroScalarFilter(1.85, 0.55, 1.0);
+  let rFilterZ = new OneEuroScalarFilter(0.95, 0.25, 1.0);
+  let rPinchFilter = new OneEuroScalarFilter(1.5, 0.35, 1.0);
 
-  const lFilterX = new OneEuroScalarFilter(1.85, 0.55, 1.0);
-  const lFilterY = new OneEuroScalarFilter(1.85, 0.55, 1.0);
-  const lFilterZ = new OneEuroScalarFilter(0.95, 0.25, 1.0);
-  const lPinchFilter = new OneEuroScalarFilter(1.5, 0.35, 1.0);
+  let lFilterX = new OneEuroScalarFilter(1.85, 0.55, 1.0);
+  let lFilterY = new OneEuroScalarFilter(1.85, 0.55, 1.0);
+  let lFilterZ = new OneEuroScalarFilter(0.95, 0.25, 1.0);
+  let lPinchFilter = new OneEuroScalarFilter(1.5, 0.35, 1.0);
 
   let lastValidZRight = 0;
   let lastValidZLeft = 0;
@@ -1484,9 +1542,28 @@ export async function extractHandRepetitionTimeline(
   for (let i = 0; i < observations.length; i++) {
     const obs = observations[i];
     const t = obs.timeSec;
+    const frameScaleCm = perFrameCmPerIso[i] ?? cmPerIsoUnit;
+
+    if (obs.isSceneCut) {
+      bodyFilterX = new OneEuroScalarFilter(0.08, 0.01, 1.0);
+      bodyFilterY = new OneEuroScalarFilter(0.08, 0.01, 1.0);
+      if (obs.bodyAnchor) {
+        lastValidBodyAnchor = { ...obs.bodyAnchor };
+      } else {
+        lastValidBodyAnchor = { x: 0.5, y: 0.5 };
+      }
+      rFilterX = new OneEuroScalarFilter(1.85, 0.55, 1.0);
+      rFilterY = new OneEuroScalarFilter(1.85, 0.55, 1.0);
+      rFilterZ = new OneEuroScalarFilter(0.95, 0.25, 1.0);
+      rPinchFilter = new OneEuroScalarFilter(1.5, 0.35, 1.0);
+      lFilterX = new OneEuroScalarFilter(1.85, 0.55, 1.0);
+      lFilterY = new OneEuroScalarFilter(1.85, 0.55, 1.0);
+      lFilterZ = new OneEuroScalarFilter(0.95, 0.25, 1.0);
+      lPinchFilter = new OneEuroScalarFilter(1.5, 0.35, 1.0);
+    }
 
     let driftAnchor: HandPoint2D | null = null;
-    if (hasBodyDriftRef) {
+    if (perFrameHasBodyRef[i]) {
       const rawRef = obs.bodyAnchor ?? lastValidBodyAnchor;
       lastValidBodyAnchor = {
         x: bodyFilterX.filter(rawRef.x, t),
@@ -1539,14 +1616,14 @@ export async function extractHandRepetitionTimeline(
       const smoothZCm = 0.55 * fz.filter(rawZ, t);
 
       const relPosCm = {
-        x: (smoothX - anchorX) * aspectScaleX * cmPerIsoUnit,
-        y: (smoothY - anchorY) * aspectScaleY * cmPerIsoUnit,
+        x: (smoothX - anchorX) * aspectScaleX * frameScaleCm,
+        y: (smoothY - anchorY) * aspectScaleY * frameScaleCm,
         z: smoothZCm,
       };
 
       const prevDt = i > 0 ? Math.max(0.015, t - observations[i - 1].timeSec) : dt;
       const speedCmPerSec =
-        prevSampleHand && prevSampleHand.detected
+        !obs.isSceneCut && prevSampleHand && prevSampleHand.detected
           ? Math.hypot(
               relPosCm.x - prevSampleHand.relPosCm.x,
               relPosCm.y - prevSampleHand.relPosCm.y,
@@ -1603,6 +1680,7 @@ export async function extractHandRepetitionTimeline(
       left: leftFrame,
       torsoAnchorDetected: Boolean(driftAnchor),
       torsoAnchor2D: driftAnchor,
+      isSceneCut: obs.isSceneCut,
     });
   }
 
@@ -1860,14 +1938,19 @@ function segmentHandStrokes(
     z: hf.relPosCm.z ?? 0,
   }));
 
-  // Dividir la ventana en tramos continuos detectados (cortando solo ante ausencias > 0.50 s)
+  // Dividir la ventana en tramos continuos detectados (escalando tolerancia al muestreo elegido y cortando en cambios de plano)
+  const maxAllowedGapSec = Math.max(0.65, 2.6 / Math.max(1.2, sampledFps));
   const segments: number[][] = [];
   let curSeg: number[] = [];
   for (const idx of winIndices) {
+    if (samples[idx].isSceneCut && curSeg.length > 0) {
+      if (curSeg.length >= 3) segments.push(curSeg);
+      curSeg = [];
+    }
     if (handFrames[idx].detected) {
       if (
         curSeg.length > 0 &&
-        samples[idx].timeSec - samples[curSeg[curSeg.length - 1]].timeSec > 0.5
+        samples[idx].timeSec - samples[curSeg[curSeg.length - 1]].timeSec > maxAllowedGapSec
       ) {
         if (curSeg.length >= 3) segments.push(curSeg);
         curSeg = [];
@@ -1878,10 +1961,11 @@ function segmentHandStrokes(
   if (curSeg.length >= 3) segments.push(curSeg);
 
   const hysteresisCm = clamp(minExcursionCm * 0.46, 1.0, 5.0);
-  const minStrokeDurSec = Math.max(0.075, 1.1 / Math.max(10, sampledFps));
+  const minStrokeDurSec = Math.min(0.38, Math.max(0.075, 0.85 / Math.max(2.2, sampledFps)));
   const minStrokePeakSpeedCmS = Math.max(3.8, Math.min(9.5, minExcursionCm * 0.88));
-  const dwellConfirmSec = 0.22;
+  const dwellConfirmSec = Math.max(0.22, 0.9 / Math.max(2.0, sampledFps));
   const dwellRadiusCm = Math.max(0.85, minExcursionCm * 0.28);
+  const pauseReanchorSec = Math.max(0.45, 1.8 / Math.max(1.5, sampledFps));
 
   const strokes: DetectedHandStroke[] = [];
 
@@ -1953,7 +2037,7 @@ function segmentHandStrokes(
           pCursor = c;
           farReachedTimeSec = tNow;
         } else if (
-          tNow - samples[aIdx].timeSec > 0.45 &&
+          tNow - samples[aIdx].timeSec > pauseReanchorSec &&
           farDistCm < minExcursionCm * 0.42 &&
           handFrames[idx].speedCmPerSec < 3.5
         ) {

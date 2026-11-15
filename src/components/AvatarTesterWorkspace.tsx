@@ -4,6 +4,7 @@ import {
   Box,
   CheckCircle2,
   Download,
+  Hand,
   Plus,
   RotateCcw,
   Sliders,
@@ -54,6 +55,7 @@ interface AvatarTesterWorkspaceProps {
   onBackToEvaluator: () => void;
   onAddTestedTabToStudy: (newTab: StudyTab) => void;
   onOpenEnvironmentalWorkspace?: () => void;
+  onOpenRepetitionWorkspace?: () => void;
 }
 
 interface DualNumericSliderProps {
@@ -460,6 +462,7 @@ export const AvatarTesterWorkspace: React.FC<AvatarTesterWorkspaceProps> = ({
   onBackToEvaluator,
   onAddTestedTabToStudy,
   onOpenEnvironmentalWorkspace,
+  onOpenRepetitionWorkspace,
 }) => {
   const [selectedIdealPostureId, setSelectedIdealPostureId] =
     useState<IdealPostureId>('ideal_lift_squat');
@@ -1256,8 +1259,16 @@ export const AvatarTesterWorkspace: React.FC<AvatarTesterWorkspaceProps> = ({
   const posturalMethodsOnly = useMemo(
     () =>
       METHOD_CATALOG.filter(
-        (m) => m.category !== 'ambiente_termico' && m.category !== 'vibraciones',
+        (m) =>
+          m.category !== 'ambiente_termico' &&
+          m.category !== 'vibraciones' &&
+          m.category !== 'movimientos_repetitivos',
       ),
+    [],
+  );
+
+  const posturalCeneaSamplesOnly = useMemo(
+    () => CENEA_SAMPLE_VIDEOS_CATALOG.filter((c) => c.id !== 'cenea_ocra_repetitivos'),
     [],
   );
 
@@ -1479,37 +1490,51 @@ export const AvatarTesterWorkspace: React.FC<AvatarTesterWorkspaceProps> = ({
               </div>
             </div>
 
-            {/* Nota de coherencia metodológica para Fanger / Ambiente Térmico */}
-            {onOpenEnvironmentalWorkspace && (
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-200 bg-amber-50/70 px-3 py-2 text-xs text-amber-950">
+            {/* Notas de coherencia metodológica para módulos dedicados */}
+            {(onOpenRepetitionWorkspace || onOpenEnvironmentalWorkspace) && (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800">
                 <span>
-                  Los métodos de <strong>Confort Térmico (Fanger ISO 7730)</strong>, <strong>WBGT</strong> y{' '}
-                  <strong>Vibraciones</strong> cuentan con su pestaña específica separada de carga postural.
+                  <strong>Trabajo Repetitivo de Manos (OCRA / JSI / NAM)</strong> y{' '}
+                  <strong>Confort Térmico / Físicos</strong> operan de forma independiente en sus pestañas específicas.
                 </span>
-                <button
-                  type="button"
-                  onClick={onOpenEnvironmentalWorkspace}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border border-amber-400 bg-white hover:bg-amber-100 text-xs font-semibold text-amber-950 whitespace-nowrap cursor-pointer"
-                >
-                  <Thermometer className="w-3.5 h-3.5 text-amber-700" />
-                  Abrir Térmico · Fanger / Físicos
-                </button>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {onOpenRepetitionWorkspace && (
+                    <button
+                      type="button"
+                      onClick={onOpenRepetitionWorkspace}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border border-rose-300 bg-rose-50 hover:bg-rose-100 text-xs font-semibold text-rose-950 whitespace-nowrap cursor-pointer"
+                    >
+                      <Hand className="w-3.5 h-3.5 text-rose-700" />
+                      Abrir Repetitividad Manos
+                    </button>
+                  )}
+                  {onOpenEnvironmentalWorkspace && (
+                    <button
+                      type="button"
+                      onClick={onOpenEnvironmentalWorkspace}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded border border-amber-400 bg-amber-50 hover:bg-amber-100 text-xs font-semibold text-amber-950 whitespace-nowrap cursor-pointer"
+                    >
+                      <Thermometer className="w-3.5 h-3.5 text-amber-700" />
+                      Abrir Térmico · Físicos
+                    </button>
+                  )}
+                </div>
               </div>
             )}
 
-            {/* MENÚ DESPLEGABLE DE MUESTRAS DE CASOS PRÁCTICOS INDUSTRIALES (PLAYLIST DE REFERENCIA) */}
+            {/* MENÚ DESPLEGABLE DE MUESTRAS DE CASOS PRÁCTICOS INDUSTRIALES (POSTURAL / CARGAS) */}
             <div className="border-t border-slate-200 pt-3.5 space-y-2">
               <div className="grid grid-cols-1 md:grid-cols-12 gap-2.5 items-end">
                 <div className="md:col-span-8 space-y-1">
                   <label className="block text-xs font-semibold text-slate-800">
-                    Calibración con Casos Prácticos Industriales (8 Muestras de Referencia)
+                    Calibración con Casos Prácticos Industriales ({posturalCeneaSamplesOnly.length} Muestras Posturales / Cargas)
                   </label>
                   <select
                     value={selectedCeneaCaseId}
                     onChange={(e) => handleLoadCeneaCaseInAvatar(e.target.value as CeneaSampleCaseId)}
                     className="w-full min-h-[40px] border border-slate-300 rounded-md px-3 py-2 text-xs font-medium bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-sky-600"
                   >
-                    {CENEA_SAMPLE_VIDEOS_CATALOG.map((c) => (
+                    {posturalCeneaSamplesOnly.map((c) => (
                       <option key={c.id} value={c.id}>
                         {c.shortLabel}
                       </option>

@@ -14,6 +14,8 @@ import {
   RefreshCw,
   RotateCcw,
   Sliders,
+  Trash2,
+  Zap,
 } from 'lucide-react';
 import {
   MethodId,
@@ -46,6 +48,24 @@ type FacingMode = 'auto' | 'right' | 'left';
 type ModelTier = 'full' | 'heavy';
 type ElbowVisualMode = 'flexion_anatomica' | 'interno_suplementario';
 type CalloutSideMode = 'auto_margins' | 'left' | 'right';
+type CanvasToolMode = 'ai_joints' | 'trace_3pt' | 'trace_4pt';
+type ManualAngleTarget = 'trunk' | 'upper' | 'elbowInternal' | 'neck' | 'knee';
+
+interface ManualTracedAngle {
+  id: string;
+  mode: '3pt' | '4pt';
+  label: string;
+  color: string;
+  pts: Array<{ x: number; y: number }>;
+}
+
+interface FrameManualAngleOverride {
+  trunk?: number;
+  upper?: number;
+  elbowInternal?: number;
+  neck?: number;
+  knee?: number;
+}
 
 interface MeterOptions {
   kg: number;
@@ -189,9 +209,8 @@ interface GroupedOwasRow {
 }
 
 const WASM_CANDIDATES = [
-  'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm',
-  'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm',
   'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm',
+  'https://unpkg.com/@mediapipe/tasks-vision@0.10.8/wasm',
 ];
 
 const modelTaskUrl = (tier: ModelTier) =>
@@ -1012,6 +1031,144 @@ function scoreMeasuredFrame(m: MeasuredAngles, o: MeterOptions): FrameScoreBundl
   };
 }
 
+const MANUAL_LINE_COLORS = ['#38bdf8', '#facc15', '#34d399', '#fb923c', '#c084fc'];
+
+function drawCrispStraightSegment(
+  g: CanvasRenderingContext2D,
+  p1: { x: number; y: number },
+  p2: { x: number; y: number },
+  color: string,
+  innerWidth: number,
+  dashPattern?: number[],
+) {
+  g.save();
+  g.lineCap = 'round';
+  g.lineJoin = 'round';
+  if (dashPattern && dashPattern.length > 0) {
+    g.setLineDash(dashPattern);
+  }
+  g.strokeStyle = 'rgba(15, 23, 42, 0.92)';
+  g.lineWidth = innerWidth + 3.0;
+  g.beginPath();
+  g.moveTo(p1.x, p1.y);
+  g.lineTo(p2.x, p2.y);
+  g.stroke();
+
+  g.strokeStyle = color;
+  g.lineWidth = innerWidth;
+  g.beginPath();
+  g.moveTo(p1.x, p1.y);
+  g.lineTo(p2.x, p2.y);
+  g.stroke();
+  g.restore();
+}
+
+function snapCanvasPointOrtho(
+  anchor: { x: number; y: number },
+  raw: { x: number; y: number },
+  Wc: number,
+  Hc: number,
+  enableSnap: boolean,
+): { x: number; y: number } {
+  if (!enableSnap) return raw;
+  const dx = (raw.x - anchor.x) * Wc;
+  const dy = (raw.y - anchor.y) * Hc;
+  const dist = Math.hypot(dx, dy);
+  if (dist < 2) return raw;
+  const step = Math.PI / 4; // 0°, 45°, 90°, 135°, 180°
+  const snapped = Math.round(Math.atan2(dy, dx) / step) * step;
+  return {
+    x: clamp(anchor.x + (Math.cos(snapped) * dist) / Math.max(1, Wc), 0.005, 0.995),
+    y: clamp(anchor.y + (Math.sin(snapped) * dist) / Math.max(1, Hc), 0.005, 0.995),
+  };
+}
+
+function computeTracedLineGeometry(
+  pts: Array<{ x: number; y: number }>,
+  mode: '3pt' | '4pt',
+  Wc: number,
+  Hc: number,
+): {
+  vertexPx: { x: number; y: number };
+  ray1Px: { x: number; y: number };
+  ray2Px: { x: number; y: number };
+  pxPts: Array<{ x: number; y: number }>;
+  internalDeg: number;
+  supplementDeg: number;
+  acuteDeg: number;
+} | null {
+  const pxPts = pts.map((p) => ({ x: p.x * Wc, y: p.y * Hc }));
+  if (mode === '3pt') {
+    if (pxPts.length < 3) return null;
+    const [p1, v, p2] = pxPts;
+    const { flexion, internal } = computeJointFlexionAndInternal(p1, v, p2);
+    return {
+      vertexPx: v,
+      ray1Px: p1,
+      ray2Px: p2,
+      pxPts,
+      internalDeg: internal,
+      supplementDeg: flexion,
+      acuteDeg: Math.min(internal, flexion),
+    };
+  }
+
+  if (pxPts.length < 4) return null;
+  const [A, B, C, D] = pxPts;
+  const d1x = B.x - A.x;
+  const d1y = B.y - A.y;
+  const d2x = D.x - C.x;
+  const d2y = D.y - C.y;
+  const cross = d1x * d2y - d1y * d2x;
+
+  let vx = (B.x + C.x) * 0.5;
+  let vy = (B.y + C.y) * 0.5;
+  if (Math.abs(cross) > 1e-4) {
+    const t = ((C.x - A.x) * d2y - (C.y - A.y) * d2x) / cross;
+    const candX = A.x + t * d1x;
+    const candY = A.y + t * d1y;
+    if (Math.hypot(candX - vx, candY - vy) < Math.max(Wc, Hc) * 1.8) {
+      vx = candX;
+      vy = candY;
+    }
+  }
+  const V = { x: vx, y: vy };
+  // Elegir como extremo de cada rayo el punto más alejado de la intersección V
+  const ray1Px =
+    Math.hypot(A.x - V.x, A.y - V.y) >= Math.hypot(B.x - V.x, B.y - V.y) ? A : B;
+  const ray2Px =
+    Math.hypot(D.x - V.x, D.y - V.y) >= Math.hypot(C.x - V.x, C.y - V.y) ? D : C;
+
+  // Si la intersección quedó fuera del lienzo, aún calculamos el ángulo exacto por vectores directores
+  const len1 = Math.hypot(d1x, d1y) || 1;
+  const len2 = Math.hypot(d2x, d2y) || 1;
+  let internal = radToDeg(
+    Math.acos(
+      clamp(
+        ((ray1Px.x - V.x) * (ray2Px.x - V.x) + (ray1Px.y - V.y) * (ray2Px.y - V.y)) /
+          ((Math.hypot(ray1Px.x - V.x, ray1Px.y - V.y) || len1) *
+            (Math.hypot(ray2Px.x - V.x, ray2Px.y - V.y) || len2)),
+        -1,
+        1,
+      ),
+    ),
+  );
+  if (!isFin(internal)) {
+    internal = radToDeg(Math.acos(clamp((d1x * d2x + d1y * d2y) / (len1 * len2), -1, 1)));
+  }
+  const supplement = Math.max(0, 180 - internal);
+
+  return {
+    vertexPx: V,
+    ray1Px,
+    ray2Px,
+    pxPts,
+    internalDeg: internal,
+    supplementDeg: supplement,
+    acuteDeg: Math.min(internal, supplement),
+  };
+}
+
 function drawAngleSector(
   g: CanvasRenderingContext2D,
   center: { x: number; y: number },
@@ -1026,14 +1183,20 @@ function drawAngleSector(
   while (delta < -Math.PI) delta += 2 * Math.PI;
 
   g.save();
-  g.fillStyle = `${color}55`;
-  g.strokeStyle = color;
-  g.lineWidth = 2.8;
+  g.fillStyle = `${color}48`;
+  g.strokeStyle = 'rgba(15, 23, 42, 0.85)';
+  g.lineWidth = 4.2;
   g.beginPath();
   g.moveTo(center.x, center.y);
   g.arc(center.x, center.y, radius, a0, a0 + delta, delta < 0);
   g.closePath();
   g.fill();
+  g.stroke();
+
+  g.strokeStyle = color;
+  g.lineWidth = 2.4;
+  g.beginPath();
+  g.arc(center.x, center.y, radius, a0, a0 + delta, delta < 0);
   g.stroke();
   g.restore();
 }
@@ -1060,14 +1223,16 @@ function drawCanvasBoxLabel(
   y: number,
   text: string,
   color: string,
+  logicalW?: number,
 ) {
-  const fs = Math.max(13, Math.round(g.canvas.width / 46));
+  const refW = logicalW || g.canvas.width;
+  const fs = Math.max(12, Math.round(refW / 50));
   g.save();
   g.font = `700 ${fs}px ui-monospace, SFMono-Regular, Menlo, monospace`;
   const textW = g.measureText(text).width;
-  g.fillStyle = 'rgba(9, 13, 22, 0.86)';
-  g.strokeStyle = `${color}aa`;
-  g.lineWidth = 1.2;
+  g.fillStyle = 'rgba(9, 13, 22, 0.90)';
+  g.strokeStyle = `${color}cc`;
+  g.lineWidth = 1.4;
   g.beginPath();
   g.roundRect(x - 5, y - fs, textW + 10, fs + 7, 4);
   g.fill();
@@ -1077,13 +1242,240 @@ function drawCanvasBoxLabel(
   g.restore();
 }
 
+function drawManualTracedLinesOnCanvas(
+  g: CanvasRenderingContext2D,
+  tracedList: ManualTracedAngle[],
+  toolMode: CanvasToolMode,
+  draftPts: Array<{ x: number; y: number }>,
+  cursorPt: { x: number; y: number } | null,
+  hoveredHandle: { lineId: string; ptIdx: number } | null,
+  Wc: number,
+  Hc: number,
+) {
+  // 1. Rectas manuales ya confirmadas en este fotograma
+  for (const item of tracedList) {
+    const geom = computeTracedLineGeometry(item.pts, item.mode, Wc, Hc);
+    if (!geom) continue;
+    const { vertexPx, ray1Px, ray2Px, pxPts, internalDeg, acuteDeg } = geom;
+
+    const minSeg = Math.min(
+      Math.hypot(ray1Px.x - vertexPx.x, ray1Px.y - vertexPx.y),
+      Math.hypot(ray2Px.x - vertexPx.x, ray2Px.y - vertexPx.y),
+    );
+    const arcR = clamp(minSeg * 0.36, 20, 56);
+    if (
+      vertexPx.x >= -40 &&
+      vertexPx.x <= Wc + 40 &&
+      vertexPx.y >= -40 &&
+      vertexPx.y <= Hc + 40
+    ) {
+      drawAngleSector(g, vertexPx, ray1Px, ray2Px, arcR, item.color);
+    }
+
+    if (item.mode === '3pt') {
+      drawCrispStraightSegment(g, pxPts[0], pxPts[1], item.color, 3.2);
+      drawCrispStraightSegment(g, pxPts[1], pxPts[2], item.color, 3.2);
+    } else {
+      // Prolongaciones punteadas hasta la intersección geométrica V
+      drawCrispStraightSegment(g, pxPts[1], vertexPx, 'rgba(226, 232, 240, 0.85)', 1.8, [6, 5]);
+      drawCrispStraightSegment(g, pxPts[2], vertexPx, 'rgba(226, 232, 240, 0.85)', 1.8, [6, 5]);
+      drawCrispStraightSegment(g, pxPts[0], pxPts[1], item.color, 3.4);
+      drawCrispStraightSegment(g, pxPts[2], pxPts[3], item.color, 3.4);
+
+      g.save();
+      g.fillStyle = '#0f172a';
+      g.strokeStyle = '#ffffff';
+      g.lineWidth = 2;
+      g.beginPath();
+      g.arc(vertexPx.x, vertexPx.y, 4.5, 0, Math.PI * 2);
+      g.fill();
+      g.stroke();
+      g.restore();
+    }
+
+    // Puntos extremos arrastrables con retícula
+    pxPts.forEach((pt, pIdx) => {
+      const isHov = hoveredHandle?.lineId === item.id && hoveredHandle?.ptIdx === pIdx;
+      const isVertex3 = item.mode === '3pt' && pIdx === 1;
+      g.save();
+      g.beginPath();
+      g.arc(pt.x, pt.y, isHov ? 8.5 : isVertex3 ? 7 : 5.8, 0, Math.PI * 2);
+      g.fillStyle = isHov ? '#ffffff' : isVertex3 ? '#0f172a' : item.color;
+      g.strokeStyle = isVertex3 ? item.color : '#0f172a';
+      g.lineWidth = 2.2;
+      g.fill();
+      g.stroke();
+      g.restore();
+    });
+
+    const labelAnchor = sectorBisectorPoint(vertexPx, ray1Px, ray2Px, arcR + 18);
+    const bx = clamp(labelAnchor.x - 42, 10, Math.max(10, Wc - 190));
+    const by = clamp(labelAnchor.y, 28, Math.max(28, Hc - 12));
+    drawCanvasBoxLabel(
+      g,
+      bx,
+      by,
+      `${item.label}: ${internalDeg.toFixed(1)}° (desv. ${acuteDeg.toFixed(1)}°)`,
+      item.color,
+      Wc,
+    );
+  }
+
+  // 2. Rectas elásticas en vivo (60 FPS) durante el trazado
+  if ((toolMode === 'trace_3pt' || toolMode === 'trace_4pt') && draftPts.length > 0) {
+    const pxDraft = draftPts.map((p) => ({ x: p.x * Wc, y: p.y * Hc }));
+    const curPx = cursorPt ? { x: cursorPt.x * Wc, y: cursorPt.y * Hc } : null;
+
+    if (toolMode === 'trace_3pt') {
+      if (pxDraft.length === 1 && curPx) {
+        drawCrispStraightSegment(g, pxDraft[0], curPx, '#38bdf8', 3.0, [8, 5]);
+      } else if (pxDraft.length === 2) {
+        drawCrispStraightSegment(g, pxDraft[0], pxDraft[1], '#facc15', 3.2);
+        if (curPx) {
+          const previewPts = [draftPts[0], draftPts[1], cursorPt!];
+          const geom = computeTracedLineGeometry(previewPts, '3pt', Wc, Hc);
+          if (geom) {
+            drawAngleSector(g, geom.vertexPx, geom.ray1Px, geom.ray2Px, 36, '#38bdf8');
+            drawCrispStraightSegment(g, pxDraft[1], curPx, '#38bdf8', 3.2);
+            drawCanvasBoxLabel(
+              g,
+              clamp(curPx.x + 14, 10, Wc - 210),
+              clamp(curPx.y - 10, 28, Hc - 12),
+              `Int. ${geom.internalDeg.toFixed(1)}° · Desv. ${geom.acuteDeg.toFixed(1)}°`,
+              '#facc15',
+              Wc,
+            );
+          }
+        }
+      }
+    } else {
+      // Modo 4 puntos: Recta 1 (A->B) + Recta 2 (C->D)
+      if (pxDraft.length === 1 && curPx) {
+        drawCrispStraightSegment(g, pxDraft[0], curPx, '#facc15', 3.2, [8, 5]);
+      } else if (pxDraft.length === 2) {
+        drawCrispStraightSegment(g, pxDraft[0], pxDraft[1], '#facc15', 3.4);
+        if (curPx) {
+          g.save();
+          g.strokeStyle = 'rgba(56, 189, 248, 0.55)';
+          g.lineWidth = 1.4;
+          g.setLineDash([4, 4]);
+          g.beginPath();
+          g.moveTo(curPx.x - 12, curPx.y);
+          g.lineTo(curPx.x + 12, curPx.y);
+          g.moveTo(curPx.x, curPx.y - 12);
+          g.lineTo(curPx.x, curPx.y + 12);
+          g.stroke();
+          g.restore();
+        }
+      } else if (pxDraft.length === 3) {
+        drawCrispStraightSegment(g, pxDraft[0], pxDraft[1], '#facc15', 3.4);
+        if (curPx) {
+          const previewPts = [draftPts[0], draftPts[1], draftPts[2], cursorPt!];
+          const geom = computeTracedLineGeometry(previewPts, '4pt', Wc, Hc);
+          if (geom) {
+            drawCrispStraightSegment(
+              g,
+              pxDraft[1],
+              geom.vertexPx,
+              'rgba(226, 232, 240, 0.8)',
+              1.6,
+              [6, 5],
+            );
+            drawCrispStraightSegment(
+              g,
+              pxDraft[2],
+              geom.vertexPx,
+              'rgba(226, 232, 240, 0.8)',
+              1.6,
+              [6, 5],
+            );
+            drawAngleSector(g, geom.vertexPx, geom.ray1Px, geom.ray2Px, 36, '#38bdf8');
+            drawCrispStraightSegment(g, pxDraft[2], curPx, '#38bdf8', 3.4);
+            drawCanvasBoxLabel(
+              g,
+              clamp(curPx.x + 14, 10, Wc - 210),
+              clamp(curPx.y - 10, 28, Hc - 12),
+              `Int. ${geom.internalDeg.toFixed(1)}° · Desv. ${geom.acuteDeg.toFixed(1)}°`,
+              '#38bdf8',
+              Wc,
+            );
+          }
+        }
+      }
+    }
+
+    pxDraft.forEach((pt, idx) => {
+      g.save();
+      g.beginPath();
+      g.arc(pt.x, pt.y, 6, 0, Math.PI * 2);
+      g.fillStyle = idx === 1 && toolMode === 'trace_3pt' ? '#38bdf8' : '#facc15';
+      g.strokeStyle = '#0f172a';
+      g.lineWidth = 2.2;
+      g.fill();
+      g.stroke();
+      g.restore();
+    });
+  }
+}
+
+function drawMagnifierLoupe(
+  g: CanvasRenderingContext2D,
+  rawCanvas: HTMLCanvasElement,
+  focusNorm: { x: number; y: number },
+  Wc: number,
+  Hc: number,
+) {
+  const radius = Math.round(clamp(Math.min(Wc, Hc) * 0.115, 46, 66));
+  const placeLeft = focusNorm.x > 0.62 && focusNorm.y < 0.42;
+  const cx = placeLeft ? radius + 16 : Wc - radius - 16;
+  const cy = radius + 42;
+  const zoom = 2.6;
+
+  const srcW = (radius * 2) / zoom;
+  const srcH = (radius * 2) / zoom;
+  const sx = focusNorm.x * rawCanvas.width - srcW * 0.5;
+  const sy = focusNorm.y * rawCanvas.height - srcH * 0.5;
+
+  g.save();
+  g.beginPath();
+  g.arc(cx, cy, radius, 0, Math.PI * 2);
+  g.fillStyle = '#0f172a';
+  g.fill();
+  g.clip();
+
+  g.drawImage(rawCanvas, sx, sy, srcW, srcH, cx - radius, cy - radius, radius * 2, radius * 2);
+
+  // Retícula fina de precisión en el centro exacto del punto
+  g.strokeStyle = 'rgba(15, 23, 42, 0.85)';
+  g.lineWidth = 3;
+  g.beginPath();
+  g.moveTo(cx - 14, cy);
+  g.lineTo(cx + 14, cy);
+  g.moveTo(cx, cy - 14);
+  g.lineTo(cx, cy + 14);
+  g.stroke();
+
+  g.strokeStyle = '#38bdf8';
+  g.lineWidth = 1.4;
+  g.beginPath();
+  g.moveTo(cx - 14, cy);
+  g.lineTo(cx + 14, cy);
+  g.moveTo(cx, cy - 14);
+  g.lineTo(cx, cy + 14);
+  g.stroke();
+  g.restore();
+
+  g.save();
+  g.beginPath();
+  g.arc(cx, cy, radius, 0, Math.PI * 2);
+  g.strokeStyle = '#38bdf8';
+  g.lineWidth = 2.4;
+  g.stroke();
+  g.restore();
+}
+
 /**
- * Dibuja esqueleto, referencias 0° punteadas y arcos goniométricos corregidos.
- * CORRECCIÓN CLAVE DEL CODO:
- * - En modo 'flexion_anatomica' (RULA/REBA), traza la prolongación distal del húmero (e -> eh)
- *   y dibuja el arco entre esa referencia 0° y el antebrazo (w). Así, 8° de flexión pintan un arco de 8°
- *   (y NO el suplementario obtuso de 172° hacia el hombro).
- * - En modo 'interno_suplementario', dibuja el ángulo interno s-e-w (172°) e identifica ambos valores.
+ * Dibuja esqueleto, rectas de referencia 0° de doble trazo y arcos goniométricos calibrados en HiDPI.
  */
 function drawAnnotatedFrameOnCanvas(
   g: CanvasRenderingContext2D,
@@ -1093,17 +1485,16 @@ function drawAnnotatedFrameOnCanvas(
   o: MeterOptions,
   showInteractiveHandles = false,
   hoveredJointIdx: number | null = null,
+  logicalW?: number,
+  logicalH?: number,
 ) {
-  const Wc = g.canvas.width;
-  const Hc = g.canvas.height;
+  const Wc = logicalW || g.canvas.width;
+  const Hc = logicalH || g.canvas.height;
   const X = (i: number) => landmarks[i].x * Wc;
   const Y = (i: number) => landmarks[i].y * Hc;
   const P = (i: number) => ({ x: X(i), y: Y(i) });
 
-  // 1. Esqueleto secundario completo
-  g.save();
-  g.lineWidth = 2;
-  g.strokeStyle = 'rgba(56, 189, 248, 0.72)';
+  // 1. Esqueleto secundario completo (trazo limpio con borde sutil)
   for (const [a, b] of [
     [11, 12],
     [11, 23],
@@ -1118,15 +1509,11 @@ function drawAnnotatedFrameOnCanvas(
     [12, 14],
     [14, 16],
   ]) {
-    g.beginPath();
-    g.moveTo(X(a), Y(a));
-    g.lineTo(X(b), Y(b));
-    g.stroke();
+    drawCrispStraightSegment(g, P(a), P(b), 'rgba(56, 189, 248, 0.78)', 1.9);
   }
 
-  // 2. Segmentos del lado evaluado resaltados
+  // 2. Rectas anatómicas principales del lado evaluado (doble trazo de alta definición)
   const I = SIDE_INDICES[side];
-  g.lineWidth = 4;
   for (const [a, b, col] of [
     [I.h, I.s, '#facc15'],
     [I.s, I.e, '#ef4444'],
@@ -1135,13 +1522,8 @@ function drawAnnotatedFrameOnCanvas(
     [I.h, I.k, '#4ade80'],
     [I.k, I.a, '#22c55e'],
   ] as Array<[number, number, string]>) {
-    g.strokeStyle = col;
-    g.beginPath();
-    g.moveTo(X(a), Y(a));
-    g.lineTo(X(b), Y(b));
-    g.stroke();
+    drawCrispStraightSegment(g, P(a), P(b), col, 3.4);
   }
-  g.restore();
 
   if (measured && measured.ok) {
     const s = P(I.s);
@@ -1158,7 +1540,7 @@ function drawAnnotatedFrameOnCanvas(
     const f = measured.f || 1;
     const n = { x: -u.y * f, y: u.x * f };
     const fmtDeg = (v: number) => (isFin(v) ? `${v.toFixed(0)}°` : '—');
-    const fs = Math.max(13, Math.round(Wc / 48));
+    const fs = Math.max(12, Math.round(Wc / 50));
 
     type PendingCallout = {
       anchor: { x: number; y: number };
@@ -1168,24 +1550,18 @@ function drawAnnotatedFrameOnCanvas(
     };
     const pendingCallouts: PendingCallout[] = [];
 
-    // A. Línea vertical de gravedad (0° tronco)
+    // A. Recta vertical de plomada (0° tronco) + eje medio de tronco nítido
     const calibRad = degToRad(o.verticalCalibDeg || 0);
     const upPlumb = {
-      x: mh.x + Math.sin(calibRad) * L * 0.82,
-      y: mh.y - Math.cos(calibRad) * L * 0.82,
+      x: mh.x + Math.sin(calibRad) * L * 0.92,
+      y: mh.y - Math.cos(calibRad) * L * 0.92,
     };
-    g.save();
-    g.setLineDash([7, 5]);
-    g.strokeStyle = 'rgba(255,255,255,0.92)';
-    g.lineWidth = 2;
-    g.beginPath();
-    g.moveTo(mh.x, mh.y);
-    g.lineTo(upPlumb.x, upPlumb.y);
-    g.stroke();
-    g.restore();
+    drawCrispStraightSegment(g, mh, upPlumb, '#ffffff', 2.2, [8, 5]);
+    drawCrispStraightSegment(g, mh, ms, '#facc15', 2.8);
 
-    // B. Tronco y Hombro
-    const dnTrunk = { x: s.x - u.x * (L * 0.34), y: s.y - u.y * (L * 0.34) };
+    // B. Tronco y Hombro (con recta de referencia 0° del tronco bajo el hombro)
+    const dnTrunk = { x: s.x - u.x * (L * 0.42), y: s.y - u.y * (L * 0.42) };
+    drawCrispStraightSegment(g, s, dnTrunk, 'rgba(254, 202, 202, 0.92)', 1.8, [6, 4]);
     drawAngleSector(g, mh, upPlumb, ms, L * 0.38, '#facc15');
     drawAngleSector(g, s, dnTrunk, e, L * 0.27, '#ef4444');
     pendingCallouts.push({
@@ -1201,12 +1577,12 @@ function drawAnnotatedFrameOnCanvas(
       preferredGroup: 'front',
     });
 
-    // C. CODO — Por defecto ángulo interno brazo-antebrazo (ej. 172°; rango sano humano 30°–170°)
+    // C. CODO — Recta prolongación 0° o ángulo interno brazo-antebrazo
     const humLen = Math.hypot(e.x - s.x, e.y - s.y) || 1;
     const humUnit = { x: (e.x - s.x) / humLen, y: (e.y - s.y) / humLen };
     const elbowZeroProlongation = {
-      x: e.x + humUnit.x * (L * 0.32),
-      y: e.y + humUnit.y * (L * 0.32),
+      x: e.x + humUnit.x * (L * 0.36),
+      y: e.y + humUnit.y * (L * 0.36),
     };
 
     if (o.elbowVisualMode === 'interno_suplementario') {
@@ -1221,16 +1597,7 @@ function drawAnnotatedFrameOnCanvas(
         preferredGroup: 'front',
       });
     } else {
-      g.save();
-      g.setLineDash([5, 4]);
-      g.strokeStyle = 'rgba(251, 146, 60, 0.92)';
-      g.lineWidth = 1.8;
-      g.beginPath();
-      g.moveTo(e.x, e.y);
-      g.lineTo(elbowZeroProlongation.x, elbowZeroProlongation.y);
-      g.stroke();
-      g.restore();
-
+      drawCrispStraightSegment(g, e, elbowZeroProlongation, '#fdba74', 2.0, [6, 4]);
       drawAngleSector(g, e, elbowZeroProlongation, w, L * 0.21, '#f97316');
       const elbowLabel = o.showDualElbowReadout
         ? `Codo ext. ${fmtDeg(measured.elbow)} (int. ${fmtDeg(measured.elbowInternal)})`
@@ -1243,7 +1610,7 @@ function drawAnnotatedFrameOnCanvas(
       });
     }
 
-    // D. CUELLO — Rayo neutro rotado según neckOff
+    // D. CUELLO — Recta neutra rotada según neckOff
     if (isFin(measured.neck)) {
       const offRad = degToRad(o.neckOff || 0);
       const neckZeroDir = {
@@ -1251,19 +1618,10 @@ function drawAnnotatedFrameOnCanvas(
         y: u.y * Math.cos(offRad) + n.y * Math.sin(offRad),
       };
       const neckZeroPt = {
-        x: s.x + neckZeroDir.x * (L * 0.26),
-        y: s.y + neckZeroDir.y * (L * 0.26),
+        x: s.x + neckZeroDir.x * (L * 0.30),
+        y: s.y + neckZeroDir.y * (L * 0.30),
       };
-      g.save();
-      g.setLineDash([4, 4]);
-      g.strokeStyle = 'rgba(196, 181, 253, 0.78)';
-      g.lineWidth = 1.5;
-      g.beginPath();
-      g.moveTo(s.x, s.y);
-      g.lineTo(neckZeroPt.x, neckZeroPt.y);
-      g.stroke();
-      g.restore();
-
+      drawCrispStraightSegment(g, s, neckZeroPt, '#ddd6fe', 1.8, [5, 4]);
       drawAngleSector(g, s, neckZeroPt, ear, L * 0.2, '#a78bfa');
       pendingCallouts.push({
         anchor: sectorBisectorPoint(s, neckZeroPt, ear, L * 0.18),
@@ -1273,24 +1631,16 @@ function drawAnnotatedFrameOnCanvas(
       });
     }
 
-    // E. RODILLAS — Arco de flexión para REBA/OWAS
+    // E. RODILLAS — Recta de prolongación femoral y arco para REBA/OWAS
     const activeKneeFlex = side === 'R' ? measured.kR : measured.kL;
     if (o.showKneeArc && isFin(activeKneeFlex)) {
       const femLen = Math.hypot(kPt.x - h.x, kPt.y - h.y) || 1;
       const femUnit = { x: (kPt.x - h.x) / femLen, y: (kPt.y - h.y) / femLen };
       const kneeZeroProlongation = {
-        x: kPt.x + femUnit.x * (L * 0.28),
-        y: kPt.y + femUnit.y * (L * 0.28),
+        x: kPt.x + femUnit.x * (L * 0.32),
+        y: kPt.y + femUnit.y * (L * 0.32),
       };
-      g.save();
-      g.setLineDash([5, 4]);
-      g.strokeStyle = 'rgba(134, 239, 172, 0.85)';
-      g.lineWidth = 1.6;
-      g.beginPath();
-      g.moveTo(kPt.x, kPt.y);
-      g.lineTo(kneeZeroProlongation.x, kneeZeroProlongation.y);
-      g.stroke();
-      g.restore();
+      drawCrispStraightSegment(g, kPt, kneeZeroProlongation, '#86efac', 1.9, [6, 4]);
       drawAngleSector(g, kPt, kneeZeroProlongation, aPt, L * 0.18, '#22c55e');
     }
 
@@ -1308,8 +1658,7 @@ function drawAnnotatedFrameOnCanvas(
       }
     }
 
-    // F. Maquetación ordenada de leyendas en columnas laterales (izquierda / derecha)
-    // fuera de los trazos de ángulo para que Tronco, Brazo, Codo y Rodillas nunca queden tapados
+    // F. Maquetación ordenada de leyendas en columnas laterales sin tapar rectas
     const spanPts = [mh, ms, s, e, w, ear, h, kPt, aPt, P(25), P(26), upPlumb];
     let skelMinX = Wc * 0.5;
     let skelMaxX = Wc * 0.5;
@@ -1384,7 +1733,12 @@ function drawAnnotatedFrameOnCanvas(
             ? clamp(leftBandRightEdge - it.boxW, 8, Math.max(8, Wc - it.boxW - 8))
             : clamp(rightBandLeftEdge, 8, Math.max(8, Wc - it.boxW - 8));
         const boxMidY = it.cy - fs * 0.36;
-        const connectX = it.anchor.x < bx ? bx - 5 : it.anchor.x > bx + it.boxW ? bx + it.boxW - 5 : bx + it.boxW * 0.5;
+        const connectX =
+          it.anchor.x < bx
+            ? bx - 5
+            : it.anchor.x > bx + it.boxW
+              ? bx + it.boxW - 5
+              : bx + it.boxW * 0.5;
         const elbowDoglegX =
           it.anchor.x < bx
             ? bx - 14
@@ -1393,8 +1747,8 @@ function drawAnnotatedFrameOnCanvas(
               : connectX;
 
         g.save();
-        g.strokeStyle = 'rgba(15, 23, 42, 0.78)';
-        g.lineWidth = 3.2;
+        g.strokeStyle = 'rgba(15, 23, 42, 0.85)';
+        g.lineWidth = 3.4;
         g.beginPath();
         g.moveTo(it.anchor.x, it.anchor.y);
         g.lineTo(elbowDoglegX, boxMidY);
@@ -1415,7 +1769,7 @@ function drawAnnotatedFrameOnCanvas(
         g.fill();
         g.restore();
 
-        drawCanvasBoxLabel(g, bx, it.cy, it.text, it.color);
+        drawCanvasBoxLabel(g, bx, it.cy, it.text, it.color, Wc);
       }
     };
 
@@ -1423,7 +1777,7 @@ function drawAnnotatedFrameOnCanvas(
     layoutColumn(rightItems, 'right');
   }
 
-  // 3. Puntos articulares arrastrables si el modo interactivo está activo
+  // 3. Puntos articulares arrastrables con retícula de precisión
   if (showInteractiveHandles) {
     for (const idxStr of Object.keys(EDITABLE_LANDMARK_LABELS)) {
       const idx = Number(idxStr);
@@ -1432,12 +1786,18 @@ function drawAnnotatedFrameOnCanvas(
       const isHovered = hoveredJointIdx === idx;
       g.save();
       g.beginPath();
-      g.arc(pt.x, pt.y, isHovered ? 8.5 : 5.8, 0, Math.PI * 2);
+      g.arc(pt.x, pt.y, isHovered ? 8.5 : 5.6, 0, Math.PI * 2);
       g.fillStyle = isHovered ? '#38bdf8' : '#ffffff';
       g.strokeStyle = '#0f172a';
-      g.lineWidth = 2;
+      g.lineWidth = 2.2;
       g.fill();
       g.stroke();
+      if (isHovered) {
+        g.beginPath();
+        g.arc(pt.x, pt.y, 2.2, 0, Math.PI * 2);
+        g.fillStyle = '#0f172a';
+        g.fill();
+      }
       g.restore();
     }
   }
@@ -1683,14 +2043,35 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
   const [options, setOptions] = useState<MeterOptions>(DEFAULT_OPTIONS);
   const [activeMethodTab, setActiveMethodTab] = useState<'rula' | 'reba' | 'owas'>('rula');
   const [showTechSettings, setShowTechSettings] = useState<boolean>(false);
+  const [canvasToolMode, setCanvasToolMode] = useState<CanvasToolMode>('ai_joints');
   const [interactiveJointEdit, setInteractiveJointEdit] = useState<boolean>(true);
   const [hoveredJointIdx, setHoveredJointIdx] = useState<number | null>(null);
   const [draggingJointIdx, setDraggingJointIdx] = useState<number | null>(null);
 
+  // Estado para trazo directo de rectas manuales (3 clics con vértice o 4 clics de 2 rectas libres)
+  const [manualTracedByFrame, setManualTracedByFrame] = useState<
+    Record<number, ManualTracedAngle[]>
+  >({});
+  const [draftTracePts, setDraftTracePts] = useState<Array<{ x: number; y: number }>>([]);
+  const [cursorNormPt, setCursorNormPt] = useState<{ x: number; y: number } | null>(null);
+  const [hoveredLineHandle, setHoveredLineHandle] = useState<{
+    lineId: string;
+    ptIdx: number;
+  } | null>(null);
+  const [draggingLineHandle, setDraggingLineHandle] = useState<{
+    lineId: string;
+    ptIdx: number;
+  } | null>(null);
+  const [manualAngleOverrides, setManualAngleOverrides] = useState<
+    Record<number, FrameManualAngleOverride>
+  >({});
+
   const [sourceType, setSourceType] = useState<'none' | 'video' | 'photo' | 'demo'>('none');
   const [sourceInfoText, setSourceInfoText] = useState<string>('');
+  const [videoDurationSec, setVideoDurationSec] = useState<number>(0);
+  const [liveScrubTimeSec, setLiveScrubTimeSec] = useState<number>(0);
   const [statusMessage, setStatusMessage] = useState<string>(
-    'Sube un video lateral, una fotografía o pulsa "Probar postura ejemplo (Codo 172°)" para verificar el goniómetro al instante.',
+    'Goniómetro instantáneo listo: sube una foto o video, arrastra articulaciones o traza rectas directas.',
   );
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [exportBanner, setExportBanner] = useState<string | null>(null);
@@ -1709,10 +2090,14 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
   const [selectedFrameIdx, setSelectedFrameIdx] = useState<number>(0);
 
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const activeRawCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const videoElRef = useRef<HTMLVideoElement | null>(null);
+  const videoObjectUrlRef = useRef<string | null>(null);
   const staticCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const frameCacheRef = useRef<Map<number, HTMLCanvasElement>>(new Map());
   const seekQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const liveScrubBusyRef = useRef<boolean>(false);
+  const pendingScrubTimeRef = useRef<number | null>(null);
   const landmarkerCacheRef = useRef<{ instance: PoseLandmarker | null; tier: ModelTier | '' }>({
     instance: null,
     tier: '',
@@ -1723,7 +2108,31 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
     setOptions((prev) => ({ ...prev, [key]: val }));
   }, []);
 
-  // Obtener instancia MediaPipe PoseLandmarker (IMAGE + CPU para máxima compatibilidad)
+  const cleanupMountedVideo = useCallback(() => {
+    if (videoElRef.current) {
+      try {
+        videoElRef.current.pause();
+        videoElRef.current.removeAttribute('src');
+        videoElRef.current.load();
+        if (videoElRef.current.parentNode) {
+          videoElRef.current.parentNode.removeChild(videoElRef.current);
+        }
+      } catch {
+        // Ignorar limpieza de video
+      }
+      videoElRef.current = null;
+    }
+    if (videoObjectUrlRef.current) {
+      try {
+        URL.revokeObjectURL(videoObjectUrlRef.current);
+      } catch {
+        // Ignorar
+      }
+      videoObjectUrlRef.current = null;
+    }
+  }, []);
+
+  // Obtener instancia MediaPipe PoseLandmarker (priorizando GPU para inferencia < 18 ms)
   const getPoseLandmarker = useCallback(async (tier: ModelTier): Promise<PoseLandmarker> => {
     if (landmarkerCacheRef.current.instance && landmarkerCacheRef.current.tier === tier) {
       return landmarkerCacheRef.current.instance;
@@ -1741,19 +2150,25 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
     for (const wasmBase of WASM_CANDIDATES) {
       try {
         const vision = await FilesetResolver.forVisionTasks(wasmBase);
-        const lm = await PoseLandmarker.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: modelTaskUrl(tier),
-            delegate: 'CPU',
-          },
-          runningMode: 'IMAGE',
-          numPoses: 1,
-          minPoseDetectionConfidence: 0.3,
-          minPosePresenceConfidence: 0.3,
-          minTrackingConfidence: 0.3,
-        });
-        landmarkerCacheRef.current = { instance: lm, tier };
-        return lm;
+        for (const delegate of ['GPU', 'CPU'] as const) {
+          try {
+            const lm = await PoseLandmarker.createFromOptions(vision, {
+              baseOptions: {
+                modelAssetPath: modelTaskUrl(tier),
+                delegate,
+              },
+              runningMode: 'IMAGE',
+              numPoses: 1,
+              minPoseDetectionConfidence: 0.3,
+              minPosePresenceConfidence: 0.3,
+              minTrackingConfidence: 0.3,
+            });
+            landmarkerCacheRef.current = { instance: lm, tier };
+            return lm;
+          } catch (innerErr) {
+            lastErr = innerErr;
+          }
+        }
       } catch (err) {
         lastErr = err;
       }
@@ -1763,9 +2178,11 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
       : new Error('No se pudo inicializar MediaPipe PoseLandmarker.');
   }, []);
 
+  // Búsqueda ultrarrápida de fotograma decodificado en <video> montado oculto en DOM
   const seekVideoTo = useCallback((video: HTMLVideoElement, timeSec: number): Promise<void> => {
     return new Promise((resolve) => {
-      if (Math.abs(video.currentTime - timeSec) < 1e-3) {
+      const safeTarget = clamp(timeSec, 0, Math.max(0, (video.duration || 0.05) - 0.005));
+      if (Math.abs(video.currentTime - safeTarget) < 1e-3 && video.readyState >= 2) {
         resolve();
         return;
       }
@@ -1773,23 +2190,16 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
       const finish = () => {
         if (settled) return;
         settled = true;
+        video.removeEventListener('seeked', onSeeked);
         resolve();
       };
       const onSeeked = () => {
-        video.removeEventListener('seeked', onSeeked);
-        const rvfc = (video as HTMLVideoElement & {
-          requestVideoFrameCallback?: (cb: () => void) => number;
-        }).requestVideoFrameCallback;
-        if (typeof rvfc === 'function') {
-          rvfc.call(video, finish);
-          setTimeout(finish, 180);
-        } else {
-          setTimeout(finish, 75);
-        }
+        window.requestAnimationFrame(() => finish());
+        setTimeout(finish, 40);
       };
-      video.addEventListener('seeked', onSeeked);
-      setTimeout(finish, 3200);
-      video.currentTime = timeSec;
+      video.addEventListener('seeked', onSeeked, { once: true });
+      setTimeout(finish, 140);
+      video.currentTime = safeTarget;
     });
   }, []);
 
@@ -1803,7 +2213,7 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
       }
       const video = videoElRef.current;
       const tSec = timestamps[idx];
-      if (!video || tSec === undefined) return Promise.resolve(null);
+      if (!video || tSec === undefined) return Promise.resolve(activeRawCanvasRef.current);
 
       const job = seekQueueRef.current.then(async () => {
         if (frameCacheRef.current.has(idx)) return frameCacheRef.current.get(idx)!;
@@ -1814,7 +2224,7 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
         const ctx = cv.getContext('2d');
         if (ctx) ctx.drawImage(video, 0, 0, frameDims.w, frameDims.h);
         frameCacheRef.current.set(idx, cv);
-        if (frameCacheRef.current.size > 36) {
+        if (frameCacheRef.current.size > 48) {
           const oldest = frameCacheRef.current.keys().next().value;
           if (oldest !== undefined) frameCacheRef.current.delete(oldest);
         }
@@ -1826,7 +2236,7 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
     [frameDims.h, frameDims.w, seekVideoTo, sourceType, timestamps],
   );
 
-  // Landmarks efectivos combinando detección automática + ajustes manuales con el mouse
+  // Landmarks efectivos combinando detección automática + ajustes manuales con el ratón
   const effectiveLandmarksPerFrame = useMemo(() => {
     return rawLandmarks.map((lm, frameIdx) => {
       if (!lm) return null;
@@ -1845,7 +2255,7 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
     return visibilitySum.R >= visibilitySum.L ? 'R' : 'L';
   }, [options.side, visibilitySum.L, visibilitySum.R]);
 
-  // Evaluación completa reactiva (ángulos + suavizado opcional + RULA + REBA + OWAS + posturas críticas)
+  // Evaluación completa reactiva (ángulos IA + transferencias de rectas manuales + RULA/REBA/OWAS)
   const analysisSummary = useMemo(() => {
     if (effectiveLandmarksPerFrame.length === 0) return null;
 
@@ -1890,11 +2300,47 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
         ? smoothMeasuredFrames(rawMeasured)
         : rawMeasured.map((m) => ({ ...m }));
 
-    const evaluated: EvaluatedFrame[] = smoothed.map((m) => {
-      if (!m.ok) return m;
-      return {
+    const evaluated: EvaluatedFrame[] = smoothed.map((m, idx) => {
+      const ov = manualAngleOverrides[idx];
+      const hasManualOv = Boolean(
+        ov &&
+          (ov.trunk !== undefined ||
+            ov.upper !== undefined ||
+            ov.elbowInternal !== undefined ||
+            ov.neck !== undefined ||
+            ov.knee !== undefined),
+      );
+      if (!m.ok && !hasManualOv) return m;
+
+      const merged: MeasuredAngles = {
         ...m,
-        ...scoreMeasuredFrame(m, options),
+        ok: true,
+        why: '',
+        lateral: m.ok ? m.lateral : true,
+        trunk: ov?.trunk !== undefined ? ov.trunk : isFin(m.trunk) ? m.trunk : 0,
+        upper: ov?.upper !== undefined ? ov.upper : isFin(m.upper) ? m.upper : 15,
+        elbowInternal:
+          ov?.elbowInternal !== undefined
+            ? ov.elbowInternal
+            : isFin(m.elbowInternal)
+              ? m.elbowInternal
+              : 100,
+        elbow:
+          ov?.elbowInternal !== undefined
+            ? 180 - ov.elbowInternal
+            : isFin(m.elbow)
+              ? m.elbow
+              : 80,
+        neck: ov?.neck !== undefined ? ov.neck : isFin(m.neck) ? m.neck : 8,
+        kR: ov?.knee !== undefined ? ov.knee : m.kR,
+        kL: ov?.knee !== undefined ? ov.knee : m.kL,
+        kRInternal: ov?.knee !== undefined ? 180 - ov.knee : m.kRInternal,
+        kLInternal: ov?.knee !== undefined ? 180 - ov.knee : m.kLInternal,
+      };
+
+      return {
+        ...merged,
+        ...scoreMeasuredFrame(merged, options),
       };
     });
 
@@ -1987,40 +2433,39 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
       owasGroups,
       maxOwasCat,
     };
-  }, [effectiveLandmarksPerFrame, effectiveSide, frameDims.h, frameDims.w, options, timestamps, worldLandmarks]);
+  }, [
+    effectiveLandmarksPerFrame,
+    effectiveSide,
+    frameDims.h,
+    frameDims.w,
+    manualAngleOverrides,
+    options,
+    timestamps,
+    worldLandmarks,
+  ]);
 
-  // Ejecutar análisis sobre el video cargado
+  // Escaneo rápido opcional del ciclo completo en video (~1,2 s en GPU para 36 cuadros)
   const runVideoAnalysis = useCallback(
-    async (videoEl?: HTMLVideoElement) => {
+    async (videoEl?: HTMLVideoElement, maxFramesCap = 36) => {
       const v = videoEl || videoElRef.current;
       if (!v) return;
       try {
         setIsAnalyzing(true);
         setErrorMessage(null);
-        setProgressRatio(0.02);
-        setStatusMessage('Cargando modelo local de pose MediaPipe…');
+        setProgressRatio(0.04);
+        setStatusMessage('Escaneando ciclo completo a máxima velocidad en GPU…');
         frameCacheRef.current.clear();
-        setManualLandmarkOverrides({});
 
         const lm = await getPoseLandmarker(options.mdl);
-        const scale = Math.min(1, 960 / (v.videoWidth || 960));
+        const scale = Math.min(1, 880 / (v.videoWidth || 880));
         const W = Math.max(320, Math.round((v.videoWidth || 640) * scale));
         const H = Math.max(240, Math.round((v.videoHeight || 480) * scale));
         setFrameDims({ w: W, h: H });
 
-        const workCv = document.createElement('canvas');
-        workCv.width = W;
-        workCv.height = H;
-        const workCtx = workCv.getContext('2d')!;
-
-        if (previewCanvasRef.current) {
-          previewCanvasRef.current.width = W;
-          previewCanvasRef.current.height = H;
-        }
-
-        const stepSec = 1 / clamp(options.fps || 6, 2, 20);
         const dur = Math.max(0.05, v.duration || 0.1);
-        const totalFrames = Math.max(1, Math.floor(dur / stepSec) + 1);
+        const rawDesired = Math.max(2, Math.floor(dur * clamp(options.fps || 6, 2, 20)) + 1);
+        const totalFrames = Math.min(maxFramesCap, rawDesired);
+        const stepSec = totalFrames > 1 ? (dur * 0.985) / (totalFrames - 1) : 0;
 
         const nextLandmarks: Array<NormLandmark[] | null> = [];
         const nextWorld: Array<NormLandmark[] | null> = [];
@@ -2029,11 +2474,17 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
         let detectedCount = 0;
 
         for (let k = 0; k < totalFrames; k++) {
-          const t = Math.min(Math.max(0, dur - 0.01), k * stepSec);
+          const t = Math.min(Math.max(0.001, dur - 0.01), k * stepSec);
           await seekVideoTo(v, t);
-          workCtx.drawImage(v, 0, 0, W, H);
 
-          const res = lm.detect(workCv);
+          const frameCv = document.createElement('canvas');
+          frameCv.width = W;
+          frameCv.height = H;
+          const fCtx = frameCv.getContext('2d')!;
+          fCtx.drawImage(v, 0, 0, W, H);
+          frameCacheRef.current.set(k, frameCv);
+
+          const res = lm.detect(frameCv);
           const pose2D = (res.landmarks && res.landmarks[0]) as NormLandmark[] | undefined;
           const pose3D = (res.worldLandmarks && res.worldLandmarks[0]) as NormLandmark[] | undefined;
 
@@ -2053,30 +2504,11 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
             }
           }
 
-          if (previewCanvasRef.current) {
-            const pCtx = previewCanvasRef.current.getContext('2d');
-            if (pCtx) {
-              pCtx.drawImage(workCv, 0, 0, W, H);
-              if (pose2D) {
-                const tempSide: SideCode = visAcc.R >= visAcc.L ? 'R' : 'L';
-                const tempM = measureSagittalFrame(
-                  pose2D,
-                  W,
-                  H,
-                  tempSide,
-                  options,
-                  pose3D || null,
-                );
-                drawAnnotatedFrameOnCanvas(pCtx, pose2D, tempM, tempSide, options, false, null);
-              }
-            }
-          }
-
           setProgressRatio((k + 1) / totalFrames);
-          setStatusMessage(
-            `Analizando fotograma ${k + 1}/${totalFrames} · posturas detectadas: ${detectedCount}`,
-          );
-          if (k % 3 === 0) {
+          if (k % 6 === 0) {
+            setStatusMessage(
+              `Escaneando ciclo: ${k + 1}/${totalFrames} cuadros (${detectedCount} posturas detectadas)…`,
+            );
             await new Promise((r) => setTimeout(r, 0));
           }
         }
@@ -2085,40 +2517,115 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
         setRawLandmarks(nextLandmarks);
         setWorldLandmarks(nextWorld);
         setVisibilitySum(visAcc);
+        setManualLandmarkOverrides({});
+        setManualAngleOverrides({});
 
         if (detectedCount === 0) {
-          setErrorMessage(
-            'No se detectó ninguna persona en el video. Verifica que el cuerpo sea visible, haya buena iluminación o selecciona el modelo "Pesado".',
+          setStatusMessage(
+            'Sin detección IA automática. Usa "Trazar 2 Rectas" arriba del lienzo para medir cualquier ángulo directamente.',
           );
-          setStatusMessage('Sin detección en los fotogramas muestreados.');
         } else {
           setStatusMessage(
-            `Análisis completado: persona detectada en ${detectedCount}/${totalFrames} fotogramas.`,
+            `Ciclo completo escaneado (${detectedCount}/${totalFrames} cuadros). Peor postura seleccionada.`,
           );
         }
       } catch (err) {
         setErrorMessage(
-          err instanceof Error ? err.message : 'Error inesperado al analizar el video.',
+          err instanceof Error ? err.message : 'Error inesperado al escanear el video.',
         );
       } finally {
         setIsAnalyzing(false);
       }
     },
-    [getPoseLandmarker, options, seekVideoTo],
+    [getPoseLandmarker, options.fps, options.mdl, seekVideoTo],
   );
 
-  // Ejecutar análisis sobre una foto estática
+  // Medición instantánea en vivo de un instante específico del video al mover la barra de tiempo (< 25 ms)
+  const measureVideoAtTimeInstant = useCallback(
+    async (targetSec: number) => {
+      const v = videoElRef.current;
+      if (!v) return;
+      setLiveScrubTimeSec(targetSec);
+
+      if (liveScrubBusyRef.current) {
+        pendingScrubTimeRef.current = targetSec;
+        return;
+      }
+      liveScrubBusyRef.current = true;
+      try {
+        let nextTime: number | null = targetSec;
+        while (nextTime !== null) {
+          const tNow = nextTime;
+          pendingScrubTimeRef.current = null;
+          await seekVideoTo(v, tNow);
+
+          const scale = Math.min(1, 920 / (v.videoWidth || 920));
+          const W = Math.max(320, Math.round((v.videoWidth || 640) * scale));
+          const H = Math.max(240, Math.round((v.videoHeight || 480) * scale));
+
+          const cv = document.createElement('canvas');
+          cv.width = W;
+          cv.height = H;
+          const ctx = cv.getContext('2d');
+          if (ctx) ctx.drawImage(v, 0, 0, W, H);
+
+          activeRawCanvasRef.current = cv;
+          frameCacheRef.current.clear();
+          frameCacheRef.current.set(0, cv);
+          setFrameDims((prev) => (prev.w === W && prev.h === H ? prev : { w: W, h: H }));
+
+          let pose2D: NormLandmark[] | undefined;
+          let pose3D: NormLandmark[] | undefined;
+          try {
+            const lm = await getPoseLandmarker(options.mdl);
+            const res = lm.detect(cv);
+            pose2D = (res.landmarks && res.landmarks[0]) as NormLandmark[] | undefined;
+            pose3D = (res.worldLandmarks && res.worldLandmarks[0]) as NormLandmark[] | undefined;
+          } catch {
+            // Si aún está precargando WASM, se muestra el fotograma limpio de inmediato para trazo manual
+          }
+
+          const visAcc = { R: 0, L: 0 };
+          if (pose2D) {
+            for (const sd of ['R', 'L'] as const) {
+              const idxMap = SIDE_INDICES[sd];
+              visAcc[sd] =
+                (['s', 'e', 'w', 'h', 'k', 'a'] as const).reduce(
+                  (acc, key) => acc + (pose2D![idxMap[key]]?.visibility ?? 1),
+                  0,
+                ) / 6;
+            }
+          }
+
+          setSelectedFrameIdx(0);
+          setTimestamps([tNow]);
+          setRawLandmarks([pose2D ? pose2D.map((pt) => ({ ...pt })) : null]);
+          setWorldLandmarks([pose3D ? pose3D.map((pt) => ({ ...pt })) : null]);
+          setVisibilitySum(visAcc.R > 0 || visAcc.L > 0 ? visAcc : { R: 1, L: 0.8 });
+
+          nextTime = pendingScrubTimeRef.current;
+        }
+      } finally {
+        liveScrubBusyRef.current = false;
+      }
+    },
+    [getPoseLandmarker, options.mdl, seekVideoTo],
+  );
+
+  // Ejecutar análisis instantáneo sobre una foto estática (muestra imagen en 0 ms y superpone IA al instante)
   const runPhotoAnalysis = useCallback(
     async (img: HTMLImageElement, labelName: string) => {
       try {
-        setIsAnalyzing(true);
+        cleanupMountedVideo();
         setErrorMessage(null);
-        setProgressRatio(0.35);
-        setStatusMessage('Detectando articulaciones sobre la fotografía…');
         frameCacheRef.current.clear();
         setManualLandmarkOverrides({});
+        setManualTracedByFrame({});
+        setManualAngleOverrides({});
+        setDraftTracePts([]);
+        setVideoDurationSec(0);
 
-        const scale = Math.min(1, 1000 / (img.naturalWidth || 1000));
+        const scale = Math.min(1, 1080 / (img.naturalWidth || 1080));
         const W = Math.max(360, Math.round((img.naturalWidth || 800) * scale));
         const H = Math.max(260, Math.round((img.naturalHeight || 600) * scale));
 
@@ -2128,11 +2635,17 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
         const ctx = cv.getContext('2d')!;
         ctx.drawImage(img, 0, 0, W, H);
         staticCanvasRef.current = cv;
-        videoElRef.current = null;
+        activeRawCanvasRef.current = cv;
 
+        // Mostrar la foto en 0 ms antes incluso de que retorne MediaPipe
         setFrameDims({ w: W, h: H });
         setSourceType('photo');
         setSourceInfoText(`${labelName} · ${img.naturalWidth}×${img.naturalHeight} px · Foto fija`);
+        setTimestamps([0]);
+        setRawLandmarks([null]);
+        setWorldLandmarks([null]);
+        setSelectedFrameIdx(0);
+        setStatusMessage('Detectando articulaciones en GPU…');
 
         const lm = await getPoseLandmarker(options.mdl);
         const res = lm.detect(cv);
@@ -2151,39 +2664,39 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
           }
         }
 
-        setTimestamps([0]);
         setRawLandmarks([pose2D ? pose2D.map((pt) => ({ ...pt })) : null]);
         setWorldLandmarks([pose3D ? pose3D.map((pt) => ({ ...pt })) : null]);
-        setVisibilitySum(visAcc);
-        setSelectedFrameIdx(0);
-        setProgressRatio(1);
+        setVisibilitySum(visAcc.R > 0 || visAcc.L > 0 ? visAcc : { R: 1, L: 0.8 });
 
         if (!pose2D) {
-          setErrorMessage(
-            'MediaPipe no detectó el cuerpo completo en la foto. Prueba el modelo "Pesado" en Ajustes técnicos o usa una vista con mayor contraste.',
+          setCanvasToolMode('trace_3pt');
+          setStatusMessage(
+            'Foto lista: MediaPipe no vio cuerpo completo; usa "Trazar 2 Rectas" activa para medir cualquier ángulo al instante.',
           );
-          setStatusMessage('Sin detección automática en la fotografía.');
         } else {
           setStatusMessage(
-            'Fotografía medida. Puedes arrastrar cualquier punto articular con el mouse para afinar la medición.',
+            'Fotografía medida al instante. Arrastra puntos articulares o usa "Trazar 2 Rectas" para rectas libres.',
           );
         }
       } catch (err) {
         setErrorMessage(err instanceof Error ? err.message : 'Error al procesar la fotografía.');
-      } finally {
-        setIsAnalyzing(false);
       }
     },
-    [getPoseLandmarker, options.mdl],
+    [cleanupMountedVideo, getPoseLandmarker, options.mdl],
   );
 
-  // Cargar postura sintética instantánea de ejemplo (codo extendido 172° internos, rango sano 30°–170°)
+  // Cargar postura sintética instantánea de ejemplo (0 ms)
   const handleLoadCalibrationDemo = useCallback(() => {
+    cleanupMountedVideo();
     const { canvas, landmarks } = buildSyntheticCalibrationCase();
     frameCacheRef.current.clear();
-    videoElRef.current = null;
     staticCanvasRef.current = canvas;
+    activeRawCanvasRef.current = canvas;
     setManualLandmarkOverrides({});
+    setManualTracedByFrame({});
+    setManualAngleOverrides({});
+    setDraftTracePts([]);
+    setVideoDurationSec(0);
     setErrorMessage(null);
     setSourceType('demo');
     setFrameDims({ w: canvas.width, h: canvas.height });
@@ -2203,60 +2716,104 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
     setVisibilitySum({ R: 1, L: 0.8 });
     setSelectedFrameIdx(0);
     setStatusMessage(
-      'Postura ejemplo cargada: ángulo interno de codo = 172° (supera apenas el límite sano de 170° por perspectiva 2D) con leyendas ordenadas en los márgenes sin tapar el Tronco.',
+      'Goniómetro activo al instante: arrastra cualquier articulación o elige "Trazar 2 Rectas" para medir ángulos libres.',
     );
-  }, []);
+  }, [cleanupMountedVideo]);
 
-  // Subir archivo (Video o Imagen)
+  // Precalentar MediaPipe GPU en segundo plano y dejar el lienzo listo en 0 ms al entrar
+  useEffect(() => {
+    handleLoadCalibrationDemo();
+    getPoseLandmarker('full').catch(() => {
+      // Ignorar si se carga bajo demanda luego
+    });
+    return () => {
+      cleanupMountedVideo();
+    };
+  }, [cleanupMountedVideo, getPoseLandmarker, handleLoadCalibrationDemo]);
+
+  // Subir archivo (Video o Imagen) — Apertura INSTANTÁNEA sin bloqueo de minutos
   const handleMediaFileChange = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
+      e.target.value = '';
       setErrorMessage(null);
 
       if (file.type.startsWith('image/')) {
         const url = URL.createObjectURL(file);
         const img = new Image();
         img.onload = () => {
-          runPhotoAnalysis(img, file.name);
+          void runPhotoAnalysis(img, file.name);
+          URL.revokeObjectURL(url);
         };
         img.onerror = () => {
+          URL.revokeObjectURL(url);
           setErrorMessage('No se pudo decodificar la imagen seleccionada.');
         };
         img.src = url;
         return;
       }
 
+      cleanupMountedVideo();
+      const objUrl = URL.createObjectURL(file);
+      videoObjectUrlRef.current = objUrl;
+
       const vid = document.createElement('video');
       vid.muted = true;
       vid.playsInline = true;
       vid.preload = 'auto';
-      vid.src = URL.createObjectURL(file);
+      // Montar oculto 2×2 px en DOM para activar decodificación por hardware inmediata en Chrome/Safari/Android
+      vid.style.position = 'fixed';
+      vid.style.left = '-9999px';
+      vid.style.top = '0';
+      vid.style.width = '2px';
+      vid.style.height = '2px';
+      vid.style.opacity = '0.01';
+      vid.style.pointerEvents = 'none';
+      document.body.appendChild(vid);
+      vid.src = objUrl;
 
       try {
         await new Promise<void>((resolve, reject) => {
-          vid.addEventListener('loadeddata', () => resolve(), { once: true });
+          const onReady = () => resolve();
+          vid.addEventListener('loadeddata', onReady, { once: true });
           vid.addEventListener(
             'error',
             () => reject(new Error('No se pudo leer el video (usa MP4/H.264, MOV o WebM).')),
             { once: true },
           );
         });
+
         videoElRef.current = vid;
         staticCanvasRef.current = null;
+        frameCacheRef.current.clear();
+        setManualLandmarkOverrides({});
+        setManualTracedByFrame({});
+        setManualAngleOverrides({});
+        setDraftTracePts([]);
+
+        const dur = Math.max(0.05, vid.duration || 0.1);
+        setVideoDurationSec(dur);
+        setLiveScrubTimeSec(0);
         setSourceType('video');
+        setOptions((prev) => ({ ...prev, incl: true }));
         setSourceInfoText(
-          `${file.name} · ${vid.videoWidth}×${vid.videoHeight} · ${vid.duration.toFixed(1)} s`,
+          `${file.name} · ${vid.videoWidth}×${vid.videoHeight} · ${dur.toFixed(1)} s`,
         );
-        await runVideoAnalysis(vid);
+
+        await measureVideoAtTimeInstant(0.001);
+        setStatusMessage(
+          'Video abierto al instante. Desliza la barra de tiempo para medir cualquier cuadro en vivo o pulsa "Escanear ciclo (36 cuadros)".',
+        );
       } catch (err) {
+        cleanupMountedVideo();
         setErrorMessage(err instanceof Error ? err.message : 'Error al abrir el video.');
       }
     },
-    [runPhotoAnalysis, runVideoAnalysis],
+    [cleanupMountedVideo, measureVideoAtTimeInstant, runPhotoAnalysis],
   );
 
-  // Pegar captura con Ctrl+V
+  // Pegar captura con Ctrl+V + tecla Escape para cancelar trazo en curso
   useEffect(() => {
     const onPaste = (ev: ClipboardEvent) => {
       const items = ev.clipboardData?.items;
@@ -2267,17 +2824,29 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
           if (!blob) continue;
           const url = URL.createObjectURL(blob);
           const img = new Image();
-          img.onload = () => runPhotoAnalysis(img, 'Captura pegada (Ctrl+V)');
+          img.onload = () => {
+            void runPhotoAnalysis(img, 'Captura pegada (Ctrl+V)');
+            URL.revokeObjectURL(url);
+          };
           img.src = url;
           break;
         }
       }
     };
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') {
+        setDraftTracePts([]);
+      }
+    };
     window.addEventListener('paste', onPaste);
-    return () => window.removeEventListener('paste', onPaste);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('paste', onPaste);
+      window.removeEventListener('keydown', onKeyDown);
+    };
   }, [runPhotoAnalysis]);
 
-  // Seleccionar automáticamente el peor fotograma cuando cambia el conjunto de fotogramas
+  // Seleccionar automáticamente el peor fotograma cuando cambia el conjunto de fotogramas escaneados
   useEffect(() => {
     if (analysisSummary && analysisSummary.worstIdx >= 0) {
       setSelectedFrameIdx((prev) =>
@@ -2286,85 +2855,154 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
     }
   }, [analysisSummary]);
 
-  // Cuando acaba de terminar un nuevo video, saltar directamente al peor fotograma
   const prevRawLengthRef = useRef<number>(0);
   useEffect(() => {
     if (
       rawLandmarks.length !== prevRawLengthRef.current &&
+      rawLandmarks.length > 1 &&
       analysisSummary &&
       analysisSummary.worstIdx >= 0
     ) {
       prevRawLengthRef.current = rawLandmarks.length;
       setSelectedFrameIdx(analysisSummary.worstIdx);
+    } else {
+      prevRawLengthRef.current = rawLandmarks.length;
     }
   }, [analysisSummary, rawLandmarks.length]);
 
-  // Redibujar el canvas principal en el fotograma seleccionado
-  useEffect(() => {
-    let cancelled = false;
-    const renderCurrent = async () => {
-      const pv = previewCanvasRef.current;
-      if (!pv || !analysisSummary) return;
-      const safeIdx = clamp(selectedFrameIdx, 0, Math.max(0, timestamps.length - 1));
-      const rawCv = await getRawFrameCanvas(safeIdx);
-      if (cancelled || !rawCv || !previewCanvasRef.current) return;
+  // Pintado SÍNCRONO en HiDPI (devicePixelRatio) sin latencia asíncrona al arrastrar o trazar rectas
+  const paintPreviewCanvasSync = useCallback(() => {
+    const pv = previewCanvasRef.current;
+    const rawCv = activeRawCanvasRef.current;
+    if (!pv || !rawCv) return;
 
-      if (pv.width !== frameDims.w || pv.height !== frameDims.h) {
-        pv.width = frameDims.w;
-        pv.height = frameDims.h;
-      }
-      const g = pv.getContext('2d');
-      if (!g) return;
+    const W = frameDims.w;
+    const H = frameDims.h;
+    const dpr = Math.min(2, typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1);
+    const targetW = Math.round(W * dpr);
+    const targetH = Math.round(H * dpr);
+    if (pv.width !== targetW || pv.height !== targetH) {
+      pv.width = targetW;
+      pv.height = targetH;
+    }
 
-      g.clearRect(0, 0, frameDims.w, frameDims.h);
-      g.drawImage(rawCv, 0, 0, frameDims.w, frameDims.h);
+    const g = pv.getContext('2d');
+    if (!g) return;
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.imageSmoothingEnabled = true;
+    g.imageSmoothingQuality = 'high';
 
-      const lm = effectiveLandmarksPerFrame[safeIdx];
-      const ev = analysisSummary.evaluated[safeIdx] || null;
-      if (lm) {
-        drawAnnotatedFrameOnCanvas(
-          g,
-          lm,
-          ev,
-          effectiveSide,
-          options,
-          interactiveJointEdit,
-          hoveredJointIdx,
-        );
-      }
+    g.clearRect(0, 0, W, H);
+    g.drawImage(rawCv, 0, 0, W, H);
 
-      const whyText: Record<string, string> = {
-        none: 'sin persona detectada',
-        vis: 'tronco/articulaciones poco visibles',
-        face: 'orientación sagital ambigua (ajusta "Mirada" arriba)',
-      };
-      const topBanner =
-        ev && ev.ok && ev.rula && ev.reba && ev.ow
-          ? `t=${(timestamps[safeIdx] || 0).toFixed(2)} s · RULA ${ev.rula.final} · REBA ${ev.reba.final} · OWAS ${ev.ow.cat}${
-              ev.lateral ? '' : ' · VISTA POCO LATERAL'
-            }`
-          : `t=${(timestamps[safeIdx] || 0).toFixed(2)} s · ${whyText[ev?.why || 'none'] || 'sin datos'}`;
-      drawCanvasBoxLabel(g, 10, 24, topBanner, '#ffffff');
+    const safeIdx = clamp(selectedFrameIdx, 0, Math.max(0, timestamps.length - 1));
+    const lm = effectiveLandmarksPerFrame[safeIdx];
+    const ev = analysisSummary?.evaluated[safeIdx] || null;
+    if (lm) {
+      drawAnnotatedFrameOnCanvas(
+        g,
+        lm,
+        ev,
+        effectiveSide,
+        options,
+        canvasToolMode === 'ai_joints' && interactiveJointEdit,
+        canvasToolMode === 'ai_joints' ? hoveredJointIdx : null,
+        W,
+        H,
+      );
+    }
+
+    // Dibujar rectas manuales trazadas y vista previa elástica 60 FPS
+    const frameTraced = manualTracedByFrame[safeIdx] || [];
+    drawManualTracedLinesOnCanvas(
+      g,
+      frameTraced,
+      canvasToolMode,
+      draftTracePts,
+      cursorNormPt,
+      hoveredLineHandle,
+      W,
+      H,
+    );
+
+    // Lupa 2.6× automática al arrastrar un punto articular, un extremo de recta o al trazar
+    const activeFocusPt =
+      (draggingJointIdx !== null && lm?.[draggingJointIdx]
+        ? { x: lm[draggingJointIdx].x, y: lm[draggingJointIdx].y }
+        : null) ||
+      (draggingLineHandle && cursorNormPt ? cursorNormPt : null) ||
+      ((canvasToolMode === 'trace_3pt' || canvasToolMode === 'trace_4pt') &&
+      draftTracePts.length > 0 &&
+      cursorNormPt
+        ? cursorNormPt
+        : null);
+
+    if (activeFocusPt) {
+      drawMagnifierLoupe(g, rawCv, activeFocusPt, W, H);
+    }
+
+    const whyText: Record<string, string> = {
+      none: 'usa "Trazar 2 Rectas" arriba para medir manualmente',
+      vis: 'articulaciones parciales · puedes arrastrarlas o trazar rectas',
+      face: 'orientación ambigua (ajusta "Mirada")',
     };
-    renderCurrent();
-    return () => {
-      cancelled = true;
-    };
+    const tLabel = (timestamps[safeIdx] ?? liveScrubTimeSec ?? 0).toFixed(2);
+    const topBanner =
+      ev && ev.ok && ev.rula && ev.reba && ev.ow
+        ? `t=${tLabel} s · RULA ${ev.rula.final} · REBA ${ev.reba.final} · OWAS ${ev.ow.cat}`
+        : `t=${tLabel} s · ${whyText[ev?.why || 'none'] || 'listo para trazar rectas'}`;
+    drawCanvasBoxLabel(g, 10, 22, topBanner, '#ffffff', W);
   }, [
     analysisSummary,
+    canvasToolMode,
+    cursorNormPt,
+    draftTracePts,
+    draggingJointIdx,
+    draggingLineHandle,
     effectiveLandmarksPerFrame,
     effectiveSide,
     frameDims.h,
     frameDims.w,
-    getRawFrameCanvas,
     hoveredJointIdx,
+    hoveredLineHandle,
     interactiveJointEdit,
+    liveScrubTimeSec,
+    manualTracedByFrame,
     options,
     selectedFrameIdx,
     timestamps,
   ]);
 
-  // Redibujar miniaturas de posturas críticas
+  // Cargar el bitmap base cuando cambia el índice de fotograma en un ciclo multipaso
+  useEffect(() => {
+    let cancelled = false;
+    const safeIdx = clamp(selectedFrameIdx, 0, Math.max(0, timestamps.length - 1));
+    if (sourceType === 'photo' || sourceType === 'demo') {
+      activeRawCanvasRef.current = staticCanvasRef.current;
+      paintPreviewCanvasSync();
+      return;
+    }
+    if (frameCacheRef.current.has(safeIdx)) {
+      activeRawCanvasRef.current = frameCacheRef.current.get(safeIdx)!;
+      paintPreviewCanvasSync();
+      return;
+    }
+    getRawFrameCanvas(safeIdx).then((rawCv) => {
+      if (cancelled || !rawCv) return;
+      activeRawCanvasRef.current = rawCv;
+      paintPreviewCanvasSync();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [getRawFrameCanvas, paintPreviewCanvasSync, selectedFrameIdx, sourceType, timestamps.length]);
+
+  // Repintar síncronamente ante cualquier movimiento de puntero, arrastre o cambio de opciones
+  useEffect(() => {
+    paintPreviewCanvasSync();
+  }, [paintPreviewCanvasSync]);
+
+  // Redibujar miniaturas de posturas críticas cuando hay múltiples fotogramas escaneados
   useEffect(() => {
     if (!analysisSummary || analysisSummary.criticalIndices.length === 0) return;
     let cancelled = false;
@@ -2383,7 +3021,7 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
         const lm = effectiveLandmarksPerFrame[idx];
         const ev = analysisSummary.evaluated[idx];
         if (lm && ev) {
-          drawAnnotatedFrameOnCanvas(g, lm, ev, effectiveSide, options, false, null);
+          drawAnnotatedFrameOnCanvas(g, lm, ev, effectiveSide, options, false, null, tw, th);
         }
       });
     });
@@ -2400,15 +3038,15 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
     options,
   ]);
 
-  // Interacción con el mouse sobre el canvas para arrastrar vértices articulares
+  // Interacción de alta precisión sobre el canvas (Articulaciones IA + Trazo Directo de Rectas)
   const getCanvasNormalizedPoint = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const pv = previewCanvasRef.current;
     if (!pv) return null;
     const rect = pv.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
     return {
-      nx: clamp((e.clientX - rect.left) / rect.width, 0.01, 0.99),
-      ny: clamp((e.clientY - rect.top) / rect.height, 0.01, 0.99),
+      nx: clamp((e.clientX - rect.left) / rect.width, 0.005, 0.995),
+      ny: clamp((e.clientY - rect.top) / rect.height, 0.005, 0.995),
       pxW: rect.width,
       pxH: rect.height,
     };
@@ -2418,7 +3056,7 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
     const lm = effectiveLandmarksPerFrame[selectedFrameIdx];
     if (!lm) return null;
     let bestIdx: number | null = null;
-    let bestDist = 20; // radio de captura en píxeles CSS
+    let bestDist = 20;
     for (const idxStr of Object.keys(EDITABLE_LANDMARK_LABELS)) {
       const idx = Number(idxStr);
       const pt = lm[idx];
@@ -2432,10 +3070,83 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
     return bestIdx;
   };
 
+  const findNearestTracedHandle = (nx: number, ny: number, pxW: number, pxH: number) => {
+    const list = manualTracedByFrame[selectedFrameIdx] || [];
+    let best: { lineId: string; ptIdx: number } | null = null;
+    let bestDist = 18;
+    for (const item of list) {
+      item.pts.forEach((pt, ptIdx) => {
+        const dist = Math.hypot((pt.x - nx) * pxW, (pt.y - ny) * pxH);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = { lineId: item.id, ptIdx };
+        }
+      });
+    }
+    return best;
+  };
+
+  const getSnapAnchorForDraft = (): { x: number; y: number } | null => {
+    if (canvasToolMode === 'trace_3pt') {
+      if (draftTracePts.length === 1) return draftTracePts[0];
+      if (draftTracePts.length === 2) return draftTracePts[1];
+    } else if (canvasToolMode === 'trace_4pt') {
+      if (draftTracePts.length === 1) return draftTracePts[0];
+      if (draftTracePts.length === 3) return draftTracePts[2];
+    }
+    return null;
+  };
+
   const handleCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!interactiveJointEdit) return;
     const coords = getCanvasNormalizedPoint(e);
     if (!coords) return;
+
+    // 1. Permitir siempre arrastrar los extremos de cualquier recta manual ya trazada (si no hay trazo a mitad)
+    if (draftTracePts.length === 0) {
+      const hitLine = findNearestTracedHandle(coords.nx, coords.ny, coords.pxW, coords.pxH);
+      if (hitLine) {
+        e.currentTarget.setPointerCapture(e.pointerId);
+        setDraggingLineHandle(hitLine);
+        setCursorNormPt({ x: coords.nx, y: coords.ny });
+        return;
+      }
+    }
+
+    // 2. Modo trazo directo de rectas (3 clics o 4 clics)
+    if (canvasToolMode === 'trace_3pt' || canvasToolMode === 'trace_4pt') {
+      const anchor = getSnapAnchorForDraft();
+      const rawPt = { x: coords.nx, y: coords.ny };
+      const finalPt = anchor
+        ? snapCanvasPointOrtho(anchor, rawPt, frameDims.w, frameDims.h, e.shiftKey)
+        : rawPt;
+
+      const requiredPts = canvasToolMode === 'trace_3pt' ? 3 : 4;
+      const nextPts = [...draftTracePts, finalPt];
+      if (nextPts.length < requiredPts) {
+        setDraftTracePts(nextPts);
+        setCursorNormPt(finalPt);
+        return;
+      }
+
+      const existing = manualTracedByFrame[selectedFrameIdx] || [];
+      const nextIndex = existing.length + 1;
+      const newLine: ManualTracedAngle = {
+        id: `recta-${Date.now()}-${nextIndex}`,
+        mode: canvasToolMode === 'trace_3pt' ? '3pt' : '4pt',
+        label: `R${nextIndex}`,
+        color: MANUAL_LINE_COLORS[(nextIndex - 1) % MANUAL_LINE_COLORS.length],
+        pts: nextPts,
+      };
+      setManualTracedByFrame((prev) => ({
+        ...prev,
+        [selectedFrameIdx]: [...(prev[selectedFrameIdx] || []), newLine],
+      }));
+      setDraftTracePts([]);
+      return;
+    }
+
+    // 3. Modo articulaciones IA arrastrables
+    if (!interactiveJointEdit) return;
     const nearest = findNearestEditableLandmark(coords.nx, coords.ny, coords.pxW, coords.pxH);
     if (nearest !== null) {
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -2444,34 +3155,136 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
   };
 
   const handleCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!interactiveJointEdit) return;
     const coords = getCanvasNormalizedPoint(e);
     if (!coords) return;
+    const rawPt = { x: coords.nx, y: coords.ny };
+
+    if (draggingLineHandle) {
+      const currentList = manualTracedByFrame[selectedFrameIdx] || [];
+      const targetItem = currentList.find((it) => it.id === draggingLineHandle.lineId);
+      let snappedPt = rawPt;
+      if (targetItem && e.shiftKey) {
+        const pIdx = draggingLineHandle.ptIdx;
+        const partnerIdx =
+          targetItem.mode === '3pt'
+            ? pIdx === 0 || pIdx === 2
+              ? 1
+              : 0
+            : pIdx % 2 === 0
+              ? pIdx + 1
+              : pIdx - 1;
+        const anchor = targetItem.pts[partnerIdx];
+        if (anchor) {
+          snappedPt = snapCanvasPointOrtho(anchor, rawPt, frameDims.w, frameDims.h, true);
+        }
+      }
+      setCursorNormPt(snappedPt);
+      setManualTracedByFrame((prev) => ({
+        ...prev,
+        [selectedFrameIdx]: (prev[selectedFrameIdx] || []).map((it) =>
+          it.id === draggingLineHandle.lineId
+            ? {
+                ...it,
+                pts: it.pts.map((p, idx) => (idx === draggingLineHandle.ptIdx ? snappedPt : p)),
+              }
+            : it,
+        ),
+      }));
+      return;
+    }
+
     if (draggingJointIdx !== null) {
+      setCursorNormPt(rawPt);
       setManualLandmarkOverrides((prev) => ({
         ...prev,
         [selectedFrameIdx]: {
           ...(prev[selectedFrameIdx] || {}),
-          [draggingJointIdx]: { x: coords.nx, y: coords.ny },
+          [draggingJointIdx]: rawPt,
         },
       }));
       return;
     }
-    const nearest = findNearestEditableLandmark(coords.nx, coords.ny, coords.pxW, coords.pxH);
-    setHoveredJointIdx(nearest);
+
+    const hitLine = findNearestTracedHandle(coords.nx, coords.ny, coords.pxW, coords.pxH);
+    setHoveredLineHandle(hitLine);
+
+    if (canvasToolMode === 'trace_3pt' || canvasToolMode === 'trace_4pt') {
+      const anchor = getSnapAnchorForDraft();
+      const snapped = anchor
+        ? snapCanvasPointOrtho(anchor, rawPt, frameDims.w, frameDims.h, e.shiftKey)
+        : rawPt;
+      setCursorNormPt(snapped);
+      setHoveredJointIdx(null);
+      return;
+    }
+
+    if (interactiveJointEdit) {
+      const nearest = findNearestEditableLandmark(coords.nx, coords.ny, coords.pxW, coords.pxH);
+      setHoveredJointIdx(nearest);
+    }
   };
 
-  const handleCanvasPointerUp = () => {
+  const handleCanvasPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (draggingJointIdx !== null || draggingLineHandle !== null) {
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {
+        // Ignorar
+      }
+    }
     setDraggingJointIdx(null);
+    setDraggingLineHandle(null);
   };
+
+  const handleCanvasPointerLeave = () => {
+    setDraggingJointIdx(null);
+    setDraggingLineHandle(null);
+    if (draftTracePts.length === 0) {
+      setCursorNormPt(null);
+    }
+  };
+
+  const applyTracedAngleToMethodField = (target: ManualAngleTarget, degValue: number) => {
+    const rounded = Math.round(degValue * 10) / 10;
+    setManualAngleOverrides((prev) => ({
+      ...prev,
+      [selectedFrameIdx]: {
+        ...(prev[selectedFrameIdx] || {}),
+        [target]: rounded,
+      },
+    }));
+  };
+
+  const removeManualTracedLine = (lineId: string) => {
+    setManualTracedByFrame((prev) => ({
+      ...prev,
+      [selectedFrameIdx]: (prev[selectedFrameIdx] || []).filter((it) => it.id !== lineId),
+    }));
+  };
+
+  const currentFrameTracedList = manualTracedByFrame[selectedFrameIdx] || [];
+  const currentFrameAngleOv = manualAngleOverrides[selectedFrameIdx] || null;
 
   const currentFrameHasEdits = Boolean(
-    manualLandmarkOverrides[selectedFrameIdx] &&
-      Object.keys(manualLandmarkOverrides[selectedFrameIdx]).length > 0,
+    (manualLandmarkOverrides[selectedFrameIdx] &&
+      Object.keys(manualLandmarkOverrides[selectedFrameIdx]).length > 0) ||
+      currentFrameTracedList.length > 0 ||
+      (currentFrameAngleOv && Object.keys(currentFrameAngleOv).length > 0),
   );
 
   const resetCurrentFrameEdits = () => {
+    setDraftTracePts([]);
     setManualLandmarkOverrides((prev) => {
+      const next = { ...prev };
+      delete next[selectedFrameIdx];
+      return next;
+    });
+    setManualTracedByFrame((prev) => {
+      const next = { ...prev };
+      delete next[selectedFrameIdx];
+      return next;
+    });
+    setManualAngleOverrides((prev) => {
       const next = { ...prev };
       delete next[selectedFrameIdx];
       return next;
@@ -2705,15 +3518,17 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
       analysisSummary.maxOwasCat,
     ) as 1 | 2 | 3 | 4;
 
-    const totalH = Math.max(pv.height, lines.length * (fs + 8) + 210);
+    const imgW = frameDims.w;
+    const imgH = frameDims.h;
+    const totalH = Math.max(imgH, lines.length * (fs + 8) + 210);
     const out = document.createElement('canvas');
-    out.width = pv.width + panelW;
+    out.width = imgW + panelW;
     out.height = totalH;
     const g = out.getContext('2d')!;
 
     g.fillStyle = '#0f172a';
     g.fillRect(0, 0, out.width, out.height);
-    g.drawImage(pv, 0, 0);
+    g.drawImage(pv, 0, 0, imgW, imgH);
 
     let y = 32;
     const banners: Array<[string, number]> = [
@@ -2732,10 +3547,10 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
 
     for (const [txt, lvl] of banners) {
       g.fillStyle = lvl ? LEVEL_COLORS[lvl] : '#0369a1';
-      g.fillRect(pv.width + 14, y - 20, panelW - 28, 30);
+      g.fillRect(imgW + 14, y - 20, panelW - 28, 30);
       g.fillStyle = lvl === 2 ? '#0f172a' : '#ffffff';
       g.font = '700 13.5px system-ui, sans-serif';
-      g.fillText(txt, pv.width + 22, y);
+      g.fillText(txt, imgW + 22, y);
       y += 38;
     }
 
@@ -2743,7 +3558,7 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
     for (const [txt, isHeader] of lines) {
       g.font = `${isHeader ? '700' : '400'} ${fs}px ui-monospace, SFMono-Regular, monospace`;
       g.fillStyle = isHeader ? '#facc15' : '#f8fafc';
-      g.fillText(txt, pv.width + 16, y);
+      g.fillText(txt, imgW + 16, y);
       y += fs + 8;
     }
 
@@ -2861,21 +3676,26 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
           <button
             type="button"
             onClick={handleLoadCalibrationDemo}
-            className="min-h-[38px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md border border-slate-300 bg-slate-50 hover:bg-slate-100 text-xs font-semibold text-slate-800 cursor-pointer transition-colors"
+            className="min-h-[38px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md border border-slate-300 bg-slate-50 hover:bg-slate-100 text-xs font-semibold text-slate-800 cursor-pointer transition-colors whitespace-nowrap shrink-0"
           >
             <Compass className="w-3.5 h-3.5 text-sky-700" />
-            Probar postura ejemplo (Codo 172°)
+            Postura ejemplo (Codo 172°)
           </button>
 
           {sourceType === 'video' && (
             <button
               type="button"
-              onClick={() => runVideoAnalysis()}
+              onClick={() => void runVideoAnalysis(undefined, 36)}
               disabled={isAnalyzing}
-              className="min-h-[38px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-sky-700 hover:bg-sky-800 disabled:opacity-50 text-xs font-semibold text-white cursor-pointer transition-colors"
+              className="min-h-[38px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-sky-700 hover:bg-sky-800 disabled:opacity-50 text-xs font-semibold text-white cursor-pointer transition-colors whitespace-nowrap shrink-0"
+              title="Escanea 36 cuadros distribuidos en todo el video usando GPU (~1,2 s) para hallar la peor postura y frecuencias OWAS"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${isAnalyzing ? 'animate-spin' : ''}`} />
-              Analizar de nuevo
+              {isAnalyzing ? (
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Zap className="w-3.5 h-3.5" />
+              )}
+              Escanear ciclo (36 cuadros)
             </button>
           )}
         </div>
@@ -3187,36 +4007,102 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
       {/* Área principal de trabajo cuando hay fotogramas cargados */}
       {analysisSummary && timestamps.length > 0 && (
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
-          {/* Columna izquierda: Visor Canvas interactivo + Scrubber */}
+          {/* Columna izquierda: Visor Canvas interactivo HiDPI + Trazo Directo de Rectas + Scrubber Instantáneo */}
           <div className="xl:col-span-6 bg-white border border-slate-200 rounded-lg p-3.5 space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-              <div className="flex items-center gap-2 text-slate-700">
-                <label className="inline-flex items-center gap-1.5 font-medium cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={interactiveJointEdit}
-                    onChange={(e) => setInteractiveJointEdit(e.target.checked)}
-                  />
-                  <MousePointerClick className="w-3.5 h-3.5 text-sky-700" />
-                  <span>Ajustar puntos articulares con el ratón</span>
-                </label>
-                {hoveredJointIdx !== null && EDITABLE_LANDMARK_LABELS[hoveredJointIdx] && (
-                  <span className="text-sky-700 font-semibold">
-                    · {EDITABLE_LANDMARK_LABELS[hoveredJointIdx]}
-                  </span>
-                )}
+            {/* Selector segmentado de herramienta sobre el lienzo */}
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-md border border-slate-200">
+                  {(
+                    [
+                      ['ai_joints', 'IA + Ajuste Articular'],
+                      ['trace_3pt', 'Trazar 2 Rectas · Vértice (3 clics)'],
+                      ['trace_4pt', 'Trazar 2 Rectas Libres (4 clics)'],
+                    ] as const
+                  ).map(([modeVal, modeLbl]) => (
+                    <button
+                      key={modeVal}
+                      type="button"
+                      onClick={() => {
+                        setCanvasToolMode(modeVal);
+                        setDraftTracePts([]);
+                      }}
+                      className={`min-h-[30px] px-2.5 py-1 rounded text-xs font-medium cursor-pointer transition-colors whitespace-nowrap shrink-0 ${
+                        canvasToolMode === modeVal
+                          ? 'bg-slate-900 text-white font-semibold'
+                          : 'text-slate-700 hover:text-slate-950'
+                      }`}
+                    >
+                      {modeLbl}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  {draftTracePts.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setDraftTracePts((prev) => prev.slice(0, -1))}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded border border-sky-300 bg-sky-50 hover:bg-sky-100 text-xs font-medium text-sky-900 cursor-pointer whitespace-nowrap shrink-0"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      Deshacer punto
+                    </button>
+                  )}
+                  {currentFrameHasEdits && (
+                    <button
+                      type="button"
+                      onClick={resetCurrentFrameEdits}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-300 bg-slate-50 hover:bg-slate-100 text-xs font-medium text-slate-700 cursor-pointer whitespace-nowrap shrink-0"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      Restaurar cuadro
+                    </button>
+                  )}
+                </div>
               </div>
 
-              {currentFrameHasEdits && (
-                <button
-                  type="button"
-                  onClick={resetCurrentFrameEdits}
-                  className="inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-300 bg-slate-50 hover:bg-slate-100 text-xs font-medium text-slate-700 cursor-pointer"
-                >
-                  <RotateCcw className="w-3 h-3" />
-                  Restaurar detección IA
-                </button>
-              )}
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600 px-0.5">
+                {canvasToolMode === 'ai_joints' ? (
+                  <div className="flex items-center gap-2">
+                    <label className="inline-flex items-center gap-1.5 font-medium text-slate-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={interactiveJointEdit}
+                        onChange={(e) => setInteractiveJointEdit(e.target.checked)}
+                      />
+                      <MousePointerClick className="w-3.5 h-3.5 text-sky-700" />
+                      <span>Arrastrar articulaciones con lupa 2.6×</span>
+                    </label>
+                    {hoveredJointIdx !== null && EDITABLE_LANDMARK_LABELS[hoveredJointIdx] && (
+                      <span className="text-sky-700 font-semibold">
+                        · {EDITABLE_LANDMARK_LABELS[hoveredJointIdx]}
+                      </span>
+                    )}
+                  </div>
+                ) : canvasToolMode === 'trace_3pt' ? (
+                  <span>
+                    <strong className="text-slate-800">
+                      Paso {draftTracePts.length + 1}/3:
+                    </strong>{' '}
+                    {draftTracePts.length === 0
+                      ? 'Clic en Extremo 1 de la primera recta'
+                      : draftTracePts.length === 1
+                        ? 'Clic en el Vértice articular (mantén Shift = plomada 0°/90°/45°)'
+                        : 'Clic en Extremo 2 para fijar la segunda recta (Shift = 0°/90°/45°)'}
+                  </span>
+                ) : (
+                  <span>
+                    <strong className="text-slate-800">
+                      Paso {draftTracePts.length + 1}/4:
+                    </strong>{' '}
+                    {draftTracePts.length < 2
+                      ? `Recta 1 (${draftTracePts.length === 0 ? 'inicio A' : 'fin B · Shift = 0°/90°'})`
+                      : `Recta 2 (${draftTracePts.length === 2 ? 'inicio C' : 'fin D · intersección automática'})`}
+                  </span>
+                )}
+                <span className="font-mono text-slate-500">Shift = bloquear 0°/45°/90°</span>
+              </div>
             </div>
 
             <div className="rounded-md overflow-hidden border border-slate-800 bg-slate-950">
@@ -3225,14 +4111,67 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
                 onPointerDown={handleCanvasPointerDown}
                 onPointerMove={handleCanvasPointerMove}
                 onPointerUp={handleCanvasPointerUp}
-                onPointerLeave={handleCanvasPointerUp}
+                onPointerLeave={handleCanvasPointerLeave}
                 className={`w-full h-auto block select-none touch-none ${
-                  interactiveJointEdit && hoveredJointIdx !== null
+                  hoveredLineHandle ||
+                  (canvasToolMode === 'ai_joints' && interactiveJointEdit && hoveredJointIdx !== null)
                     ? 'cursor-grab active:cursor-grabbing'
                     : 'cursor-crosshair'
                 }`}
               />
             </div>
+
+            {/* Explorador Instantáneo en Vivo cuando hay un video abierto */}
+            {sourceType === 'video' && videoDurationSec > 0 && timestamps.length <= 1 && (
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-2.5 space-y-1.5">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <span className="font-semibold text-slate-800">
+                    Exploración instantánea en vivo · t = {liveScrubTimeSec.toFixed(2)} s /{' '}
+                    {videoDurationSec.toFixed(2)} s
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void measureVideoAtTimeInstant(Math.max(0, liveScrubTimeSec - 0.1))
+                      }
+                      className="px-2 py-0.5 rounded border border-slate-300 bg-white hover:bg-slate-100 text-[11px] font-mono font-semibold text-slate-700 cursor-pointer"
+                    >
+                      -0,1 s
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void measureVideoAtTimeInstant(
+                          Math.min(videoDurationSec - 0.01, liveScrubTimeSec + 0.1),
+                        )
+                      }
+                      className="px-2 py-0.5 rounded border border-slate-300 bg-white hover:bg-slate-100 text-[11px] font-mono font-semibold text-slate-700 cursor-pointer"
+                    >
+                      +0,1 s
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void runVideoAnalysis(undefined, 36)}
+                      disabled={isAnalyzing}
+                      className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded bg-sky-700 hover:bg-sky-800 disabled:opacity-50 text-[11px] font-semibold text-white cursor-pointer whitespace-nowrap shrink-0"
+                    >
+                      <Zap className="w-3 h-3" />
+                      Escanear 36 cuadros
+                    </button>
+                  </div>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={Math.max(0.05, Number((videoDurationSec - 0.01).toFixed(2)))}
+                  step={0.04}
+                  value={liveScrubTimeSec}
+                  onChange={(e) => void measureVideoAtTimeInstant(Number(e.target.value))}
+                  className="w-full accent-sky-700 cursor-pointer"
+                />
+              </div>
+            )}
 
             {timestamps.length > 1 && (
               <div className="space-y-1">
@@ -3249,7 +4188,80 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
                     Fotograma {selectedFrameIdx + 1}/{timestamps.length} · t ={' '}
                     {(timestamps[selectedFrameIdx] || 0).toFixed(2)} s
                   </span>
-                  <span>Línea blanca = vertical 0° · Arco naranja = ángulo interno de codo</span>
+                  <span>Recta blanca = plomada 0° · Arco naranja = codo</span>
+                </div>
+              </div>
+            )}
+
+            {/* Lista de rectas manuales trazadas con transferencia en 1 clic a RULA / REBA / OWAS */}
+            {currentFrameTracedList.length > 0 && (
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-2.5 space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-semibold text-slate-900">
+                    Rectas trazadas manualmente ({currentFrameTracedList.length}) · Aplicar a evaluación:
+                  </span>
+                  <span className="text-[11px] text-slate-500">
+                    Arrastra extremos en el lienzo para afinar
+                  </span>
+                </div>
+                <div className="space-y-1.5">
+                  {currentFrameTracedList.map((item) => {
+                    const geom = computeTracedLineGeometry(
+                      item.pts,
+                      item.mode,
+                      frameDims.w,
+                      frameDims.h,
+                    );
+                    if (!geom) return null;
+                    const acute = Math.round(geom.acuteDeg);
+                    const internal = Math.round(geom.internalDeg);
+                    return (
+                      <div
+                        key={item.id}
+                        className="flex flex-wrap items-center justify-between gap-2 bg-white border border-slate-200 rounded px-2.5 py-1.5 text-xs"
+                      >
+                        <div className="flex items-center gap-2 font-mono tabular-nums">
+                          <span
+                            className="w-2.5 h-2.5 rounded-full shrink-0"
+                            style={{ backgroundColor: item.color }}
+                          />
+                          <span className="font-bold text-slate-900">{item.label}</span>
+                          <span className="text-slate-700">
+                            Int. <strong>{geom.internalDeg.toFixed(1)}°</strong> · Desv.{' '}
+                            <strong>{geom.acuteDeg.toFixed(1)}°</strong>
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1">
+                          {(
+                            [
+                              ['trunk', `Tronco ${acute}°`, geom.acuteDeg],
+                              ['upper', `Brazo ${acute}°`, geom.acuteDeg],
+                              ['elbowInternal', `Codo ${internal}°`, geom.internalDeg],
+                              ['neck', `Cuello ${acute}°`, geom.acuteDeg],
+                              ['knee', `Rodilla ${acute}°`, geom.acuteDeg],
+                            ] as Array<[ManualAngleTarget, string, number]>
+                          ).map(([fieldKey, btnLbl, valToApply]) => (
+                            <button
+                              key={fieldKey}
+                              type="button"
+                              onClick={() => applyTracedAngleToMethodField(fieldKey, valToApply)}
+                              className="px-2 py-0.5 rounded border border-slate-300 bg-slate-50 hover:bg-sky-700 hover:text-white hover:border-sky-700 text-[11px] font-mono font-semibold text-slate-800 transition-colors cursor-pointer whitespace-nowrap shrink-0 tabular-nums"
+                            >
+                              {btnLbl}
+                            </button>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={() => removeManualTracedLine(item.id)}
+                            className="p-1 rounded text-slate-400 hover:text-red-600 hover:bg-red-50 cursor-pointer"
+                            title="Eliminar esta medición de rectas"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -3264,7 +4276,7 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
                   <button
                     type="button"
                     onClick={() => handleSendToStudy(MethodId.RULA)}
-                    className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-sky-700 hover:bg-sky-800 text-white text-xs font-semibold cursor-pointer"
+                    className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-sky-700 hover:bg-sky-800 text-white text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     Pestaña RULA
@@ -3272,7 +4284,7 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
                   <button
                     type="button"
                     onClick={() => handleSendToStudy(MethodId.REBA)}
-                    className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold cursor-pointer"
+                    className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     Pestaña REBA
@@ -3280,7 +4292,7 @@ export const QuickAngleMeterWorkspace: React.FC<QuickAngleMeterWorkspaceProps> =
                   <button
                     type="button"
                     onClick={() => handleSendToStudy(MethodId.OWAS)}
-                    className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-slate-800 text-xs font-semibold cursor-pointer"
+                    className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-slate-800 text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     Pestaña OWAS
