@@ -1,8 +1,10 @@
 import {
   createDefaultKatePoseParams,
   getPresetKatePoseParams,
+  KateBoneOverride,
   KatePoseParams,
   KatePresetId,
+  KateRigExportSnapshot,
 } from './kateAvatarEngine';
 import {
   createDefaultKateErgonomicModifiers,
@@ -166,6 +168,27 @@ const KNOWN_HEADER_TOKENS = new Set([
   'antebrazo_d',
   'cadera_i',
   'cadera_d',
+  'cadera_i_abd',
+  'cadera_d_abd',
+  'cadera_i_rot',
+  'cadera_d_rot',
+  'brazo_i_rot',
+  'brazo_d_rot',
+  'antebrazo_i_pron',
+  'antebrazo_d_pron',
+  'pie_i_flex',
+  'pie_d_flex',
+  'pie_i_inv',
+  'pie_d_inv',
+  'pie_i_rot',
+  'pie_d_rot',
+  'mi_muneca_desv',
+  'md_muneca_desv',
+  'pelvis_pos_x',
+  'pelvis_pos_y',
+  'pelvis_pos_z',
+  'huesos_gizmo_xyz',
+  'rig_euler_rad',
   'rodilla_i',
   'rodilla_d',
   'neck',
@@ -193,9 +216,16 @@ export function parseKatePlatesCsv(csvText: string): ParsedKateCsvRow[] {
       h.includes('cuello') ||
       h.includes('tronco') ||
       h.includes('brazo') ||
+      h.includes('antebrazo') ||
       h.includes('codo') ||
+      h.includes('muneca') ||
+      h.includes('cadera') ||
       h.includes('pierna') ||
       h.includes('rodilla') ||
+      h.includes('pie_') ||
+      h.includes('pelvis_') ||
+      h.includes('huesos_') ||
+      h.includes('rig_euler') ||
       h.includes('base_postural'),
   );
 
@@ -240,17 +270,32 @@ export function parseKatePlatesCsv(csvText: string): ParsedKateCsvRow[] {
     if (!cols.some((c) => c.trim().length > 0)) continue;
 
     const valAt = (idx: number) => (idx >= 0 && idx < cols.length ? cols[idx].trim() : '');
-    const getNumByHeader = (keys: string[]): number | null => {
-      for (const k of keys) {
+    const getTextByHeader = (exactKeys: string[]): string => {
+      for (const k of exactKeys) {
         const exactIdx = headers.findIndex((h) => h === k);
         if (exactIdx >= 0) {
+          const v = valAt(exactIdx);
+          if (v.length > 0) return v;
+        }
+      }
+      return '';
+    };
+    const getNumByHeader = (exactKeys: string[], fuzzyKeys?: string[]): number | null => {
+      let hasAnyExactCol = false;
+      for (const k of exactKeys) {
+        const exactIdx = headers.findIndex((h) => h === k);
+        if (exactIdx >= 0) {
+          hasAnyExactCol = true;
           const n = parseOptionalNumber(cols[exactIdx]);
           if (n !== null) return n;
         }
       }
+      if (hasAnyExactCol || !fuzzyKeys || fuzzyKeys.length === 0) {
+        return null;
+      }
       for (let ci = 0; ci < headers.length; ci++) {
         const h = headers[ci];
-        if (keys.some((k) => h.includes(k))) {
+        if (fuzzyKeys.some((k) => h.includes(k))) {
           const n = parseOptionalNumber(cols[ci]);
           if (n !== null) return n;
         }
@@ -371,12 +416,136 @@ export function parseKatePlatesCsv(csvText: string): ParsedKateCsvRow[] {
     const trunkTwist = getNumByHeader(['tronco_tors', 'torsion', 'trunk_twist']);
     const armLAbd = getNumByHeader(['brazo_i_abd', 'hombro_i_abd', 'shoulder_l_abd']);
     const armRAbd = getNumByHeader(['brazo_d_abd', 'hombro_d_abd', 'shoulder_r_abd']);
+    const armLRot = getNumByHeader(['brazo_i_rot', 'hombro_i_rot', 'shoulder_l_rot']);
+    const armRRot = getNumByHeader(['brazo_d_rot', 'hombro_d_rot', 'shoulder_r_rot']);
+    const forearmLPron = getNumByHeader(['antebrazo_i_pron', 'forearm_l_pron', 'pron_i', 'sup_i']);
+    const forearmRPron = getNumByHeader(['antebrazo_d_pron', 'forearm_r_pron', 'pron_d', 'sup_d']);
     const hipL = getNumByHeader(['muslo_i', 'cadera_i', 'cadera_izq', 'hip_l_flex', 'hipl']);
     const hipLAbd = getNumByHeader(['cadera_i_abd', 'hip_l_abd']);
+    const hipLRot = getNumByHeader(['cadera_i_rot', 'hip_l_rot', 'muslo_i_rot']);
     const hipR = getNumByHeader(['muslo_d', 'cadera_d', 'cadera_der', 'hip_r_flex', 'hipr']);
     const hipRAbd = getNumByHeader(['cadera_d_abd', 'hip_r_abd']);
+    const hipRRot = getNumByHeader(['cadera_d_rot', 'hip_r_rot', 'muslo_d_rot']);
+    const footLFlex = getNumByHeader(['pie_i_flex', 'pie_izq_flex', 'foot_l_pitch']);
+    const footRFlex = getNumByHeader(['pie_d_flex', 'pie_der_flex', 'foot_r_pitch']);
+    const footLInv = getNumByHeader(['pie_i_inv', 'pie_izq_inv', 'foot_l_roll']);
+    const footRInv = getNumByHeader(['pie_d_inv', 'pie_der_inv', 'foot_r_roll']);
+    const footLRot = getNumByHeader(['pie_i_rot', 'pie_izq_rot', 'foot_l_yaw']);
+    const footRRot = getNumByHeader(['pie_d_rot', 'pie_der_rot', 'foot_r_yaw']);
+    const wristLDev = getNumByHeader(['mi_muneca_desv', 'muneca_i_desv', 'wrist_l_yaw']);
+    const wristRDev = getNumByHeader(['md_muneca_desv', 'muneca_d_desv', 'wrist_r_yaw']);
+    const pelvisPosX = getNumByHeader(['pelvis_pos_x', 'hips_pos_x', 'pelvis_x']);
+    const pelvisPosY = getNumByHeader(['pelvis_pos_y', 'hips_pos_y', 'pelvis_y']);
+    const pelvisPosZ = getNumByHeader(['pelvis_pos_z', 'hips_pos_z', 'pelvis_z']);
+    const rawBoneOverridesJson = getTextByHeader(['huesos_gizmo_xyz', 'bone_overrides_json', 'gizmo_xyz']);
+    const rawRigEulerRadJson = getTextByHeader(['rig_euler_rad', 'rig_euler', 'bones_euler_rad']);
     const yaw = getNumByHeader(['giro_avatar', 'yaw', 'general_yaw']);
     const loadKg = getNumByHeader(['carga_kg', 'carga', 'load_kg']);
+
+    const parsedPelvisWorldPos: { x: number; y: number; z: number } | null =
+      pelvisPosX !== null || pelvisPosY !== null || pelvisPosZ !== null
+        ? {
+            x: pelvisPosX ?? 0,
+            y: pelvisPosY ?? 0.9,
+            z: pelvisPosZ ?? 0,
+          }
+        : null;
+
+    let parsedBoneOverrides: Record<string, KateBoneOverride> | null = null;
+    if (rawBoneOverridesJson) {
+      try {
+        const obj = JSON.parse(rawBoneOverridesJson) as Record<string, Record<string, unknown>>;
+        if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+          const out: Record<string, KateBoneOverride> = {};
+          for (const [bName, v] of Object.entries(obj)) {
+            if (!v || typeof v !== 'object') continue;
+            const toDeg = (degVal: unknown, radVal: unknown) => {
+              if (typeof degVal === 'number' && Number.isFinite(degVal)) return degVal;
+              if (typeof radVal === 'number' && Number.isFinite(radVal)) return (radVal * 180) / Math.PI;
+              return 0;
+            };
+            const rx = toDeg(v.rx, v.rxRad);
+            const ry = toDeg(v.ry, v.ryRad);
+            const rz = toDeg(v.rz, v.rzRad);
+            const lenScale =
+              typeof v.lenScale === 'number' && Number.isFinite(v.lenScale) ? v.lenScale : 1;
+            const ov: KateBoneOverride = { rx, ry, rz, lenScale };
+            if (!(bName === 'Hips' && parsedPelvisWorldPos)) {
+              if (typeof v.tx === 'number' && Number.isFinite(v.tx)) ov.tx = v.tx;
+              if (typeof v.ty === 'number' && Number.isFinite(v.ty)) ov.ty = v.ty;
+              if (typeof v.tz === 'number' && Number.isFinite(v.tz)) ov.tz = v.tz;
+            }
+            out[bName] = ov;
+          }
+          if (Object.keys(out).length > 0) {
+            parsedBoneOverrides = out;
+          }
+        }
+      } catch {
+        parsedBoneOverrides = null;
+      }
+    }
+
+    let parsedExactBoneEulerRad: Record<string, [number, number, number]> | null = null;
+    if (rawRigEulerRadJson) {
+      try {
+        const obj = JSON.parse(rawRigEulerRadJson) as Record<string, unknown>;
+        if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+          const out: Record<string, [number, number, number]> = {};
+          for (const [bName, arr] of Object.entries(obj)) {
+            if (
+              Array.isArray(arr) &&
+              arr.length >= 3 &&
+              typeof arr[0] === 'number' &&
+              typeof arr[1] === 'number' &&
+              typeof arr[2] === 'number' &&
+              Number.isFinite(arr[0]) &&
+              Number.isFinite(arr[1]) &&
+              Number.isFinite(arr[2])
+            ) {
+              out[bName] = [arr[0], arr[1], arr[2]];
+            }
+          }
+          if (Object.keys(out).length > 0) {
+            parsedExactBoneEulerRad = out;
+          }
+        }
+      } catch {
+        parsedExactBoneEulerRad = null;
+      }
+    }
+
+    const applyExtendedDofFields = (target: KatePoseParams) => {
+      if (armLRot !== null) target.shoulderLRotDeg = armLRot;
+      if (armRRot !== null) target.shoulderRRotDeg = armRRot;
+      if (forearmLPron !== null) {
+        target.forearmLPronDeg = forearmLPron;
+        target.handL.wristRollDeg = 0;
+      }
+      if (forearmRPron !== null) {
+        target.forearmRPronDeg = forearmRPron;
+        target.handR.wristRollDeg = 0;
+      }
+      if (hipLRot !== null) target.hipLRotDeg = hipLRot;
+      if (hipRRot !== null) target.hipRRotDeg = hipRRot;
+      if (footLFlex !== null) target.footL.pitchDeg = footLFlex;
+      if (footRFlex !== null) target.footR.pitchDeg = footRFlex;
+      if (footLInv !== null) target.footL.rollDeg = footLInv;
+      if (footRInv !== null) target.footR.rollDeg = footRInv;
+      if (footLRot !== null) target.footL.yawDeg = footLRot;
+      if (footRRot !== null) target.footR.yawDeg = footRRot;
+      if (wristLDev !== null) target.handL.wristYawDeg = wristLDev;
+      if (wristRDev !== null) target.handR.wristYawDeg = wristRDev;
+      if (parsedPelvisWorldPos) {
+        target.pelvisWorldPos = parsedPelvisWorldPos;
+      }
+      if (parsedBoneOverrides) {
+        target.boneOverrides = { ...(target.boneOverrides || {}), ...parsedBoneOverrides };
+      }
+      if (parsedExactBoneEulerRad) {
+        target.exactBoneEulerRad = parsedExactBoneEulerRad;
+      }
+    };
 
     if (canonicalBase) {
       const built = buildKatePoseFromCanonicalRow({
@@ -407,6 +576,7 @@ export function parseKatePlatesCsv(csvText: string): ParsedKateCsvRow[] {
       if (hipRAbd !== null) built.params.hipRAbdDeg = hipRAbd;
       if (yaw !== null) built.params.generalYawDeg = yaw;
       if (loadKg !== null) built.ergoModifiers.loadKg = Math.max(0, Math.min(60, loadKg));
+      applyExtendedDofFields(built.params);
 
       parsed.push({
         rowIndex: parsed.length,
@@ -443,6 +613,8 @@ export function parseKatePlatesCsv(csvText: string): ParsedKateCsvRow[] {
       footR: { ...base.footR },
       overriddenJoints: { ...(base.overriddenJoints || {}) },
       boneOverrides: { ...(base.boneOverrides || {}) },
+      pelvisWorldPos: null,
+      exactBoneEulerRad: null,
       useRawLandmarks: false,
     };
 
@@ -536,6 +708,29 @@ export function parseKatePlatesCsv(csvText: string): ParsedKateCsvRow[] {
       hasCustomAngles = true;
     }
 
+    if (
+      armLRot !== null ||
+      armRRot !== null ||
+      forearmLPron !== null ||
+      forearmRPron !== null ||
+      hipLRot !== null ||
+      hipRRot !== null ||
+      footLFlex !== null ||
+      footRFlex !== null ||
+      footLInv !== null ||
+      footRInv !== null ||
+      footLRot !== null ||
+      footRRot !== null ||
+      wristLDev !== null ||
+      wristRDev !== null ||
+      parsedPelvisWorldPos !== null ||
+      parsedBoneOverrides !== null ||
+      parsedExactBoneEulerRad !== null
+    ) {
+      hasCustomAngles = true;
+    }
+    applyExtendedDofFields(params);
+
     if (yaw !== null) {
       params.generalYawDeg = yaw;
     }
@@ -576,6 +771,7 @@ export interface KateCsvExportRowInput {
     wristLFlexDeg: number;
     wristRFlexDeg: number;
   };
+  rigSnapshot?: KateRigExportSnapshot;
 }
 
 function escapeCsvCell(value: string | number): string {
@@ -620,6 +816,40 @@ export function inferKateBasePosturalId(
   return 'stand';
 }
 
+function serializeBoneOverridesForCsv(overrides: Record<string, KateBoneOverride> | undefined): string {
+  if (!overrides) return '';
+  const r2 = (v: number) => Math.round(v * 100) / 100;
+  const r3 = (v: number) => Math.round(v * 1000) / 1000;
+  const r4 = (v: number) => Math.round(v * 10000) / 10000;
+  const r5 = (v: number) => Math.round(v * 100000) / 100000;
+
+  const compact: Record<string, Record<string, number>> = {};
+  for (const [bName, ov] of Object.entries(overrides)) {
+    if (!ov) continue;
+    const hasRot = Math.abs(ov.rx || 0) > 0.05 || Math.abs(ov.ry || 0) > 0.05 || Math.abs(ov.rz || 0) > 0.05;
+    const hasScale = Math.abs((ov.lenScale ?? 1) - 1) > 0.005;
+    const hasTrans = Math.abs(ov.tx || 0) > 1e-4 || Math.abs(ov.ty || 0) > 1e-4 || Math.abs(ov.tz || 0) > 1e-4;
+    if (!hasRot && !hasScale && !hasTrans) continue;
+
+    const entry: Record<string, number> = {
+      rx: r2(ov.rx || 0),
+      ry: r2(ov.ry || 0),
+      rz: r2(ov.rz || 0),
+      rxRad: r5(((ov.rx || 0) * Math.PI) / 180),
+      ryRad: r5(((ov.ry || 0) * Math.PI) / 180),
+      rzRad: r5(((ov.rz || 0) * Math.PI) / 180),
+      lenScale: r3(ov.lenScale ?? 1),
+    };
+    if (hasTrans) {
+      entry.tx = r4(ov.tx || 0);
+      entry.ty = r4(ov.ty || 0);
+      entry.tz = r4(ov.tz || 0);
+    }
+    compact[bName] = entry;
+  }
+  return Object.keys(compact).length > 0 ? JSON.stringify(compact) : '';
+}
+
 export function serializeKatePlatesToCsv(rows: KateCsvExportRowInput[]): string {
   const headers = [
     'N',
@@ -647,13 +877,36 @@ export function serializeKatePlatesToCsv(rows: KateCsvExportRowInput[]): string 
     'Cadera_D_Abd',
     'Giro_Avatar',
     'Carga_Kg',
+    // Columnas ampliadas 3D DOF (compatibles hacia atrás con CSV de 25 columnas)
+    'Cadera_I_Rot',
+    'Cadera_D_Rot',
+    'Brazo_I_Rot',
+    'Brazo_D_Rot',
+    'Antebrazo_I_Pron',
+    'Antebrazo_D_Pron',
+    'Pie_I_Flex',
+    'Pie_D_Flex',
+    'Pie_I_Inv',
+    'Pie_D_Inv',
+    'Pie_I_Rot',
+    'Pie_D_Rot',
+    'MI_Muneca_Desv',
+    'MD_Muneca_Desv',
+    'Pelvis_Pos_X',
+    'Pelvis_Pos_Y',
+    'Pelvis_Pos_Z',
+    'Huesos_Gizmo_XYZ',
+    'Rig_Euler_Rad',
   ];
 
   const lines: string[] = [headers.join(',')];
+  const round2 = (v: number) => Math.round(v * 100) / 100;
+  const round4 = (v: number) => Math.round(v * 10000) / 10000;
 
   for (const r of rows) {
     const p = r.params;
     const m = r.measuredAngles;
+    const s = r.rigSnapshot;
     const baseId = inferKateBasePosturalId(p, r.ergoModifiers, r.basePosturalLabel);
     const cleanPostura = r.plateTitle.replace(/^\s*\d+\.\s*/, '').trim() || r.plateTitle;
     const trunkB =
@@ -662,6 +915,11 @@ export function serializeKatePlatesToCsv(rows: KateCsvExportRowInput[]): string 
         : Math.abs(p.bodyPitchDeg) > 0.5 && Math.abs(p.trunkFlexDeg) < 0.5
           ? p.bodyPitchDeg
           : p.trunkFlexDeg;
+
+    const pelvisPos = s?.pelvisWorldPos ?? p.pelvisWorldPos ?? null;
+    const gizmoJson = serializeBoneOverridesForCsv(p.boneOverrides);
+    const eulerMap = s?.boneEulerRad ?? p.exactBoneEulerRad ?? null;
+    const eulerJson = eulerMap && Object.keys(eulerMap).length > 0 ? JSON.stringify(eulerMap) : '';
 
     const rowCells: Array<string | number> = [
       r.n,
@@ -689,6 +947,26 @@ export function serializeKatePlatesToCsv(rows: KateCsvExportRowInput[]): string 
       Math.round(p.hipRAbdDeg),
       Math.round(p.generalYawDeg),
       r.ergoModifiers.loadKg,
+      // 3D DOF ampliados
+      round2(s ? s.hipLRotDeg : p.hipLRotDeg),
+      round2(s ? s.hipRRotDeg : p.hipRRotDeg),
+      round2(s ? s.shoulderLRotDeg : (p.shoulderLRotDeg ?? 0)),
+      round2(s ? s.shoulderRRotDeg : (p.shoulderRRotDeg ?? 0)),
+      round2(s ? s.forearmLPronDeg : ((p.forearmLPronDeg ?? 0) + p.handL.wristRollDeg)),
+      round2(s ? s.forearmRPronDeg : ((p.forearmRPronDeg ?? 0) + p.handR.wristRollDeg)),
+      round2(s ? s.footL.pitchDeg : p.footL.pitchDeg),
+      round2(s ? s.footR.pitchDeg : p.footR.pitchDeg),
+      round2(s ? s.footL.rollDeg : p.footL.rollDeg),
+      round2(s ? s.footR.rollDeg : p.footR.rollDeg),
+      round2(s ? s.footL.yawDeg : p.footL.yawDeg),
+      round2(s ? s.footR.yawDeg : p.footR.yawDeg),
+      round2(s ? s.wristLYawDeg : p.handL.wristYawDeg),
+      round2(s ? s.wristRYawDeg : p.handR.wristYawDeg),
+      pelvisPos ? round4(pelvisPos.x) : '',
+      pelvisPos ? round4(pelvisPos.y) : '',
+      pelvisPos ? round4(pelvisPos.z) : '',
+      gizmoJson,
+      eulerJson,
     ];
 
     lines.push(rowCells.map(escapeCsvCell).join(','));

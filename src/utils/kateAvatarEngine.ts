@@ -93,15 +93,19 @@ export interface KatePoseParams {
   // Brazo izquierdo
   shoulderLFlexDeg: number;
   shoulderLAbdDeg: number;
+  shoulderLRotDeg?: number; // rotación axial del húmero (Brazo_I_Rot)
   elbowLFlexDeg: number; // 0° = extendido, 145° = flexionado
   forearmLVert: KateVerticalConstraint;
+  forearmLPronDeg?: number; // pronosupinación del antebrazo (Antebrazo_I_Pron)
   wristLInwardDeg: number;
 
   // Brazo derecho
   shoulderRFlexDeg: number;
   shoulderRAbdDeg: number;
+  shoulderRRotDeg?: number; // rotación axial del húmero (Brazo_D_Rot)
   elbowRFlexDeg: number;
   forearmRVert: KateVerticalConstraint;
+  forearmRPronDeg?: number; // pronosupinación del antebrazo (Antebrazo_D_Pron)
   wristRInwardDeg: number;
 
   // Manos y Dedos (21 puntos / control fino)
@@ -124,6 +128,9 @@ export interface KatePoseParams {
   footL: KateFootPoseParams;
   footR: KateFootPoseParams;
 
+  // Posición exacta de la pelvis (Root/Hips) en el mundo (metros)
+  pelvisWorldPos?: { x: number; y: number; z: number } | null;
+
   // Apoyos y manos
   apoL: KateSupportType;
   apoR: KateSupportType;
@@ -141,6 +148,8 @@ export interface KatePoseParams {
 
   // Corrección directa por hueso tipo Blender (rotación, estiramiento longitudinal, posición)
   boneOverrides: Record<string, KateBoneOverride>;
+  // Rotaciones locales exactas en radianes [rx, ry, rz] por hueso (importación avanzada Three.js)
+  exactBoneEulerRad?: Record<string, [number, number, number]> | null;
 }
 
 export interface KateMeasuredAngle {
@@ -296,13 +305,17 @@ export function createDefaultKatePoseParams(): KatePoseParams {
     trunkTwistDeg: 0,
     shoulderLFlexDeg: 18,
     shoulderLAbdDeg: 8,
+    shoulderLRotDeg: 0,
     elbowLFlexDeg: 58,
     forearmLVert: '',
+    forearmLPronDeg: 0,
     wristLInwardDeg: 0,
     shoulderRFlexDeg: 16,
     shoulderRAbdDeg: 8,
+    shoulderRRotDeg: 0,
     elbowRFlexDeg: 61,
     forearmRVert: '',
+    forearmRPronDeg: 0,
     wristRInwardDeg: 0,
     handL: createDefaultHandPose('flat'),
     handR: createDefaultHandPose('flat'),
@@ -316,6 +329,7 @@ export function createDefaultKatePoseParams(): KatePoseParams {
     kneeRFlexDeg: 21,
     footL: createDefaultFootPose('flat'),
     footR: createDefaultFootPose('flat'),
+    pelvisWorldPos: null,
     apoL: 'manoAbdomen',
     apoR: 'manoAbdomen',
     fists: false,
@@ -326,6 +340,7 @@ export function createDefaultKatePoseParams(): KatePoseParams {
     useRawLandmarks: false,
     overriddenJoints: {},
     boneOverrides: {},
+    exactBoneEulerRad: null,
   };
 }
 
@@ -1748,8 +1763,10 @@ export function applyKatePose(
 
     const shFlex = isLeft ? params.shoulderLFlexDeg : params.shoulderRFlexDeg;
     const shAbd = isLeft ? params.shoulderLAbdDeg : params.shoulderRAbdDeg;
+    const shRot = (isLeft ? params.shoulderLRotDeg : params.shoulderRRotDeg) ?? 0;
     const elFlex = isLeft ? params.elbowLFlexDeg : params.elbowRFlexDeg;
     const vert = isLeft ? params.forearmLVert : params.forearmRVert;
+    const forePron = (isLeft ? params.forearmLPronDeg : params.forearmRPronDeg) ?? 0;
     const apo = isLeft ? params.apoL : params.apoR;
     const wristIn = isLeft ? params.wristLInwardDeg : params.wristRInwardDeg;
     const handPose = isLeft ? params.handL : params.handR;
@@ -1848,6 +1865,9 @@ export function applyKatePose(
         let bendAxis = realTorsoLat.clone().sub(upperDir.clone().multiplyScalar(realTorsoLat.dot(upperDir)));
         if (bendAxis.lengthSq() < 1e-4) bendAxis = realTorsoFwd.clone();
         bendAxis.normalize();
+        if (Math.abs(shRot) > 0.2) {
+          bendAxis.applyAxisAngle(upperDir, rad((isLeft ? 1 : -1) * shRot)).normalize();
+        }
         const qElb = new THREE.Quaternion().setFromAxisAngle(bendAxis, rad(-elFlex));
         foreDir = upperDir.clone().applyQuaternion(qElb).normalize();
         if (Math.abs(wristIn) > 0.5) {
@@ -1860,11 +1880,17 @@ export function applyKatePose(
     const armElbowCross = isLeft
       ? upperDir!.clone().cross(foreDir!)
       : foreDir!.clone().cross(upperDir!);
-    const defaultPalmInward = realTorsoLat
+    let defaultPalmInward = realTorsoLat
       .clone()
       .multiplyScalar(isLeft ? -1 : 1)
       .add(trunkDown.clone().multiplyScalar(0.28))
       .normalize();
+    if (Math.abs(shRot) > 0.2) {
+      defaultPalmInward = defaultPalmInward
+        .clone()
+        .applyAxisAngle(upperDir!, rad((isLeft ? 1 : -1) * shRot))
+        .normalize();
+    }
     const armPalmZ =
       armElbowCross.lengthSq() > 0.02
         ? armElbowCross.clone().normalize()
@@ -1877,6 +1903,12 @@ export function applyKatePose(
       forePalmHint = forePalmHint
         .clone()
         .applyAxisAngle(foreDir!, rad((isLeft ? -1 : 1) * wristIn))
+        .normalize();
+    }
+    if (Math.abs(forePron) > 0.2) {
+      forePalmHint = forePalmHint
+        .clone()
+        .applyAxisAngle(foreDir!, rad((isLeft ? 1 : -1) * forePron))
         .normalize();
     }
     alignBoneToWorldBasis(rig, `${s}ForeArm`, foreDir!, forePalmHint);
@@ -2000,6 +2032,68 @@ export function applyKatePose(
     entry.bone.updateMatrixWorld(true);
   }
   rig.root.updateMatrixWorld(true);
+
+  // 6b. Si se importaron rotaciones locales exactas de Three.js en radianes (sin overrides de gizmo)
+  if (params.exactBoneEulerRad) {
+    for (const boneName of KATE_BONE_TOPOLOGY_ORDER) {
+      if (skipOverridesFor?.has(boneName)) continue;
+      const eul = params.exactBoneEulerRad[boneName];
+      const entry = rig.bones.get(boneName);
+      if (eul && entry) {
+        entry.bone.rotation.set(eul[0], eul[1], eul[2], 'XYZ');
+        entry.bone.updateMatrixWorld(true);
+      }
+    }
+    rig.root.updateMatrixWorld(true);
+  }
+
+  // 7. Posición exacta de pelvis (Pelvis_Pos_X/Y/Z) o apoyo automático sobre el suelo (y = 0)
+  const hipsOv = overrides.Hips;
+  const hasHipsPosOverride = Boolean(
+    hipsOv &&
+      ((hipsOv.tx && Math.abs(hipsOv.tx) > 1e-4) ||
+        (hipsOv.ty && Math.abs(hipsOv.ty) > 1e-4) ||
+        (hipsOv.tz && Math.abs(hipsOv.tz) > 1e-4)),
+  );
+  if (params.pelvisWorldPos && !skipOverridesFor?.has('Hips')) {
+    rig.root.updateMatrixWorld(true);
+    const curHipsW = getBoneWorldPos(rig, 'Hips');
+    rig.root.position.x += params.pelvisWorldPos.x - curHipsW.x;
+    rig.root.position.y += params.pelvisWorldPos.y - curHipsW.y;
+    rig.root.position.z += params.pelvisWorldPos.z - curHipsW.z;
+    rig.root.updateMatrixWorld(true);
+  } else if (!hasHipsPosOverride && !skipOverridesFor?.has('Hips')) {
+    rig.root.updateMatrixWorld(true);
+    const groundBones = [
+      'Hips',
+      'LeftLeg',
+      'RightLeg',
+      'LeftFoot',
+      'RightFoot',
+      'LeftToeBase',
+      'RightToeBase',
+      'LeftToe_End',
+      'RightToe_End',
+    ];
+    let minY = Infinity;
+    let lowestIsHips = false;
+    const hipsY = getBoneWorldPos(rig, 'Hips').y;
+    for (const bn of groundBones) {
+      if (rig.bones.has(bn)) {
+        const py = getBoneWorldPos(rig, bn).y;
+        if (py < minY) {
+          minY = py;
+          lowestIsHips = bn === 'Hips';
+        }
+      }
+    }
+    if (Number.isFinite(minY) && (minY > 0.045 || minY < -0.005)) {
+      const clearance = lowestIsHips ? 0.07 : 0.015;
+      rig.root.position.y += clearance - minY;
+      rig.root.updateMatrixWorld(true);
+    }
+    void hipsY;
+  }
 }
 
 /**
@@ -2477,6 +2571,224 @@ export function measureKate3DAngles(
   params: KatePoseParams,
 ): KateMeasuredAngle[] {
   return measureKateFullPoseSnapshot(rig, params).visibleAngles;
+}
+
+export interface KateRigExportSnapshot {
+  pelvisWorldPos: { x: number; y: number; z: number };
+  hipLRotDeg: number;
+  hipRRotDeg: number;
+  shoulderLRotDeg: number;
+  shoulderRRotDeg: number;
+  forearmLPronDeg: number;
+  forearmRPronDeg: number;
+  footL: { pitchDeg: number; rollDeg: number; yawDeg: number };
+  footR: { pitchDeg: number; rollDeg: number; yawDeg: number };
+  wristLYawDeg: number;
+  wristRYawDeg: number;
+  boneEulerRad: Record<string, [number, number, number]>;
+}
+
+function signedAngleAroundAxisDeg(
+  refDir: THREE.Vector3,
+  curDir: THREE.Vector3,
+  axis: THREE.Vector3,
+): number {
+  const ax = axis.clone().normalize();
+  const r = refDir.clone().sub(ax.clone().multiplyScalar(refDir.dot(ax)));
+  const c = curDir.clone().sub(ax.clone().multiplyScalar(curDir.dot(ax)));
+  if (r.lengthSq() < 1e-6 || c.lengthSq() < 1e-6) return 0;
+  r.normalize();
+  c.normalize();
+  const dot = clamp(r.dot(c), -1, 1);
+  const cross = r.clone().cross(c);
+  return deg(Math.atan2(cross.dot(ax), dot));
+}
+
+function hasAnyBoneOverride(ov: KateBoneOverride | undefined): boolean {
+  if (!ov) return false;
+  return (
+    Math.abs(ov.rx || 0) > 0.05 ||
+    Math.abs(ov.ry || 0) > 0.05 ||
+    Math.abs(ov.rz || 0) > 0.05 ||
+    Math.abs((ov.lenScale ?? 1) - 1) > 0.005 ||
+    Math.abs(ov.tx || 0) > 1e-4 ||
+    Math.abs(ov.ty || 0) > 1e-4 ||
+    Math.abs(ov.tz || 0) > 1e-4
+  );
+}
+
+export function extractKateRigExportSnapshot(
+  rig: KateRigInstance,
+  params: KatePoseParams,
+): KateRigExportSnapshot {
+  rig.root.updateMatrixWorld(true);
+  const r4 = (v: number) => Math.round(v * 10000) / 10000;
+  const r2 = (v: number) => Math.round(v * 100) / 100;
+  const r5 = (v: number) => Math.round(v * 100000) / 100000;
+
+  const hipsPos = getBoneWorldPos(rig, 'Hips');
+  const pelvisWorldPos = { x: r4(hipsPos.x), y: r4(hipsPos.y), z: r4(hipsPos.z) };
+
+  const boneWorldZ = (boneName: string): THREE.Vector3 => {
+    const e = rig.bones.get(boneName);
+    if (!e) return new THREE.Vector3(0, 0, 1);
+    const q = new THREE.Quaternion();
+    e.bone.getWorldQuaternion(q);
+    return new THREE.Vector3(0, 0, 1).applyQuaternion(q).normalize();
+  };
+
+  const boneWorldY = (boneName: string): THREE.Vector3 => {
+    const e = rig.bones.get(boneName);
+    if (!e) return new THREE.Vector3(0, 1, 0);
+    const q = new THREE.Quaternion();
+    e.bone.getWorldQuaternion(q);
+    return new THREE.Vector3(0, 1, 0).applyQuaternion(q).normalize();
+  };
+
+  // Ejes anatómicos base de pelvis y tórax
+  const pelvisUp = getBoneWorldPos(rig, 'Spine').sub(hipsPos).normalize();
+  const pelvisLat = getBoneWorldPos(rig, 'LeftUpLeg').sub(getBoneWorldPos(rig, 'RightUpLeg')).normalize();
+  const pelvisFwd = pelvisLat.clone().cross(pelvisUp).normalize();
+
+  const shPosL = getBoneWorldPos(rig, 'LeftArm');
+  const shPosR = getBoneWorldPos(rig, 'RightArm');
+  const torsoLat = shPosL.clone().sub(shPosR).normalize();
+  const spineDir = getBoneWorldPos(rig, 'Neck').sub(getBoneWorldPos(rig, 'Spine2')).normalize();
+  const torsoDown = spineDir.clone().negate();
+
+  // 1. Rotación axial muslos (Cadera_I_Rot / Cadera_D_Rot)
+  const measureHipRot = (isLeft: boolean): number => {
+    const s = isLeft ? 'Left' : 'Right';
+    const baseRot = isLeft ? params.hipLRotDeg : params.hipRRotDeg;
+    if (!hasAnyBoneOverride(params.boneOverrides?.[`${s}UpLeg`])) return r2(baseRot);
+    const hp = getBoneWorldPos(rig, `${s}UpLeg`);
+    const kn = getBoneWorldPos(rig, `${s}Leg`);
+    const thighDir = kn.sub(hp).normalize();
+    let refFront = thighDir.clone().cross(pelvisLat);
+    if (refFront.lengthSq() < 1e-4) refFront = pelvisFwd.clone();
+    refFront.normalize();
+    const actualFront = boneWorldZ(`${s}UpLeg`);
+    return r2(signedAngleAroundAxisDeg(refFront, actualFront, thighDir) * (isLeft ? 1 : -1));
+  };
+
+  // 2. Rotación axial brazos (Brazo_I_Rot / Brazo_D_Rot)
+  const measureShoulderRot = (isLeft: boolean): number => {
+    const s = isLeft ? 'Left' : 'Right';
+    const baseRot = (isLeft ? params.shoulderLRotDeg : params.shoulderRRotDeg) ?? 0;
+    if (!hasAnyBoneOverride(params.boneOverrides?.[`${s}Arm`])) return r2(baseRot);
+    const sh = getBoneWorldPos(rig, `${s}Arm`);
+    const el = getBoneWorldPos(rig, `${s}ForeArm`);
+    const upperDir = el.sub(sh).normalize();
+    const refZ = torsoLat
+      .clone()
+      .multiplyScalar(isLeft ? -1 : 1)
+      .add(torsoDown.clone().multiplyScalar(0.28))
+      .normalize();
+    const actualZ = boneWorldZ(`${s}Arm`);
+    return r2(signedAngleAroundAxisDeg(refZ, actualZ, upperDir) * (isLeft ? 1 : -1));
+  };
+
+  // 3. Pronosupinación antebrazo/mano (Antebrazo_I_Pron / Antebrazo_D_Pron)
+  const measureForearmPron = (isLeft: boolean): number => {
+    const s = isLeft ? 'Left' : 'Right';
+    const handPose = isLeft ? params.handL : params.handR;
+    const basePron =
+      ((isLeft ? params.forearmLPronDeg : params.forearmRPronDeg) ?? 0) + handPose.wristRollDeg;
+    if (
+      !hasAnyBoneOverride(params.boneOverrides?.[`${s}ForeArm`]) &&
+      !hasAnyBoneOverride(params.boneOverrides?.[`${s}Hand`])
+    ) {
+      return r2(basePron);
+    }
+    const foreDir = boneWorldY(`${s}ForeArm`);
+    const armZ = boneWorldZ(`${s}Arm`);
+    const handZ = boneWorldZ(`${s}Hand`);
+    return r2(signedAngleAroundAxisDeg(armZ, handZ, foreDir) * (isLeft ? 1 : -1));
+  };
+
+  // 4. Pie (Flex, Inversión, Rotación) relativo a la pantorrilla
+  const measureFootAngles = (isLeft: boolean): { pitchDeg: number; rollDeg: number; yawDeg: number } => {
+    const s = isLeft ? 'Left' : 'Right';
+    const fp = isLeft ? params.footL : params.footR;
+    if (!hasAnyBoneOverride(params.boneOverrides?.[`${s}Foot`])) {
+      return { pitchDeg: r2(fp.pitchDeg), rollDeg: r2(fp.rollDeg), yawDeg: r2(fp.yawDeg) };
+    }
+    const kn = getBoneWorldPos(rig, `${s}Leg`);
+    const ak = getBoneWorldPos(rig, `${s}Foot`);
+    const shankDir = ak.clone().sub(kn).normalize();
+    const baseDorsum = shankDir.clone().negate();
+    const shinFront = boneWorldZ(`${s}Leg`);
+    const kneeBendAxis = shinFront.clone().cross(shankDir).normalize();
+
+    const fY = boneWorldY(`${s}Foot`);
+    const fZ = boneWorldZ(`${s}Foot`);
+    // Deshacer FOOT_REST_SLOPE = -0.54 rad respecto al plano (fY, fZ)
+    const slope = -0.54;
+    const footFwd = fY
+      .clone()
+      .multiplyScalar(Math.cos(slope))
+      .sub(fZ.clone().multiplyScalar(Math.sin(slope)))
+      .normalize();
+    const footDorsum = fZ
+      .clone()
+      .multiplyScalar(Math.cos(slope))
+      .add(fY.clone().multiplyScalar(Math.sin(slope)))
+      .normalize();
+
+    // Yaw alrededor de baseDorsum
+    const fwdProjHoriz = footFwd.clone().sub(baseDorsum.clone().multiplyScalar(footFwd.dot(baseDorsum)));
+    const yawDeg =
+      fwdProjHoriz.lengthSq() > 1e-4
+        ? signedAngleAroundAxisDeg(shinFront, fwdProjHoriz.normalize(), baseDorsum) * (isLeft ? -1 : 1)
+        : fp.yawDeg;
+    const yawLat = kneeBendAxis
+      .clone()
+      .applyAxisAngle(baseDorsum, rad((isLeft ? -1 : 1) * yawDeg))
+      .normalize();
+    const pitchDeg = signedAngleAroundAxisDeg(
+      shinFront.clone().applyAxisAngle(baseDorsum, rad((isLeft ? -1 : 1) * yawDeg)),
+      footFwd,
+      yawLat,
+    );
+    const unrolledDorsum = baseDorsum.clone().applyAxisAngle(yawLat, rad(pitchDeg)).normalize();
+    const rollDeg = signedAngleAroundAxisDeg(unrolledDorsum, footDorsum, footFwd) * (isLeft ? -1 : 1);
+
+    return { pitchDeg: r2(pitchDeg), rollDeg: r2(rollDeg), yawDeg: r2(yawDeg) };
+  };
+
+  // 5. Desviación radial/cubital de muñeca
+  const measureWristYaw = (isLeft: boolean): number => {
+    const s = isLeft ? 'Left' : 'Right';
+    const handPose = isLeft ? params.handL : params.handR;
+    if (!hasAnyBoneOverride(params.boneOverrides?.[`${s}Hand`])) return r2(handPose.wristYawDeg);
+    const ovRz = params.boneOverrides?.[`${s}Hand`]?.rz ?? 0;
+    return r2(handPose.wristYawDeg + (isLeft ? 1 : -1) * ovRz);
+  };
+
+  // 6. Rotaciones locales exactas XYZ en radianes de cada hueso editable del rig Three.js
+  const boneEulerRad: Record<string, [number, number, number]> = {};
+  const tmpEuler = new THREE.Euler(0, 0, 0, 'XYZ');
+  for (const boneName of KATE_BONE_TOPOLOGY_ORDER) {
+    const entry = rig.bones.get(boneName);
+    if (!entry) continue;
+    tmpEuler.setFromQuaternion(entry.bone.quaternion, 'XYZ');
+    boneEulerRad[boneName] = [r5(tmpEuler.x), r5(tmpEuler.y), r5(tmpEuler.z)];
+  }
+
+  return {
+    pelvisWorldPos,
+    hipLRotDeg: measureHipRot(true),
+    hipRRotDeg: measureHipRot(false),
+    shoulderLRotDeg: measureShoulderRot(true),
+    shoulderRRotDeg: measureShoulderRot(false),
+    forearmLPronDeg: measureForearmPron(true),
+    forearmRPronDeg: measureForearmPron(false),
+    footL: measureFootAngles(true),
+    footR: measureFootAngles(false),
+    wristLYawDeg: measureWristYaw(true),
+    wristRYawDeg: measureWristYaw(false),
+    boneEulerRad,
+  };
 }
 
 // ---------------------------------------------------------------------------

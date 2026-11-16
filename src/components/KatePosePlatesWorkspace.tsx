@@ -35,6 +35,7 @@ import {
   detectKateLandmarksFromImage,
   detectSoftwareWebGL,
   extractKatePoseParamsFromLandmarks,
+  extractKateRigExportSnapshot,
   getPresetKatePoseParams,
   KATE_EDITABLE_BONES,
   KATE_SAMPLE_GALLERY,
@@ -527,6 +528,36 @@ export const KatePosePlatesWorkspace: React.FC<Props> = ({ onBackToEvaluator }) 
             ...(next.overriddenJoints || {}),
             [markOverride]: true,
           };
+          if (next.exactBoneEulerRad) {
+            const OVERRIDE_BONES: Record<string, string[]> = {
+              neck: ['Neck', 'Head'],
+              trunk: ['Spine', 'Spine1', 'Spine2'],
+              armL: ['LeftShoulder', 'LeftArm'],
+              armR: ['RightShoulder', 'RightArm'],
+              forearmL: ['LeftForeArm'],
+              forearmR: ['RightForeArm'],
+              hipL: ['LeftUpLeg'],
+              hipR: ['RightUpLeg'],
+              kneeL: ['LeftLeg'],
+              kneeR: ['RightLeg'],
+              handL: ['LeftHand', 'LeftHandThumb1', 'LeftHandThumb2', 'LeftHandIndex1', 'LeftHandIndex2', 'LeftHandMiddle1', 'LeftHandRing1', 'LeftHandPinky1'],
+              handR: ['RightHand', 'RightHandThumb1', 'RightHandThumb2', 'RightHandIndex1', 'RightHandIndex2', 'RightHandMiddle1', 'RightHandRing1', 'RightHandPinky1'],
+              footL: ['LeftFoot', 'LeftToeBase'],
+              footR: ['RightFoot', 'RightToeBase'],
+              body: ['Hips'],
+            };
+            const toClear = OVERRIDE_BONES[markOverride] || [];
+            if (toClear.length > 0) {
+              const cleanedExact = { ...next.exactBoneEulerRad };
+              const cleanedOverrides = { ...(next.boneOverrides || {}) };
+              for (const bn of toClear) {
+                delete cleanedExact[bn];
+                delete cleanedOverrides[bn];
+              }
+              next.exactBoneEulerRad = Object.keys(cleanedExact).length > 0 ? cleanedExact : null;
+              next.boneOverrides = cleanedOverrides;
+            }
+          }
         }
         return next;
       };
@@ -950,16 +981,33 @@ export const KatePosePlatesWorkspace: React.FC<Props> = ({ onBackToEvaluator }) 
           ry: Math.round(THREE.MathUtils.radToDeg(euler.y) * 10) / 10,
           rz: Math.round(THREE.MathUtils.radToDeg(euler.z) * 10) / 10,
         };
+        let nextExact = curParams.exactBoneEulerRad ?? null;
+        if (nextExact) {
+          const eulerLocal = new THREE.Euler().setFromQuaternion(desiredLocalQ, 'XYZ');
+          const r5 = (v: number) => Math.round(v * 100000) / 100000;
+          nextExact = {
+            ...nextExact,
+            [bName]: [r5(eulerLocal.x), r5(eulerLocal.y), r5(eulerLocal.z)],
+          };
+        }
         const nextParams: KatePoseParams = {
           ...curParams,
           boneOverrides: { ...(curParams.boneOverrides || {}), [bName]: nextOv },
+          exactBoneEulerRad: nextExact,
         };
         applyKatePose(rig, nextParams, currentLandmarksRef.current, currentHandsRef.current);
         updateBoneOverlay();
-        updateParamsRef.current((p) => ({
-          ...p,
-          boneOverrides: { ...(p.boneOverrides || {}), [bName]: nextOv },
-        }));
+        updateParamsRef.current((p) => {
+          let pExact = p.exactBoneEulerRad ?? null;
+          if (pExact && nextExact?.[bName]) {
+            pExact = { ...pExact, [bName]: nextExact[bName] };
+          }
+          return {
+            ...p,
+            boneOverrides: { ...(p.boneOverrides || {}), [bName]: nextOv },
+            exactBoneEulerRad: pExact,
+          };
+        });
       } else if (mode === 'scale') {
         const s = gizmoAnchor.scale;
         const dx = Math.abs(s.x - 1);
@@ -980,18 +1028,41 @@ export const KatePosePlatesWorkspace: React.FC<Props> = ({ onBackToEvaluator }) 
           boneOverrides: { ...(p.boneOverrides || {}), [bName]: nextOv },
         }));
       } else if (mode === 'translate') {
+        let cleanedExact = curParams.exactBoneEulerRad ? { ...curParams.exactBoneEulerRad } : null;
+        if (cleanedExact) {
+          const meta = KATE_EDITABLE_BONES.find((b) => b.name === bName);
+          if (meta?.ikChain) {
+            delete cleanedExact[meta.ikChain.root];
+            delete cleanedExact[meta.ikChain.mid];
+            delete cleanedExact[meta.ikChain.end];
+          } else {
+            delete cleanedExact[bName];
+          }
+          if (Object.keys(cleanedExact).length === 0) cleanedExact = null;
+        }
+        const nextPelvisPos = bName === 'Hips' ? null : curParams.pelvisWorldPos;
+        const baseForDrag: KatePoseParams = {
+          ...curParams,
+          pelvisWorldPos: nextPelvisPos,
+          exactBoneEulerRad: cleanedExact,
+        };
         const nextOverrides = solveKateBoneWorldDrag(
           rig,
-          curParams,
+          baseForDrag,
           currentLandmarksRef.current,
           currentHandsRef.current,
           bName,
           gizmoAnchor.position.clone(),
         );
-        const nextParams: KatePoseParams = { ...curParams, boneOverrides: nextOverrides };
+        const nextParams: KatePoseParams = { ...baseForDrag, boneOverrides: nextOverrides };
         applyKatePose(rig, nextParams, currentLandmarksRef.current, currentHandsRef.current);
         updateBoneOverlay();
-        updateParamsRef.current((p) => ({ ...p, boneOverrides: nextOverrides }));
+        updateParamsRef.current((p) => ({
+          ...p,
+          boneOverrides: nextOverrides,
+          pelvisWorldPos: bName === 'Hips' ? null : p.pelvisWorldPos,
+          exactBoneEulerRad: cleanedExact,
+        }));
       }
       scheduleRender();
     });
@@ -1601,23 +1672,27 @@ export const KatePosePlatesWorkspace: React.FC<Props> = ({ onBackToEvaluator }) 
     );
 
     let measuredAngles: KateCsvExportRowInput['measuredAngles'];
-    if (hasBoneOverrides && sheetRigRef.current) {
+    let rigSnapshot: KateCsvExportRowInput['rigSnapshot'];
+    if (sheetRigRef.current) {
       applyKatePose(sheetRigRef.current, params, null, null);
-      const snap = measureKateFullPoseSnapshot(sheetRigRef.current, params);
-      const getAng = (k: KateAngleKey, fallback: number) =>
-        snap.allAngles.find((a) => a.key === k)?.rawDeg ?? fallback;
-      measuredAngles = {
-        neckFlexDeg: getAng('neck', params.neckFlexDeg),
-        trunkFlexDeg: getAng('trunk', params.trunkFlexDeg),
-        shoulderLFlexDeg: getAng('armL', params.shoulderLFlexDeg),
-        shoulderRFlexDeg: getAng('armR', params.shoulderRFlexDeg),
-        elbowLFlexDeg: getAng('forearmL', params.elbowLFlexDeg),
-        elbowRFlexDeg: getAng('forearmR', params.elbowRFlexDeg),
-        kneeLFlexDeg: getAng('kneeL', snap.kneeLFlexDeg),
-        kneeRFlexDeg: getAng('kneeR', snap.kneeRFlexDeg),
-        wristLFlexDeg: snap.wristLFlexDeg,
-        wristRFlexDeg: snap.wristRFlexDeg,
-      };
+      rigSnapshot = extractKateRigExportSnapshot(sheetRigRef.current, params);
+      if (hasBoneOverrides || Boolean(params.exactBoneEulerRad)) {
+        const snap = measureKateFullPoseSnapshot(sheetRigRef.current, params);
+        const getAng = (k: KateAngleKey, fallback: number) =>
+          snap.allAngles.find((a) => a.key === k)?.rawDeg ?? fallback;
+        measuredAngles = {
+          neckFlexDeg: getAng('neck', params.neckFlexDeg),
+          trunkFlexDeg: getAng('trunk', params.trunkFlexDeg),
+          shoulderLFlexDeg: getAng('armL', params.shoulderLFlexDeg),
+          shoulderRFlexDeg: getAng('armR', params.shoulderRFlexDeg),
+          elbowLFlexDeg: getAng('forearmL', params.elbowLFlexDeg),
+          elbowRFlexDeg: getAng('forearmR', params.elbowRFlexDeg),
+          kneeLFlexDeg: getAng('kneeL', snap.kneeLFlexDeg),
+          kneeRFlexDeg: getAng('kneeR', snap.kneeRFlexDeg),
+          wristLFlexDeg: snap.wristLFlexDeg,
+          wristRFlexDeg: snap.wristRFlexDeg,
+        };
+      }
     }
 
     return {
@@ -1627,6 +1702,7 @@ export const KatePosePlatesWorkspace: React.FC<Props> = ({ onBackToEvaluator }) 
       params,
       ergoModifiers,
       measuredAngles,
+      rigSnapshot,
     };
   };
 
@@ -1790,12 +1866,22 @@ export const KatePosePlatesWorkspace: React.FC<Props> = ({ onBackToEvaluator }) 
     if (!selectedBone) return;
     updateParams((p) => {
       const cur = p.boneOverrides?.[selectedBone] || DEFAULT_BONE_OVERRIDE;
+      let nextExact = p.exactBoneEulerRad ?? null;
+      if (
+        nextExact?.[selectedBone] &&
+        (patch.rx !== undefined || patch.ry !== undefined || patch.rz !== undefined)
+      ) {
+        const copy = { ...nextExact };
+        delete copy[selectedBone];
+        nextExact = Object.keys(copy).length > 0 ? copy : null;
+      }
       return {
         ...p,
         boneOverrides: {
           ...(p.boneOverrides || {}),
           [selectedBone]: { ...cur, ...patch },
         },
+        exactBoneEulerRad: nextExact,
       };
     });
   };
@@ -1805,7 +1891,17 @@ export const KatePosePlatesWorkspace: React.FC<Props> = ({ onBackToEvaluator }) 
     updateParams((p) => {
       const next = { ...(p.boneOverrides || {}) };
       delete next[selectedBone];
-      return { ...p, boneOverrides: next };
+      let nextExact = p.exactBoneEulerRad ? { ...p.exactBoneEulerRad } : null;
+      if (nextExact) {
+        delete nextExact[selectedBone];
+        if (Object.keys(nextExact).length === 0) nextExact = null;
+      }
+      return {
+        ...p,
+        boneOverrides: next,
+        exactBoneEulerRad: nextExact,
+        pelvisWorldPos: selectedBone === 'Hips' ? null : p.pelvisWorldPos,
+      };
     });
   };
 
@@ -2657,7 +2753,13 @@ export const KatePosePlatesWorkspace: React.FC<Props> = ({ onBackToEvaluator }) 
                   <div className="flex items-center gap-1.5">
                     <button
                       type="button"
-                      onClick={() => updateParams((p) => mirrorKatePoseLeftRight(p))}
+                      onClick={() =>
+                        updateParams((p) => ({
+                          ...mirrorKatePoseLeftRight(p),
+                          exactBoneEulerRad: null,
+                          pelvisWorldPos: null,
+                        }))
+                      }
                       className="inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-200 hover:bg-slate-50 text-[11px] font-medium text-slate-700 cursor-pointer"
                     >
                       <FlipHorizontal2 className="w-3 h-3" />
@@ -2679,7 +2781,12 @@ export const KatePosePlatesWorkspace: React.FC<Props> = ({ onBackToEvaluator }) 
                     value=""
                     onChange={(e) => {
                       const val = e.target.value as KatePresetId;
-                      if (val) updateParams((p) => getPresetKatePoseParams(val, p));
+                      if (val)
+                        updateParams((p) => ({
+                          ...getPresetKatePoseParams(val, p),
+                          exactBoneEulerRad: null,
+                          pelvisWorldPos: null,
+                        }));
                     }}
                     className="px-2.5 py-1.5 rounded-md border border-slate-200 bg-slate-50 text-xs text-slate-800"
                   >
